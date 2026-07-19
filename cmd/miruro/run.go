@@ -207,9 +207,12 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	})
 
 	var failed int
-	for _, err := range errs {
+	for i, err := range errs {
 		if err != nil {
 			failed++
+			// the TUI shows each failure on its task row, but a piped or scripted
+			// run draws no rows and would otherwise report only a count
+			log.Error("download failed", "episode", labels[i], "err", err)
 		}
 	}
 	if failed > 0 {
