@@ -83,6 +83,38 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 	}
 }
 
+// a player may probe a segment with a Range header
+// the proxy must still fetch the whole segment and strip the decoy rather than
+// relay a partial that keeps the image prefix
+func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			// a cdn honouring the range would drop the leading framing
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		w.Write(append([]byte("\x89PNG-decoy-bytes"), tsBlob(12)...))
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, px.proxied(upstream.URL+"/seg0.ts", "", segment), nil)
+	req.Header.Set("Range", "bytes=0-")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if len(got) == 0 || got[0] != 0x47 {
+		t.Fatalf("segment not normalized to TS sync, first byte %#x", got)
+	}
+}
+
 func TestProxyRelaysRange(t *testing.T) {
 	full := bytes.Repeat([]byte("A"), 1000)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

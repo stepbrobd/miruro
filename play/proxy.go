@@ -158,24 +158,27 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	switch {
-	case t.Kind == playlist:
+	switch t.Kind {
+	case playlist:
 		body, ok := buffered(w, resp)
 		if !ok {
 			return
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Write(p.rewrite(body, t.Referer, resp.Request.URL))
-	case t.Kind == segment && resp.StatusCode == http.StatusOK:
+	case segment, cipher:
+		// a segment is fetched whole and de-obfuscated
+		// a cipher segment relays whole because CBC cannot decrypt from an offset
 		body, ok := buffered(w, resp)
 		if !ok {
 			return
 		}
+		if t.Kind == segment {
+			body = normalizeSegment(body)
+		}
 		w.Header().Set("Content-Type", "video/mp2t")
-		w.Write(normalizeSegment(body))
+		w.Write(body)
 	default:
-		// cipher, a partial segment answering a byterange, and opaque all pass
-		// through untouched with their range headers intact
 		relay(w, resp)
 	}
 }
@@ -221,9 +224,9 @@ func (p *Proxy) fetch(r *http.Request, t target) (*http.Response, error) {
 	if t.Referer != "" {
 		req.Header.Set("Referer", t.Referer)
 	}
-	// forward a byterange for any media body but never a playlist
-	// a playlist is read whole and rewritten, so a range would corrupt parsing
-	if rng := r.Header.Get("Range"); rng != "" && t.Kind != playlist {
+	// forward a range only for an opaque body such as an mp4 or a .vtt
+	// a segment must arrive whole so the decoy strip and any decryption line up
+	if rng := r.Header.Get("Range"); rng != "" && t.Kind == opaque {
 		req.Header.Set("Range", rng)
 	}
 
