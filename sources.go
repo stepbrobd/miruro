@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -82,9 +86,11 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 	return res, nil
 }
 
-// Select applies the default quality heuristic, an author-owned decision.
-// it honours an explicit height when hls variants expose one, then prefers the
-// hls master for mpv to negotiate, then a direct mp4, and skips embeds
+// Select applies the default quality heuristic, an author-owned decision
+// "best" hands mpv the hls master to negotiate
+// "worst" and an explicit height pick from the API quality labels, or from an
+// expanded master when the streams carry none
+// it prefers hls, then a direct mp4, and skips embeds
 func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream, error) {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
@@ -96,28 +102,81 @@ func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream,
 		}
 	}
 
-	if len(hls) > 0 && quality != "" && quality != "best" {
+	if len(hls) > 0 {
+		if quality == "" || quality == "best" {
+			return hls[0], nil
+		}
+		if s, ok := pickQuality(hls, quality); ok {
+			return s, nil
+		}
 		if variants, err := c.expandMaster(ctx, hls[0]); err == nil {
-			for _, v := range variants {
-				if strings.HasPrefix(v.Quality, strings.TrimSuffix(quality, "p")) {
-					return v, nil
-				}
+			if s, ok := pickQuality(variants, quality); ok {
+				return s, nil
 			}
 		}
-	}
-	if len(hls) > 0 {
 		return hls[0], nil
 	}
 	if len(mp4) > 0 {
+		if s, ok := pickQuality(mp4, quality); ok {
+			return s, nil
+		}
 		return mp4[0], nil
 	}
 	return Stream{}, ErrNoStream
 }
 
+// pickQuality selects a stream by request
+// "best" or "" takes the tallest labelled height, "worst" the shortest, and an
+// explicit "NNNp" an exact match
+// it reports false when no stream carries a usable height, so the caller can
+// expand a master or fall back to best
+func pickQuality(streams []Stream, quality string) (Stream, bool) {
+	best, worst := -1, -1
+	var bs, ws Stream
+	want := parseHeight(quality)
+	for _, s := range streams {
+		h := parseHeight(s.Quality)
+		if h == 0 {
+			continue
+		}
+		if quality != "" && quality != "best" && quality != "worst" {
+			if h == want {
+				return s, true
+			}
+			continue
+		}
+		if h > best {
+			best, bs = h, s
+		}
+		if worst < 0 || h < worst {
+			worst, ws = h, s
+		}
+	}
+	switch {
+	case quality == "worst" && worst >= 0:
+		return ws, true
+	case (quality == "" || quality == "best") && best >= 0:
+		return bs, true
+	}
+	return Stream{}, false
+}
+
+func parseHeight(q string) int {
+	q = strings.TrimSuffix(strings.TrimSpace(q), "p")
+	n, err := strconv.Atoi(q)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
 var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 
 // expandMaster fetches an hls master playlist and returns its variant streams
-// labelled by height, falling back to the master itself when parsing yields none.
+// labelled by height
+// it errors on a non-200, on a non-master body, or on a master with no
+// height-labelled variants, so a media playlist or an error page never becomes
+// fabricated variants
 func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 	req, err := newGet(ctx, s.URL, s.Referer)
 	if err != nil {
@@ -128,26 +187,39 @@ func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("master playlist: status %d", resp.StatusCode)
+	}
 
-	base := s.URL[:strings.LastIndex(s.URL, "/")+1]
+	base, err := url.Parse(s.URL)
+	if err != nil {
+		return nil, err
+	}
 	var variants []Stream
 	var height string
+	master := false
 	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		switch {
 		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
+			master = true
 			if m := resolution.FindStringSubmatch(line); m != nil {
 				height = m[1] + "p"
 			}
 		case line != "" && !strings.HasPrefix(line, "#"):
-			v := s
-			v.Quality = height
-			if strings.HasPrefix(line, "http") {
-				v.URL = line
-			} else {
-				v.URL = base + line
+			if height == "" {
+				continue
 			}
+			ref, err := url.Parse(line)
+			if err != nil {
+				height = ""
+				continue
+			}
+			v := s
+			v.URL = base.ResolveReference(ref).String()
+			v.Quality = height
 			variants = append(variants, v)
 			height = ""
 		}
@@ -155,8 +227,8 @@ func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if len(variants) == 0 {
-		return []Stream{s}, nil
+	if !master || len(variants) == 0 {
+		return nil, fmt.Errorf("not a master playlist: %s", s.URL)
 	}
 	return variants, nil
 }
