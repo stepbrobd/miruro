@@ -18,12 +18,20 @@ import (
 )
 
 const (
-	endpoint  = "https://www.miruro.tv"
-	userAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+	endpoint = "https://www.miruro.tv"
+	// UserAgent is the one browser identity shared by the pipe, the quality
+	// probe, and the stream proxy, so a CDN sees a single client across a
+	// playlist and its segments
+	UserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+	// maxPipeBody caps the decoded pipe response against a decompression bomb
+	// the largest real payload, One Piece, decodes to about 8.7 MB
+	maxPipeBody = 64 << 20
 )
 
 var (
-	// ErrBlocked is fatal, the WAF rejected the request
+	// ErrBlocked is fatal
+	// the WAF rejected the request
 	ErrBlocked = errors.New("cloudflare blocked request")
 	// ErrUpstream is recoverable and drives provider fallback
 	ErrUpstream = errors.New("miruro upstream unreachable")
@@ -41,9 +49,14 @@ type Client struct {
 }
 
 func New() *Client {
+	// a whole-request timeout spans the body read and truncates the largest
+	// episodes payload, so bound only the header wait
+	// the cloned default transport keeps HTTP/2 via ALPN, which passes the WAF
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Client{
 		Base: endpoint,
-		HTTP: &http.Client{Timeout: 60 * time.Second},
+		HTTP: &http.Client{Transport: tr},
 	}
 }
 
@@ -73,22 +86,30 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		// keep a cancelled context as a context error so callers can match it
+		// otherwise the fallback loop treats Ctrl-C as a recoverable failure
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 
-	if resp.StatusCode == http.StatusForbidden {
+	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
+	switch {
+	case resp.StatusCode == http.StatusForbidden && isHTML:
 		return nil, ErrBlocked
-	}
-	if resp.StatusCode >= 500 || resp.StatusCode == 444 {
+	case resp.StatusCode >= 400:
 		return nil, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
-	}
-	if strings.Contains(resp.Header.Get("content-type"), "text/html") {
+	case isHTML:
 		return nil, ErrUpstream
 	}
 
@@ -115,7 +136,14 @@ func decode(body []byte, obf string) ([]byte, error) {
 		return nil, err
 	}
 	defer zr.Close()
-	return io.ReadAll(zr)
+	out, err := io.ReadAll(io.LimitReader(zr, maxPipeBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxPipeBody {
+		return nil, fmt.Errorf("pipe response exceeds %d bytes", maxPipeBody)
+	}
+	return out, nil
 }
 
 func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
@@ -123,6 +151,7 @@ func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	if referer != "" {
 		req.Header.Set("Referer", referer)
 	}
@@ -130,7 +159,7 @@ func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
 }
 
 func setHeaders(h http.Header) {
-	h.Set("User-Agent", userAgent)
+	h.Set("User-Agent", UserAgent)
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("Accept-Language", "en-US,en;q=0.5")
 	h.Set("Referer", "https://www.miruro.tv/")
