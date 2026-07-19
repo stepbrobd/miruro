@@ -71,8 +71,10 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		// the variant is meaningless here since resolve prints the full subtitles
 		// array and leaves the attach decision to the caller
 		pin := ParsePin(resProvider)
+		// provider sets are per title, so a real code can be missing from this one
+		// fall back rather than fail, matching the watch path
 		if _, ok := cat.Providers[pin.Code]; !ok {
-			return fmt.Errorf("provider %q not in catalog", pin.Code)
+			fmt.Fprintf(os.Stderr, "provider %q not in catalog, using fallback order\n", pin.Code)
 		}
 		avail = orderPinned(avail, pin.Code)
 	}
