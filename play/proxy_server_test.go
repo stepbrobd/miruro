@@ -43,15 +43,17 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 	}
 	disguised := append([]byte("\x89PNG\r\n\x1a\n"+strings.Repeat("D", 244)), raw...)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base := srv.URL
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".ts") {
 			http.ServeContent(w, r, "seg.ts", time.Time{}, bytes.NewReader(disguised))
 			return
 		}
-		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", srv.URL)
-	}))
-	defer srv.Close()
+		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", base)
+	})
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -63,26 +65,28 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 	defer cancel()
 	play := exec.CommandContext(ctx, "mpv", "--no-config", "--vo=null", "--ao=null",
 		"--frames=1", "--msg-level=all=error",
-		px.URL(miruro.Stream{URL: srv.URL + "/media.m3u8", Kind: miruro.HLS}))
+		px.URL(miruro.Stream{URL: base + "/media.m3u8", Kind: miruro.HLS}))
 	if out, err := play.CombinedOutput(); err != nil {
 		t.Fatalf("mpv could not play the proxied stream: %v: %s", err, out)
 	}
 }
 
 func TestProxyServesNormalizedHLS(t *testing.T) {
-	var upstream *httptest.Server
-	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux2 := http.NewServeMux()
+	upstream := httptest.NewServer(mux2)
+	defer upstream.Close()
+	up := upstream.URL
+	mux2.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Referer") != "https://ref/" {
 			t.Errorf("referer not forwarded upstream: %q", r.Header.Get("Referer"))
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "media.m3u8"):
-			fmt.Fprintf(w, "#EXTM3U\n#EXTINF:1.0,\n%s/seg0.ts\n#EXT-X-ENDLIST\n", upstream.URL)
+			fmt.Fprintf(w, "#EXTM3U\n#EXTINF:1.0,\n%s/seg0.ts\n#EXT-X-ENDLIST\n", up)
 		case strings.HasSuffix(r.URL.Path, "seg0.ts"):
 			w.Write(append([]byte("\x89PNG-decoy-bytes"), tsBlob(12)...))
 		}
-	}))
-	defer upstream.Close()
+	})
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -90,9 +94,9 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 	}
 	defer px.Close()
 
-	playlistURL := px.URL(miruro.Stream{URL: upstream.URL + "/media.m3u8", Kind: miruro.HLS, Referer: "https://ref/"})
+	playlistURL := px.URL(miruro.Stream{URL: up + "/media.m3u8", Kind: miruro.HLS, Referer: "https://ref/"})
 	body := httpGetString(t, playlistURL)
-	if strings.Contains(body, upstream.URL) {
+	if strings.Contains(body, up) {
 		t.Errorf("segment URL not rewritten to proxy:\n%s", body)
 	}
 

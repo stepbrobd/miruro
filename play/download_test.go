@@ -30,20 +30,22 @@ func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
 		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
 	}
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base := srv.URL
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".ts") {
 			http.ServeFile(w, r, seg)
 			return
 		}
-		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", srv.URL)
-	}))
-	defer srv.Close()
+		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", base)
+	})
 
 	dir, name := t.TempDir(), "Show - E1"
 	if _, err := Download(context.Background(), http.DefaultClient,
-		miruro.Stream{URL: srv.URL + "/media.m3u8", Kind: miruro.HLS},
-		nil, dir, name, nil); err != nil {
+		miruro.Stream{URL: base + "/media.m3u8", Kind: miruro.HLS},
+		nil, dir, name, "", nil); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 
@@ -118,7 +120,7 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	}
 	missed, err := Download(context.Background(), http.DefaultClient,
 		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4},
-		subs, dir, name, nil)
+		subs, dir, name, "", nil)
 	if err != nil {
 		t.Fatalf("a missing sidecar must not fail the download: %v", err)
 	}
