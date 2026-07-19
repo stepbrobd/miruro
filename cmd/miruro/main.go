@@ -19,7 +19,6 @@ var (
 	flagEpisode  string
 	flagDownload bool
 	flagQuality  string
-	flagVLC      bool
 	flagDub      bool
 	flagContinue bool
 	flagProvider string
@@ -43,10 +42,9 @@ func init() {
 	f.StringVarP(&flagEpisode, "episode", "e", "", "Episode number or range, e.g. 5 or 5-8")
 	f.BoolVarP(&flagDownload, "download", "d", false, "Download instead of playing")
 	f.StringVarP(&flagQuality, "quality", "q", "", "Video quality, e.g. best or 1080p")
-	f.BoolVarP(&flagVLC, "vlc", "v", false, "Use VLC")
 	f.BoolVar(&flagDub, "dub", false, "Use dub instead of sub")
 	f.BoolVarP(&flagContinue, "continue", "c", false, "Resume from history")
-	f.StringVar(&flagProvider, "provider", "", "Pin a provider by code")
+	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
 	f.BoolVarP(&flagDelete, "delete", "D", false, "Clear watch history")
 	f.BoolVar(&flagAll, "all", false, "Select every episode, for use with --download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")

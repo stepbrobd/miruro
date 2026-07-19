@@ -2,7 +2,7 @@
 
 A command line client for watching anime from [miruro.tv](https://www.miruro.tv/),
 in the spirit of [ani-cli](https://github.com/pystardust/ani-cli). Search a title,
-pick an episode and a provider, and play it in mpv or vlc, or download it.
+pick an episode and a provider, and play it in mpv or IINA, or download it.
 
 Binary Cache:
 
@@ -30,8 +30,14 @@ miruro frieren --provider kiwi pin a provider
 miruro resolve 154587 -e 1    print a stream url for scripting, no playback
 ```
 
-Flags: `-e/--episode`, `-d/--download`, `-q/--quality`, `-v/--vlc`, `--dub`,
-`-c/--continue`, `--provider`, `-D/--delete`.
+Flags: `-e/--episode`, `-d/--download`, `-q/--quality`, `--dub`, `-c/--continue`,
+`--provider`, `-D/--delete`, `-v/--version`.
+
+`--provider` accepts a bare code (`kiwi`) or `code:variant` where variant is
+`soft` or `hard`. `soft` attaches the provider's external subtitle file when it
+ships one. `hard` plays the video as delivered, which is what you want for
+providers whose subtitles are already burned into the picture. A bare code
+means `soft`.
 
 Config lives at `$XDG_CONFIG_HOME/miruro/config.toml` with keys `player`, `quality`,
 `provider`, `download_dir`, `dub`, and is overridable through `MIRURO_*` environment
@@ -43,7 +49,7 @@ variables. History is stored at `$XDG_STATE_HOME/miruro/history.json`.
 nix profile install github:stepbrobd/miruro
 ```
 
-Runtime needs a player (`mpv`, or `vlc`, or `iina` on macOS) and `ffmpeg` for HLS
+Runtime needs a player (`mpv`, or `iina` on macOS) and `ffmpeg` for HLS
 downloads. Selection is in process, so no `fzf`. HTTP is native, so no `curl`.
 
 ## Develop

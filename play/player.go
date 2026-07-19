@@ -16,7 +16,6 @@ type Kind string
 
 const (
 	MPV  Kind = "mpv"
-	VLC  Kind = "vlc"
 	IINA Kind = "iina"
 )
 
@@ -25,10 +24,11 @@ type Player struct {
 	Bin  string
 }
 
-// Detect resolves a player, honouring prefer when given and installed,
-// otherwise choosing the platform default and falling back through mpv then vlc.
+// Detect resolves a player, honouring prefer when it names a supported player
+// that is installed, otherwise preferring IINA on macOS and falling back to mpv.
+// A stale prefer such as vlc is ignored rather than launched with mpv's flags.
 func Detect(prefer Kind) Player {
-	if prefer != "" {
+	if prefer == MPV || prefer == IINA {
 		if p, ok := lookup(prefer); ok {
 			return p
 		}
@@ -38,10 +38,8 @@ func Detect(prefer Kind) Player {
 			return p
 		}
 	}
-	for _, k := range []Kind{MPV, VLC} {
-		if p, ok := lookup(k); ok {
-			return p
-		}
+	if p, ok := lookup(MPV); ok {
+		return p
 	}
 	return Player{Kind: MPV, Bin: string(MPV)}
 }
@@ -69,25 +67,15 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 	}
 	cmd := exec.CommandContext(ctx, p.Bin, args...)
 	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
+// args carries no referer flag: the proxy injects the referer upstream, so every
+// URL a player sees is localhost.
 func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) ([]string, func()) {
-	switch p.Kind {
-	case VLC:
-		args := []string{"--play-and-exit", "--meta-title", title}
-		if s.Referer != "" {
-			args = append(args, "--http-referrer="+s.Referer)
-		}
-		for _, sub := range subs {
-			args = append(args, "--sub-file="+sub.File)
-		}
-		return append(args, s.URL), nil
-	case IINA:
+	if p.Kind == IINA {
 		args := []string{"--no-stdin", "--keep-running", "--mpv-force-media-title=" + title}
-		if s.Referer != "" {
-			args = append(args, "--mpv-referrer="+s.Referer)
-		}
 		for _, sub := range subs {
 			args = append(args, "--mpv-sub-file="+sub.File)
 		}
@@ -95,19 +83,15 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.Ski
 			return append(args, "--mpv-chapters-file="+f, s.URL), cleanup
 		}
 		return append(args, s.URL), nil
-	default:
-		args := []string{"--force-media-title=" + title}
-		if s.Referer != "" {
-			args = append(args, "--referrer="+s.Referer)
-		}
-		for _, sub := range subs {
-			args = append(args, "--sub-file="+sub.File)
-		}
-		if f, cleanup := chaptersFile(skips); f != "" {
-			return append(args, "--chapters-file="+f, s.URL), cleanup
-		}
-		return append(args, s.URL), nil
 	}
+	args := []string{"--force-media-title=" + title}
+	for _, sub := range subs {
+		args = append(args, "--sub-file="+sub.File)
+	}
+	if f, cleanup := chaptersFile(skips); f != "" {
+		return append(args, "--chapters-file="+f, s.URL), cleanup
+	}
+	return append(args, s.URL), nil
 }
 
 // chaptersFile writes an ffmetadata chapters file marking intro and outro so the

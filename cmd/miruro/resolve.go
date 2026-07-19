@@ -67,7 +67,13 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no provider has episode %s", num(ep))
 	}
 	if resProvider != "" {
-		avail = orderPinned(avail, resProvider)
+		// --provider accepts code:variant everywhere. orderPinned matches on the
+		// bare code and silently leaves the order alone on a miss, so an unsplit
+		// pin here resolves whichever provider happens to be first. The variant
+		// itself is meaningless to resolve, which prints the full subtitles array
+		// and leaves the attach decision to the caller.
+		code, _ := splitPin(resProvider)
+		avail = orderPinned(avail, code)
 	}
 
 	var last error
