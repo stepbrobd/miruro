@@ -111,10 +111,12 @@ func ffmpeg(ctx context.Context, srcURL, dest string, prog Progress) error {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return fmt.Errorf("ffmpeg is required to download hls streams")
 	}
+	// name the muxer explicitly because ffmpeg infers the output format from the
+	// file extension, and the .part suffix hides the real one
 	part := dest + ".part"
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-i", srcURL, "-c", "copy", "-y", "-loglevel", "error",
-		"-progress", "pipe:1", "-nostats", part)
+		"-progress", "pipe:1", "-nostats", "-f", "mp4", part)
 
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
