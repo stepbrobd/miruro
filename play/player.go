@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 
 	"ysun.co/miruro"
 )
@@ -62,8 +63,12 @@ func binaries(k Kind) []string {
 	return []string{string(k)}
 }
 
-func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle, title string) error {
-	cmd := exec.CommandContext(ctx, p.Bin, p.args(s, subs, title)...)
+func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) error {
+	args, cleanup := p.args(s, subs, skips, title)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	cmd := exec.CommandContext(ctx, p.Bin, args...)
 	if p.Detach {
 		return cmd.Start()
 	}
@@ -71,7 +76,7 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 	return cmd.Run()
 }
 
-func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, title string) []string {
+func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) ([]string, func()) {
 	switch p.Kind {
 	case VLC:
 		args := []string{"--play-and-exit", "--meta-title", title}
@@ -81,7 +86,7 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, title string) []st
 		for _, sub := range subs {
 			args = append(args, "--sub-file="+sub.File)
 		}
-		return append(args, s.URL)
+		return append(args, s.URL), nil
 	case IINA:
 		args := []string{"--no-stdin", "--keep-running", "--mpv-force-media-title=" + title}
 		if s.Referer != "" {
@@ -90,7 +95,10 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, title string) []st
 		for _, sub := range subs {
 			args = append(args, "--mpv-sub-file="+sub.File)
 		}
-		return append(args, s.URL)
+		if f, cleanup := chaptersFile(skips); f != "" {
+			return append(args, "--mpv-chapters-file="+f, s.URL), cleanup
+		}
+		return append(args, s.URL), nil
 	default:
 		args := []string{"--force-media-title=" + title}
 		if s.Referer != "" {
@@ -99,8 +107,50 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, title string) []st
 		for _, sub := range subs {
 			args = append(args, "--sub-file="+sub.File)
 		}
-		return append(args, s.URL)
+		if f, cleanup := chaptersFile(skips); f != "" {
+			return append(args, "--chapters-file="+f, s.URL), cleanup
+		}
+		return append(args, s.URL), nil
 	}
+}
+
+// chaptersFile writes an ffmetadata chapters file marking intro and outro so the
+// player can jump past them, and returns a cleanup that removes it.
+func chaptersFile(skips []miruro.SkipRange) (string, func()) {
+	if len(skips) == 0 {
+		return "", nil
+	}
+
+	type mark struct {
+		at    float64
+		title string
+	}
+	var marks []mark
+	for _, s := range skips {
+		start := "Intro"
+		if s.Kind == miruro.Outro {
+			start = "Outro"
+		}
+		marks = append(marks, mark{s.Start, start}, mark{s.End, "Episode"})
+	}
+	sort.Slice(marks, func(i, j int) bool { return marks[i].at < marks[j].at })
+
+	f, err := os.CreateTemp("", "miruro-*.ffmeta")
+	if err != nil {
+		return "", nil
+	}
+	fmt.Fprintln(f, ";FFMETADATA1")
+	for i, m := range marks {
+		end := m.at + 1
+		if i+1 < len(marks) {
+			end = marks[i+1].at
+		}
+		fmt.Fprintf(f, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n",
+			int64(m.at*1000), int64(end*1000), m.title)
+	}
+	name := f.Name()
+	f.Close()
+	return name, func() { os.Remove(name) }
 }
 
 func (p Player) String() string { return fmt.Sprintf("%s (%s)", p.Kind, p.Bin) }

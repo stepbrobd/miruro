@@ -78,15 +78,15 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no %s episodes available", category)
 	}
 
-	ep, err := chooseEpisode(numbers, startEp)
+	eps, err := chooseEpisodes(numbers, startEp)
 	if err != nil {
 		return err
 	}
 
 	if flagDownload {
-		return fetch(ctx, client, cat, title, ep, category, pinned, cfg.DownloadDir, cfg.Quality)
+		return downloadEpisodes(ctx, client, cat, title, eps, category, pinned, cfg)
 	}
-	return watch(ctx, client, st, cat, anilistID, title, numbers, ep, category, pinned, cfg)
+	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pinned, cfg)
 }
 
 func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
@@ -138,43 +138,61 @@ func resume(st *store) (int, string, miruro.Category, string, float64, error) {
 	return e.AnilistID, e.Title, e.Category, e.Provider, e.Episode, nil
 }
 
-func chooseEpisode(numbers []float64, start float64) (float64, error) {
+func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
+	if flagAll {
+		return numbers, nil
+	}
 	if flagEpisode != "" {
-		ep, err := parseEpisode(flagEpisode)
-		if err != nil {
-			return 0, err
-		}
-		if contains(numbers, ep) {
-			return ep, nil
-		}
-		return 0, fmt.Errorf("episode %s not available", num(ep))
+		return parseEpisodes(flagEpisode, numbers)
 	}
 	if start >= 0 && contains(numbers, start) {
-		return start, nil
+		return []float64{start}, nil
 	}
-	return ui.Select("Select episode", numbers, num)
+	ep, err := ui.Select("Select episode", numbers, num)
+	if err != nil {
+		return nil, err
+	}
+	return []float64{ep}, nil
 }
 
-func fetch(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, ep float64, category miruro.Category, pinned, dir, quality string) error {
-	res, prov, err := resolve(ctx, client, cat, ep, category, pinned)
-	if err != nil {
-		return err
+func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, eps []float64, category miruro.Category, pinned string, cfg config) error {
+	labels := make([]string, len(eps))
+	for i, ep := range eps {
+		labels[i] = "E" + num(ep)
 	}
-	stream, err := client.Select(ctx, res, quality)
-	if err != nil {
-		return err
+
+	errs := ui.Downloads(labels, flagParallel, func(i int, report func(done, total int64)) error {
+		ep := eps[i]
+		res, _, err := autoResolve(ctx, client, cat, ep, category, pinned)
+		if err != nil {
+			return err
+		}
+		stream, err := client.Select(ctx, res, cfg.Quality)
+		if err != nil {
+			return err
+		}
+		name := fmt.Sprintf("%s - E%s", title, num(ep))
+		return play.Download(ctx, client.HTTP, stream, res.Subtitles, cfg.DownloadDir, name, report)
+	})
+
+	var failed int
+	for _, err := range errs {
+		if err != nil {
+			failed++
+		}
 	}
-	log.Info("downloading", "title", title, "ep", num(ep), "provider", prov, "softsub", res.Softsub())
-	name := fmt.Sprintf("%s - E%s", title, num(ep))
-	if err := play.Download(ctx, client.HTTP, stream, res.Subtitles, dir, name); err != nil {
-		return err
+	if failed > 0 {
+		return fmt.Errorf("%d of %d downloads failed", failed, len(eps))
 	}
-	log.Info("saved", "dir", dir)
+	log.Info("saved", "dir", cfg.DownloadDir, "episodes", len(eps))
 	return nil
 }
 
-func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers []float64, ep float64, category miruro.Category, pinned string, cfg config) error {
+func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pinned string, cfg config) error {
 	player := detectPlayer(cfg)
+	ep := queue[0]
+	queue = queue[1:]
+
 	for {
 		res, prov, err := resolve(ctx, client, cat, ep, category, pinned)
 		if err != nil {
@@ -187,11 +205,22 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			return err
 		}
 
+		var skips []miruro.SkipRange
+		if flagSkip {
+			skips = episodeSkips(cat, ep)
+		}
+
 		log.Info("playing", "title", title, "ep", num(ep), "provider", prov, "player", player.Kind, "softsub", res.Softsub())
-		if err := player.Play(ctx, stream, res.Subtitles, fmt.Sprintf("%s Episode %s", title, num(ep))); err != nil {
+		if err := player.Play(ctx, stream, res.Subtitles, skips, fmt.Sprintf("%s Episode %s", title, num(ep))); err != nil {
 			return err
 		}
 		_ = st.save(entry{AnilistID: anilistID, Title: title, Provider: prov, Category: category, Episode: ep})
+
+		if len(queue) > 0 {
+			ep = queue[0]
+			queue = queue[1:]
+			continue
+		}
 
 		next, stop, err := control(numbers, ep, title)
 		if err != nil {
@@ -258,18 +287,27 @@ func control(numbers []float64, ep float64, title string) (step, bool, error) {
 	}
 }
 
+// resolve prompts for a provider when none is pinned, then resolves with fallback.
 func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
-	avail := cat.Available(ep, category)
-	if len(avail) == 0 {
-		return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
-	}
-
 	if pinned == "" {
+		avail := cat.Available(ep, category)
+		if len(avail) == 0 {
+			return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
+		}
 		p, err := ui.Select("Select provider", avail, func(x miruro.Provider) string { return x.Code })
 		if err != nil {
 			return nil, "", err
 		}
 		pinned = p.Code
+	}
+	return autoResolve(ctx, client, cat, ep, category, pinned)
+}
+
+// autoResolve tries the pinned provider first then the rest, never prompting.
+func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
+	avail := cat.Available(ep, category)
+	if len(avail) == 0 {
+		return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
 	}
 
 	var last error
@@ -284,7 +322,6 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 				return nil, "", err
 			}
 			last = err
-			log.Warn("provider unavailable, trying next", "provider", p.Code)
 			continue
 		}
 		if len(res.Streams) == 0 {
@@ -297,6 +334,16 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 		last = fmt.Errorf("no source resolved for episode %s", num(ep))
 	}
 	return nil, "", last
+}
+
+func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
+	var out []miruro.SkipRange
+	for _, s := range cat.Aniskip {
+		if s.Episode == ep {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func detectPlayer(cfg config) play.Player {
@@ -344,12 +391,33 @@ func neighbor(numbers []float64, ep float64, dir int) (float64, bool) {
 	return 0, false
 }
 
-func parseEpisode(s string) (float64, error) {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '-'); i > 0 {
-		s = s[:i]
+func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
+	spec = strings.TrimSpace(spec)
+	if i := strings.IndexByte(spec, '-'); i > 0 {
+		lo, err1 := strconv.ParseFloat(strings.TrimSpace(spec[:i]), 64)
+		hi, err2 := strconv.ParseFloat(strings.TrimSpace(spec[i+1:]), 64)
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("invalid range %q", spec)
+		}
+		var out []float64
+		for _, n := range numbers {
+			if n >= lo && n <= hi {
+				out = append(out, n)
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("no episodes in range %s", spec)
+		}
+		return out, nil
 	}
-	return strconv.ParseFloat(s, 64)
+	n, err := strconv.ParseFloat(spec, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid episode %q", spec)
+	}
+	if !contains(numbers, n) {
+		return nil, fmt.Errorf("episode %s not available", num(n))
+	}
+	return []float64{n}, nil
 }
 
 func num(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
