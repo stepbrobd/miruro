@@ -73,7 +73,14 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 	cmd.Stderr = os.Stderr
 	// interrupt rather than kill so mpv restores the terminal and flushes state
 	// WaitDelay still forces a kill if it ignores the signal
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	// windows cannot deliver an interrupt, and the failed signal would otherwise
+	// stall the whole WaitDelay before the kill lands
+	cmd.Cancel = func() error {
+		if runtime.GOOS == "windows" {
+			return cmd.Process.Kill()
+		}
+		return cmd.Process.Signal(os.Interrupt)
+	}
 	cmd.WaitDelay = 5 * time.Second
 	return cmd.Run()
 }
