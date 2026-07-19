@@ -64,7 +64,7 @@ func TestRewriteKeyURI(t *testing.T) {
 	}
 }
 
-// a declared key makes segments ciphertext, which must not be sync scanned.
+// a declared key makes segments ciphertext, which the sync scan must leave alone
 func TestRewriteMarksEncryptedSegments(t *testing.T) {
 	plain := []byte("#EXTM3U\n#EXTINF:9.9,\nseg0.ts\n")
 	if got := childKind(plain); got != segment {
@@ -82,8 +82,8 @@ func TestRewriteMarksEncryptedSegments(t *testing.T) {
 	}
 }
 
-// A non-http(s) key URI is data the player decodes itself, so it must survive
-// rewriting untouched rather than become a proxy URL that only 502s.
+// a non-http key URI is decoded by the player itself, so it survives rewriting
+// untouched instead of becoming a proxy URL that only 502s
 func TestRewriteSkipsDataURI(t *testing.T) {
 	media := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"data:text/plain;base64,AAAA\"\n#EXTINF:1,\nseg0.ts\n"
 	out := rewritten(fakeProxy(), media, "https://cdn.example/s/media.m3u8")
@@ -93,7 +93,7 @@ func TestRewriteSkipsDataURI(t *testing.T) {
 }
 
 // EXT-X-MEDIA names a media playlist whatever the uri looks like, so an
-// extensionless rendition still has to be rewritten as one.
+// extensionless rendition still has to be rewritten as one
 func TestRewriteExtensionlessRendition(t *testing.T) {
 	master := "#EXTM3U\n" +
 		"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",URI=\"audio/eng/index?t=1\"\n" +

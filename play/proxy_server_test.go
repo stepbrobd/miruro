@@ -49,8 +49,8 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 	}
 }
 
-// A playlist served via a redirect must resolve its relative children against
-// the final URL, not the one first requested.
+// a playlist served through a redirect resolves its relative children against
+// the final URL rather than the one first requested
 func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

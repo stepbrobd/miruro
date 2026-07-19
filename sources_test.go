@@ -29,13 +29,13 @@ func TestPickQuality(t *testing.T) {
 			t.Errorf("pickQuality(%q) = (%q, %v), want (%q, %v)", q, s.URL, ok, wantURL, wantOK)
 		}
 	}
-	check("", "1440", true)      // default is best
-	check("best", "1440", true)  // tallest
-	check("worst", "360", true)  // shortest
-	check("720p", "720", true)   // exact
-	check("720", "720", true)    // exact, no suffix
-	check("144p", "", false)     // exact: 144 must NOT match 1440
-	check("2160p", "", false)    // absent height
+	check("", "1440", true)     // default is best
+	check("best", "1440", true) // tallest
+	check("worst", "360", true) // shortest
+	check("720p", "720", true)  // exact
+	check("720", "720", true)   // exact, no suffix
+	check("144p", "", false)    // 144 must not match 1440
+	check("2160p", "", false)   // absent height
 
 	if _, ok := pickQuality([]Stream{{Quality: ""}, {Quality: "auto"}}, "720p"); ok {
 		t.Error("pickQuality matched on streams with no usable height label")

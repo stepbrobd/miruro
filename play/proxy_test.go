@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// tsBlob builds n aligned transport stream packets.
+// tsBlob builds n aligned transport stream packets
 func tsBlob(n int) []byte {
 	out := make([]byte, n*tsPacket)
 	for i := range n {
@@ -33,7 +33,7 @@ func TestNormalizeSegment(t *testing.T) {
 }
 
 // an encrypted segment is indistinguishable from random bytes, so a short sync
-// run would match often enough to truncate ciphertext and break decryption.
+// run would match often enough to truncate ciphertext and break decryption
 func TestNormalizeSegmentKeepsRandomPayload(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	for i := range 500 {

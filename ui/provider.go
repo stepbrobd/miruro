@@ -96,8 +96,9 @@ func detail(state int, label string) string {
 }
 
 // PickProvider lists provider codes immediately and fills each row's label as
-// probe returns, then returns the selected index. probe runs once per provider
-// in its own goroutine and reports a label and whether the provider is usable.
+// probe returns, then returns the selected index
+// probe runs once per provider in its own goroutine and reports a label and
+// whether the provider is usable
 func PickProvider(title string, codes []string, probe func(i int) (string, bool)) (int, error) {
 	m := picker{
 		title:  title,

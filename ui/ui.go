@@ -1,4 +1,4 @@
-// Package ui is the in-process selection surface, replacing external menu tools.
+// Package ui is the in-process selection surface, replacing external menu tools
 package ui
 
 import (
@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
-// ErrAborted is returned when the user cancels a selection.
+// ErrAborted is returned when the user cancels a selection
 var ErrAborted = huh.ErrUserAborted
 
 func Prompt(title string) (string, error) {
@@ -22,8 +22,8 @@ func Prompt(title string) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-// Select shows a filterable list and returns the chosen item. it selects by
-// index so T need not be comparable.
+// Select shows a filterable list and returns the chosen item
+// it selects by index so T need not be comparable
 func Select[T any](title string, items []T, label func(T) string) (T, error) {
 	var zero T
 	if len(items) == 0 {
