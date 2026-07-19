@@ -35,7 +35,7 @@ func (m Media) Title() string {
 	return m.Romaji
 }
 
-// Search resolves a query to AniList media through the public GraphQL API.
+// Search resolves a query to AniList media through the public GraphQL API
 func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 	payload, err := json.Marshal(map[string]any{
 		"query":     searchQuery,
@@ -57,6 +57,10 @@ func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// a gateway html page or a 429 would otherwise fail as a json parse error
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("anilist: status %d", resp.StatusCode)
+	}
 
 	var out struct {
 		Data struct {
