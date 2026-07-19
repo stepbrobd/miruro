@@ -39,12 +39,31 @@ type SkipRange struct {
 
 // skipEntry is one raw aniskip row
 // the api returns one per upstream per interval, disambiguated by votes
+// Length is that upstream's own episode duration, which the range is relative to
 type skipEntry struct {
 	Episode float64 `json:"episode"`
 	Type    string  `json:"type"`
 	Start   float64 `json:"start"`
 	End     float64 `json:"end"`
 	Votes   int     `json:"votes"`
+	Length  float64 `json:"episode_length"`
+}
+
+// plausible rejects a range whose position contradicts its kind
+// upstreams mislabel rows, and a highly voted "ed" starting in the opening
+// seconds would otherwise win and mark the wrong span
+func (e skipEntry) plausible() bool {
+	if e.End <= e.Start {
+		return false
+	}
+	if e.Length <= 0 {
+		return true
+	}
+	mid := e.Length / 2
+	if SkipKind(e.Type) == Outro {
+		return e.Start >= mid
+	}
+	return e.Start < mid
 }
 
 type Provider struct {
@@ -102,8 +121,9 @@ func (c *Client) Episodes(ctx context.Context, anilistID int) (*Catalog, error) 
 
 // bestSkips reduces raw aniskip rows to at most one intro and one outro per
 // episode
-// off-enum types such as recap and mixed are dropped, and among the rows for one
-// episode and kind the highest-voted one wins
+// off-enum types such as recap and mixed are dropped, rows whose position
+// contradicts their kind are dropped, and among what remains for one episode and
+// kind the highest-voted row wins
 func bestSkips(rows []skipEntry) []SkipRange {
 	type key struct {
 		ep   float64
@@ -112,7 +132,7 @@ func bestSkips(rows []skipEntry) []SkipRange {
 	best := map[key]skipEntry{}
 	for _, r := range rows {
 		kind := SkipKind(r.Type)
-		if kind != Intro && kind != Outro {
+		if kind != Intro && kind != Outro || !r.plausible() {
 			continue
 		}
 		k := key{r.Episode, kind}

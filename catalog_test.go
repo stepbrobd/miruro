@@ -24,6 +24,28 @@ func TestBestSkips(t *testing.T) {
 	}
 }
 
+// a mislabelled row can outvote the real one, so position decides first
+// this is real payload shape, an "ed" starting at 0.9s of a 1470s episode
+func TestBestSkipsRejectsMisplacedRange(t *testing.T) {
+	rows := []skipEntry{
+		{Episode: 1, Type: "ed", Start: 0.864, End: 90.864, Votes: 1, Length: 1470},
+		{Episode: 1, Type: "ed", Start: 1326.083, End: 1416.083, Votes: -1, Length: 1422},
+		{Episode: 1, Type: "op", Start: 275.794, End: 365.794, Votes: -1, Length: 1423},
+		{Episode: 1, Type: "op", Start: 1300, End: 1390, Votes: 9, Length: 1423},
+	}
+	got := bestSkips(rows)
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 ranges, got %d: %+v", len(got), got)
+	}
+	if got[0].Kind != Intro || got[0].Start != 275.794 {
+		t.Errorf("intro should be the early row despite fewer votes: %+v", got[0])
+	}
+	if got[1].Kind != Outro || got[1].Start != 1326.083 {
+		t.Errorf("outro should be the late row despite fewer votes: %+v", got[1])
+	}
+}
+
 func TestBestSkipsEmpty(t *testing.T) {
 	if got := bestSkips(nil); len(got) != 0 {
 		t.Errorf("want no ranges, got %+v", got)
