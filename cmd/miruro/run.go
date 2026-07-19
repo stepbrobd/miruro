@@ -61,7 +61,9 @@ func run(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		anilistID, title, category, startEp = e.AnilistID, e.Title, e.Category, e.Episode
-		if e.Provider != "" {
+		// an explicit --provider overrides the resumed pin
+		// so a saved bonk:soft can be corrected with --provider bonk:hard
+		if e.Provider != "" && flagProvider == "" {
 			pinned = e.Provider
 		}
 	} else {
@@ -382,28 +384,29 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 	}
 
 	// the picker shows codes at once and fills each label as its probe returns
-	// a probe only knows whether a .vtt exists, so it reports that and leaves the
-	// soft or hard choice to the follow-up prompt
-	probe := func(i int) (string, bool) {
+	// a provider that ships a .vtt gets a soft or hard follow-up inside the same
+	// program, so the choice cannot be skipped by a leaked keypress
+	probe := func(i int) (string, bool, bool) {
 		p := avail[i]
 		e := find(p.Episodes(category), ep)
 		if e == nil {
-			return "unavailable", false
+			return "unavailable", false, false
 		}
 		pctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		res, err := client.Sources(pctx, e.ID, p.Code, category)
 		if err != nil || !res.Playable() {
-			return "unavailable", false
+			return "unavailable", false, false
 		}
+		subs := res.Softsub()
 		has := "no subs"
-		if res.Softsub() {
+		if subs {
 			has = "subs"
 		}
-		return fmt.Sprintf("%s %s", category, has), true
+		return fmt.Sprintf("%s %s", category, has), true, subs
 	}
 
-	idx, err := ui.PickProvider("Select provider", codes, probe)
+	idx, variant, err := ui.PickProvider("Select provider", codes, probe)
 	if err != nil {
 		return nil, "", pin, err
 	}
@@ -412,21 +415,7 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 	if err != nil {
 		return nil, "", pin, err
 	}
-
-	variant := Soft
-	if len(res.Subtitles) > 0 {
-		choice, err := ui.Select("Subtitles", []Variant{Soft, Hard}, func(v Variant) string {
-			if v == Soft {
-				return "soft, attach subtitle file"
-			}
-			return "hard, subtitles already in the picture"
-		})
-		if err != nil {
-			return nil, "", pin, err
-		}
-		variant = choice
-	}
-	return res, served, Pin{Code: picked, Variant: variant}, nil
+	return res, served, Pin{Code: picked, Variant: Variant(variant)}, nil
 }
 
 // autoResolve tries the pinned provider first then the rest, never prompting
