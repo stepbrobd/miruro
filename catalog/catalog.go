@@ -125,6 +125,22 @@ func Fetch(ctx context.Context, c *pipe.Client, anilistID int) (*Catalog, error)
 	return cat, nil
 }
 
+// Numbers is the sorted union of episode numbers across providers for a category.
+func (c *Catalog) Numbers(cat Category) []float64 {
+	seen := map[float64]struct{}{}
+	for _, p := range c.Providers {
+		for _, e := range p.Episodes(cat) {
+			seen[e.Number] = struct{}{}
+		}
+	}
+	out := make([]float64, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Float64s(out)
+	return out
+}
+
 // Available lists providers carrying the episode in the category, ordered by code.
 // the default order is a placeholder, provider ranking is an author-owned decision
 func (c *Catalog) Available(number float64, cat Category) []Provider {

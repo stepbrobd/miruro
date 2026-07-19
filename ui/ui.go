@@ -3,12 +3,25 @@ package ui
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 )
 
 // ErrAborted is returned when the user cancels a selection.
 var ErrAborted = huh.ErrUserAborted
+
+// Prompt reads a single line of free text.
+func Prompt(title string) (string, error) {
+	var s string
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title(title).Value(&s),
+	)).WithTheme(theme())
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(s), nil
+}
 
 // Select shows a filterable list and returns the chosen item. it selects by
 // index so T need not be comparable.
