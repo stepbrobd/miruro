@@ -299,10 +299,23 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			if err != nil {
 				return err
 			}
-			continue
+		} else {
+			ep = next.ep
 		}
-		ep = next.ep
+		queue = ahead(queue, ep)
 	}
+}
+
+// ahead re-anchors the batch queue to ep
+// the queue holds only the episodes still in front of the current one, so a
+// replay or a provider change leaves it whole while a manual jump discards
+// whatever it moved past
+func ahead(queue []float64, ep float64) []float64 {
+	i := slices.IndexFunc(queue, func(q float64) bool { return q > ep })
+	if i < 0 {
+		return nil
+	}
+	return queue[i:]
 }
 
 // applied is the subtitle variant for one playback
