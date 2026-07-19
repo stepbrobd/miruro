@@ -31,7 +31,7 @@ miruro resolve 154587 -e 1    print a stream url for scripting, no playback
 ```
 
 Flags: `-e/--episode`, `-d/--download`, `-q/--quality`, `--dub`, `-c/--continue`,
-`--provider`, `-D/--delete`, `-v/--version`.
+`--provider`, `--all`, `-p/--parallel`, `--skip`, `-D/--delete`, `-v/--version`.
 
 `--provider` accepts a bare code (`kiwi`) or `code:variant` where variant is
 `soft` or `hard`. `soft` attaches the provider's external subtitle file when it
@@ -58,5 +58,4 @@ downloads. Selection is in process, so no `fzf`. HTTP is native, so no `curl`.
 nix develop
 go run ./cmd/miruro frieren
 go test ./...                 unit tests
-go test -tags live ./...      live tests against the real api
 ```
