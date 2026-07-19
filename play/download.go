@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,10 +24,12 @@ import (
 type Progress func(done, total int64)
 
 // Download writes the video and one sidecar per subtitle track
+// cache names a directory for hls segments, so an interrupted episode resumes
+// from what it already fetched, and an empty cache disables that
 // it reports how many sidecars failed so the caller can summarise the run, and
 // a failure is warned rather than returned because the video is the deliverable
 // and an episode already on disk must not be discarded over a missing sidecar
-func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name string, prog Progress) (int, error) {
+func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name, cache string, prog Progress) (int, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
@@ -39,7 +42,7 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 			return 0, err
 		}
 	case miruro.HLS:
-		if err := ffmpeg(ctx, s.URL, dest, prog); err != nil {
+		if err := hls(ctx, hc, s.URL, dest, cache, prog); err != nil {
 			return 0, err
 		}
 	default:
@@ -116,21 +119,37 @@ func (r *reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// ffmpeg remuxes an hls stream to dest atomically
+// hls prefers the resumable segment cache and falls back to handing the
+// playlist straight to ffmpeg
+// a playlist this package cannot take apart is still downloadable, it just
+// starts over when interrupted
+func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog Progress) error {
+	if cache != "" {
+		err := cachedHLS(ctx, hc, srcURL, dest, cache, prog)
+		if !errors.Is(err, errNoCache) {
+			return err
+		}
+		log.Debug("playlist is not cacheable, downloading without resume", "dest", dest)
+	}
+	return runFFmpeg(ctx, dest, prog, "-i", srcURL)
+}
+
+// runFFmpeg remuxes the given input to dest atomically
 // its stderr is captured rather than inherited because the downloads TUI owns
 // the terminal, and its error output would scribble over the progress bars
 // any failure is surfaced through the returned error, which the TUI shows on
 // the task row
-func ffmpeg(ctx context.Context, srcURL, dest string, prog Progress) error {
+func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string) error {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return fmt.Errorf("ffmpeg is required to download hls streams")
 	}
 	// name the muxer explicitly because ffmpeg infers the output format from the
 	// file extension, and the .part suffix hides the real one
 	part := dest + ".part"
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-i", srcURL, "-c", "copy", "-y", "-loglevel", "error",
+	args := append(append([]string{}, input...),
+		"-c", "copy", "-y", "-loglevel", "error",
 		"-progress", "pipe:1", "-nostats", "-f", "mp4", part)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
@@ -150,6 +169,7 @@ func ffmpeg(ctx context.Context, srcURL, dest string, prog Progress) error {
 			}
 		}
 	}
+	// a scan error only costs progress updates, so the exit status decides
 	if err := cmd.Wait(); err != nil {
 		os.Remove(part)
 		if msg := strings.TrimSpace(errBuf.String()); msg != "" {

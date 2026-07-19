@@ -40,6 +40,9 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagDelete {
 		return st.clear()
 	}
+	if flagDeleteCache {
+		return clearCache()
+	}
 
 	client := miruro.New()
 
@@ -104,7 +107,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagDownload {
-		return downloadEpisodes(ctx, client, cat, title, eps, category, pin, cfg)
+		return downloadEpisodes(ctx, client, cat, anilistID, title, eps, category, pin, cfg)
 	}
 	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pin, cfg)
 }
@@ -174,7 +177,7 @@ func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
 	return []float64{ep}, nil
 }
 
-func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, eps []float64, category miruro.Category, pin Pin, cfg config) error {
+func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, anilistID int, title string, eps []float64, category miruro.Category, pin Pin, cfg config) error {
 	px, err := play.StartProxy(ctx)
 	if err != nil {
 		return err
@@ -208,7 +211,14 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
-		missed, err := play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, report)
+		// a cache directory that cannot be derived only costs resumption, so the
+		// download still proceeds without one
+		cache, err := cacheDir(anilistID, ep, category, served, cfg.Quality)
+		if err != nil {
+			log.Warn("segment cache unavailable, downloads will not resume", "err", err)
+			cache = ""
+		}
+		missed, err := play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, cache, report)
 		if err != nil {
 			return err
 		}

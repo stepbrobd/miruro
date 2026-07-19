@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -76,6 +78,47 @@ func (s *store) save(e entry) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Clean(s.path))
+}
+
+// cacheDir names the segment directory for one episode
+// category, provider and quality are all part of the key because each selects a
+// different rendition, and reusing one for another would splice a video out of
+// the wrong source
+func cacheDir(anilistID int, ep float64, category miruro.Category, provider, quality string) (string, error) {
+	root, err := xdg.StateFile("miruro/segments")
+	if err != nil {
+		return "", err
+	}
+	if quality == "" {
+		quality = "best"
+	}
+	key := fmt.Sprintf("%d-e%s-%s-%s-%s", anilistID, num(ep), category, provider, quality)
+	return filepath.Join(root, safeKey(key)), nil
+}
+
+// safeKey reduces a cache key to one path component
+func safeKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.':
+			return r
+		}
+		return '_'
+	}, s)
+}
+
+// clearCache drops every cached segment directory
+// the cache is only ever a resumption aid, so removing it can lose progress but
+// never a finished download
+func clearCache() error {
+	root, err := xdg.StateFile("miruro/segments")
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(root); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *store) clear() error {

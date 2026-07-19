@@ -16,17 +16,18 @@ import (
 var version = "dev"
 
 var (
-	flagEpisode  string
-	flagDownload bool
-	flagQuality  string
-	flagDub      bool
-	flagContinue bool
-	flagProvider string
-	flagDelete   bool
-	flagAll      bool
-	flagParallel int
-	flagSkip     bool
-	flagVerbose  bool
+	flagEpisode     string
+	flagDownload    bool
+	flagQuality     string
+	flagDub         bool
+	flagContinue    bool
+	flagProvider    string
+	flagDelete      bool
+	flagDeleteCache bool
+	flagAll         bool
+	flagParallel    int
+	flagSkip        bool
+	flagVerbose     bool
 )
 
 var root = &cobra.Command{
@@ -47,6 +48,7 @@ func init() {
 	f.BoolVarP(&flagContinue, "continue", "c", false, "Resume from history")
 	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
 	f.BoolVarP(&flagDelete, "delete", "D", false, "Clear watch history")
+	f.BoolVar(&flagDeleteCache, "delete-cache", false, "Clear cached download segments")
 	f.BoolVar(&flagAll, "all", false, "Select every episode, for use with --download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")
 	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as mpv chapters via aniskip")
