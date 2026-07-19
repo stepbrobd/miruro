@@ -73,6 +73,10 @@ func (m picker) providerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 	case "enter":
+		// wait for the probe rather than defaulting to soft on a half-drawn row
+		if m.state[m.cursor] == pending {
+			return m, nil
+		}
 		// only a provider that resolved with a subtitle file needs the choice
 		// everything else pins soft, which attaches nothing when there is nothing
 		if m.state[m.cursor] == resolved && m.subs[m.cursor] {
