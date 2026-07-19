@@ -83,7 +83,9 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	if err := os.WriteFile(local, []byte(pl.localise(dir, key)), 0o644); err != nil {
 		return err
 	}
-	if err := remux(ctx, local, dest, prog); err != nil {
+	// the remux reports its own output size, which would send the bar backwards
+	// after the fetch already counted every segment
+	if err := remux(ctx, local, dest, nil); err != nil {
 		return err
 	}
 	// the episode is on disk, so the segments are dead weight
