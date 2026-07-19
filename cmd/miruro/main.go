@@ -26,6 +26,7 @@ var (
 	flagAll      bool
 	flagParallel int
 	flagSkip     bool
+	flagVerbose  bool
 )
 
 var root = &cobra.Command{
@@ -49,6 +50,16 @@ func init() {
 	f.BoolVar(&flagAll, "all", false, "Select every episode, for use with --download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")
 	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as mpv chapters via aniskip")
+	root.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "Log resolution and playback detail")
+
+	// keep routine progress quiet by default, warnings and errors still show
+	root.PersistentPreRun = func(*cobra.Command, []string) {
+		if flagVerbose {
+			log.SetLevel(log.DebugLevel)
+		} else {
+			log.SetLevel(log.WarnLevel)
+		}
+	}
 }
 
 func main() {
