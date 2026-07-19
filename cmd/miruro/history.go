@@ -34,11 +34,16 @@ func openStore() (*store, error) {
 
 func (s *store) load() ([]entry, error) {
 	data, err := os.ReadFile(s.path)
-	if os.IsNotExist(err) || len(data) == 0 {
+	if os.IsNotExist(err) {
 		return nil, nil
 	}
+	// a read error must propagate
+	// treating it as empty would let a later save clobber an unreadable file
 	if err != nil {
 		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
 	}
 	var entries []entry
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -47,7 +52,7 @@ func (s *store) load() ([]entry, error) {
 	return entries, nil
 }
 
-// save upserts by AnilistID and keeps the most recent entry first.
+// save upserts by AnilistID and keeps the most recent entry first
 func (s *store) save(e entry) error {
 	e.Updated = time.Now()
 	entries, err := s.load()
@@ -74,5 +79,9 @@ func (s *store) save(e entry) error {
 }
 
 func (s *store) clear() error {
-	return os.Remove(s.path)
+	// an absent history is already the requested end state
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
