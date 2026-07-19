@@ -1,6 +1,7 @@
 package play
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,11 @@ func fakeProxy() *Proxy {
 }
 
 func rewritten(p *Proxy, body, base string) string {
-	return string(p.rewrite([]byte(body), target{URL: base, Referer: "https://ref/"}))
+	u, err := url.Parse(base)
+	if err != nil {
+		panic(err)
+	}
+	return string(p.rewrite([]byte(body), "https://ref/", u))
 }
 
 func TestRewriteMasterPlaylist(t *testing.T) {
@@ -74,6 +79,16 @@ func TestRewriteMarksEncryptedSegments(t *testing.T) {
 	none := []byte("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:9.9,\nseg0.ts\n")
 	if got := childKind(none); got != segment {
 		t.Errorf("METHOD=NONE child kind = %q, want %q", got, segment)
+	}
+}
+
+// A non-http(s) key URI is data the player decodes itself, so it must survive
+// rewriting untouched rather than become a proxy URL that only 502s.
+func TestRewriteSkipsDataURI(t *testing.T) {
+	media := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"data:text/plain;base64,AAAA\"\n#EXTINF:1,\nseg0.ts\n"
+	out := rewritten(fakeProxy(), media, "https://cdn.example/s/media.m3u8")
+	if !strings.Contains(out, `URI="data:text/plain;base64,AAAA"`) {
+		t.Errorf("data: key URI should pass through untouched:\n%s", out)
 	}
 }
 

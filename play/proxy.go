@@ -17,29 +17,30 @@ import (
 	"ysun.co/miruro"
 )
 
-const userAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-
 const (
 	tsPacket = 188
 	syncRun  = 8
-	scanHead = 4096
+	// scanHead bounds how far into a body the decoy scan looks
+	// generous enough to clear a real image prefix while keeping the worst-case
+	// scan of a sync-free body cheap
+	scanHead = 256 * 1024
 )
 
 var errToken = errors.New("bad token")
 
-// kind selects how the proxy treats an upstream body.
+// kind selects how the proxy treats an upstream body
 type kind string
 
 const (
 	playlist kind = "playlist"
-	segment  kind = "segment" // ts, may carry a decoy prefix
-	cipher   kind = "cipher"  // encrypted ts, altering it breaks block alignment
-	opaque   kind = "opaque"  // byte relay, forwards range
+	segment  kind = "segment" // TS that may carry a decoy prefix
+	cipher   kind = "cipher"  // encrypted TS that must reach the player unchanged
+	opaque   kind = "opaque"  // byte relay that forwards a range
 )
 
-// suffix keeps a real extension on the path because ffmpeg's hls demuxer
-// rejects segments whose extension it does not recognise. base64url has no '.',
-// so stripping the suffix back off is unambiguous.
+// suffix keeps a real extension on the path because ffmpeg's hls demuxer rejects
+// segments whose extension it does not recognise
+// base64url has no '.', so stripping the suffix back off is unambiguous
 func (k kind) suffix() string {
 	switch k {
 	case playlist:
@@ -57,7 +58,7 @@ type target struct {
 }
 
 // Proxy relays provider streams over localhost, so a player sees plain HTTP/1.1
-// while the upstream fetch keeps HTTP/2, the referer, and redirect handling.
+// while the upstream fetch keeps HTTP/2, the referer, and redirect handling
 type Proxy struct {
 	srv   *http.Server
 	hc    *http.Client
@@ -67,8 +68,8 @@ type Proxy struct {
 	once  sync.Once
 }
 
-// StartProxy binds a relay on an ephemeral localhost port. It serves until ctx
-// is cancelled or Close is called.
+// StartProxy binds a relay on an ephemeral localhost port
+// it serves until ctx is cancelled or Close is called
 func StartProxy(ctx context.Context) (*Proxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -107,7 +108,7 @@ func (p *Proxy) Close() error {
 	return p.srv.Close()
 }
 
-// URL returns the localhost address a player or ffmpeg should open for s.
+// URL returns the localhost address a player or ffmpeg should open for s
 func (p *Proxy) URL(s miruro.Stream) string {
 	k := opaque
 	if s.Kind == miruro.HLS {
@@ -116,13 +117,13 @@ func (p *Proxy) URL(s miruro.Stream) string {
 	return p.proxied(s.URL, s.Referer, k)
 }
 
-// Opaque returns a localhost address relaying rawURL byte for byte.
+// Opaque returns a localhost address relaying rawURL byte for byte
 func (p *Proxy) Opaque(rawURL, referer string) string {
 	return p.proxied(rawURL, referer, opaque)
 }
 
-// Stream addresses s through the proxy. The referer is cleared because the
-// proxy sends it upstream itself.
+// Stream addresses s through the proxy
+// the referer is cleared because the proxy sends it upstream itself
 func (p *Proxy) Stream(s miruro.Stream) miruro.Stream {
 	s.URL = p.URL(s)
 	s.Referer = ""
@@ -152,29 +153,35 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	switch t.Kind {
-	case playlist:
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+	switch {
+	case t.Kind == playlist:
+		body, ok := buffered(w, resp)
+		if !ok {
 			return
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Write(p.rewrite(body, t))
-	case segment, cipher:
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+		w.Write(p.rewrite(body, t.Referer, resp.Request.URL))
+	case t.Kind == segment && resp.StatusCode == http.StatusOK:
+		body, ok := buffered(w, resp)
+		if !ok {
 			return
 		}
-		if t.Kind == segment {
-			body = normalizeSegment(body)
-		}
 		w.Header().Set("Content-Type", "video/mp2t")
-		w.Write(body)
+		w.Write(normalizeSegment(body))
 	default:
+		// cipher, a partial segment answering a byterange, and opaque all pass
+		// through untouched with their range headers intact
 		relay(w, resp)
 	}
+}
+
+func buffered(w http.ResponseWriter, resp *http.Response) ([]byte, bool) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return nil, false
+	}
+	return body, true
 }
 
 func (p *Proxy) decode(path string) (target, error) {
@@ -200,11 +207,18 @@ func (p *Proxy) fetch(r *http.Request, t target) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	// the upstream URL comes from a decoded payload and from playlist rewriting
+	// refuse any non-http scheme so the relay cannot reach a local target
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported scheme %q", req.URL.Scheme)
+	}
+	req.Header.Set("User-Agent", miruro.UserAgent)
 	if t.Referer != "" {
 		req.Header.Set("Referer", t.Referer)
 	}
-	if rng := r.Header.Get("Range"); rng != "" && t.Kind == opaque {
+	// forward a byterange for any media body but never a playlist
+	// a playlist is read whole and rewritten, so a range would corrupt parsing
+	if rng := r.Header.Get("Range"); rng != "" && t.Kind != playlist {
 		req.Header.Set("Range", rng)
 	}
 
@@ -230,8 +244,9 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 }
 
 // normalizeSegment drops the decoy image some providers place before the
-// transport stream. Requiring a run of aligned sync bytes keeps a random
-// payload from matching by chance.
+// transport stream
+// requiring a run of aligned sync bytes keeps a random payload from matching
+// by chance
 func normalizeSegment(data []byte) []byte {
 	for i := 0; i < len(data) && i < scanHead; i++ {
 		if synced(data, i) {

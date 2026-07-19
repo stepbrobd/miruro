@@ -11,12 +11,10 @@ import (
 var uriAttr = regexp.MustCompile(`URI="([^"]+)"`)
 
 // rewrite points every URL in an m3u8 back at the proxy, so nested playlists and
-// segments reach the player with the same upstream treatment.
-func (p *Proxy) rewrite(body []byte, t target) []byte {
-	base, err := url.Parse(t.URL)
-	if err != nil {
-		return body
-	}
+// segments reach the player with the same upstream treatment
+// base is the URL the playlist was ultimately served from after redirects, which
+// is what relative child URIs resolve against
+func (p *Proxy) rewrite(body []byte, referer string, base *url.URL) []byte {
 	child := childKind(body)
 
 	var out bytes.Buffer
@@ -28,9 +26,9 @@ func (p *Proxy) rewrite(body []byte, t target) []byte {
 		case trimmed == "":
 			out.WriteString(line)
 		case strings.HasPrefix(trimmed, "#"):
-			out.WriteString(p.tag(line, base, t.Referer))
+			out.WriteString(p.tag(line, base, referer))
 		default:
-			out.WriteString(p.child(trimmed, base, t.Referer, child))
+			out.WriteString(p.child(trimmed, base, referer, child))
 		}
 		out.WriteByte('\n')
 	}
@@ -52,7 +50,7 @@ func childKind(body []byte) kind {
 }
 
 // encrypted reports whether the playlist declares a key, which makes its
-// segments ciphertext that has to reach the player byte for byte.
+// segments ciphertext that has to reach the player byte for byte
 func encrypted(body []byte) bool {
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("#EXT-X-KEY")) {
@@ -65,9 +63,9 @@ func encrypted(body []byte) bool {
 	return false
 }
 
-// tag rewrites a URI attribute. EXT-X-MEDIA and EXT-X-I-FRAME-STREAM-INF both
-// name a media playlist, whatever the URI looks like; every other tag URI is
-// data the player consumes directly.
+// tag rewrites a URI attribute
+// EXT-X-MEDIA and EXT-X-I-FRAME-STREAM-INF both name a media playlist whatever
+// the URI looks like, every other tag URI is data the player consumes directly
 func (p *Proxy) tag(line string, base *url.URL, referer string) string {
 	loc := uriAttr.FindStringSubmatchIndex(line)
 	if loc == nil {
@@ -85,5 +83,11 @@ func (p *Proxy) child(ref string, base *url.URL, referer string, k kind) string 
 	if err != nil {
 		return ref
 	}
-	return p.proxied(base.ResolveReference(u).String(), referer, k)
+	abs := base.ResolveReference(u)
+	// a non-http URI such as a data key is consumed by the player directly
+	// proxying it would only 502 because the upstream client speaks http
+	if abs.Scheme != "http" && abs.Scheme != "https" {
+		return ref
+	}
+	return p.proxied(abs.String(), referer, k)
 }

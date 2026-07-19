@@ -1,13 +1,16 @@
 package play
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"ysun.co/miruro"
 )
@@ -43,6 +46,68 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 	seg := httpGetBytes(t, segURL)
 	if len(seg) == 0 || seg[0] != 0x47 {
 		t.Fatalf("proxied segment not normalized to TS sync")
+	}
+}
+
+// A playlist served via a redirect must resolve its relative children against
+// the final URL, not the one first requested.
+func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a/pl.m3u8":
+			http.Redirect(w, r, "/b/pl.m3u8", http.StatusFound)
+		case "/b/pl.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXT-X-ENDLIST\n")
+		}
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	body := httpGetString(t, px.URL(miruro.Stream{URL: upstream.URL + "/a/pl.m3u8", Kind: miruro.HLS}))
+	seg := firstProxiedLine(t, body, px.base)
+	u, err := url.Parse(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := px.decode(u.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(tgt.URL, "/b/seg0.ts") {
+		t.Errorf("child resolved against the pre-redirect base: %s", tgt.URL)
+	}
+}
+
+func TestProxyRelaysRange(t *testing.T) {
+	full := bytes.Repeat([]byte("A"), 1000)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "x.bin", time.Time{}, bytes.NewReader(full))
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, px.Opaque(upstream.URL+"/x.bin", ""), nil)
+	req.Header.Set("Range", "bytes=10-19")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("range not relayed, status %d", resp.StatusCode)
+	}
+	if got, _ := io.ReadAll(resp.Body); len(got) != 10 {
+		t.Errorf("want 10 bytes, got %d", len(got))
 	}
 }
 
