@@ -21,9 +21,8 @@ const (
 )
 
 type Player struct {
-	Kind   Kind
-	Bin    string
-	Detach bool
+	Kind Kind
+	Bin  string
 }
 
 // Detect resolves a player, honouring prefer when given and installed,
@@ -69,9 +68,6 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 		defer cleanup()
 	}
 	cmd := exec.CommandContext(ctx, p.Bin, args...)
-	if p.Detach {
-		return cmd.Start()
-	}
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
 }
@@ -152,5 +148,3 @@ func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 	f.Close()
 	return name, func() { os.Remove(name) }
 }
-
-func (p Player) String() string { return fmt.Sprintf("%s (%s)", p.Kind, p.Bin) }

@@ -70,8 +70,8 @@ func run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if cat.Mappings.Title != "" {
-		title = cat.Mappings.Title
+	if cat.Title != "" {
+		title = cat.Title
 	}
 
 	numbers := cat.Numbers(category)

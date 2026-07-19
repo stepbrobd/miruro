@@ -11,7 +11,6 @@ import (
 // ErrAborted is returned when the user cancels a selection.
 var ErrAborted = huh.ErrUserAborted
 
-// Prompt reads a single line of free text.
 func Prompt(title string) (string, error) {
 	var s string
 	form := huh.NewForm(huh.NewGroup(
@@ -52,7 +51,6 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 	return items[idx], nil
 }
 
-// Menu selects one action from a short list.
 func Menu(title string, actions []string) (string, error) {
 	return Select(title, actions, func(s string) string { return s })
 }

@@ -25,25 +25,19 @@ type Stream struct {
 	URL     string
 	Kind    Kind
 	Quality string
-	Server  string
 	Referer string
 }
 
 type Subtitle struct {
-	File    string
-	Label   string
-	Kind    string
-	Default bool
+	File  string
+	Label string
 }
 
 type Result struct {
 	Streams   []Stream
 	Subtitles []Subtitle
-	Download  string
-	Thumbnail string
 }
 
-// Softsub reports whether the source carries external subtitle tracks.
 func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
 
 // Sources resolves an episode on a provider to playable streams and subtitles.
@@ -62,39 +56,28 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 			URL     string `json:"url"`
 			Type    string `json:"type"`
 			Quality string `json:"quality"`
-			Server  string `json:"server"`
 			Referer string `json:"referer"`
 		} `json:"streams"`
 		Subtitles []struct {
-			File    string `json:"file"`
-			Label   string `json:"label"`
-			Kind    string `json:"kind"`
-			Default bool   `json:"default"`
+			File  string `json:"file"`
+			Label string `json:"label"`
 		} `json:"subtitles"`
-		Download  string `json:"download"`
-		Thumbnail string `json:"thumbnail"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
 
-	res := &Result{Download: raw.Download, Thumbnail: raw.Thumbnail}
+	res := &Result{}
 	for _, s := range raw.Streams {
 		res.Streams = append(res.Streams, Stream{
 			URL:     s.URL,
 			Kind:    Kind(s.Type),
 			Quality: s.Quality,
-			Server:  s.Server,
 			Referer: s.Referer,
 		})
 	}
 	for _, s := range raw.Subtitles {
-		res.Subtitles = append(res.Subtitles, Subtitle{
-			File:    s.File,
-			Label:   s.Label,
-			Kind:    s.Kind,
-			Default: s.Default,
-		})
+		res.Subtitles = append(res.Subtitles, Subtitle{File: s.File, Label: s.Label})
 	}
 	return res, nil
 }

@@ -26,7 +26,6 @@ type Media struct {
 	Romaji   string
 	English  string
 	Episodes int
-	Format   string
 }
 
 func (m Media) Title() string {
@@ -68,8 +67,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 						Romaji  string `json:"romaji"`
 						English string `json:"english"`
 					} `json:"title"`
-					Episodes int    `json:"episodes"`
-					Format   string `json:"format"`
+					Episodes int `json:"episodes"`
 				} `json:"media"`
 			} `json:"Page"`
 		} `json:"data"`
@@ -91,7 +89,6 @@ func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 			Romaji:   m.Title.Romaji,
 			English:  m.Title.English,
 			Episodes: m.Episodes,
-			Format:   m.Format,
 		})
 	}
 	return media, nil
