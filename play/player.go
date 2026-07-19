@@ -8,6 +8,9 @@ import (
 	"os/exec"
 	"runtime"
 	"sort"
+	"time"
+
+	"github.com/charmbracelet/log"
 
 	"ysun.co/miruro"
 )
@@ -25,8 +28,8 @@ type Player struct {
 }
 
 // Detect resolves a player, honouring prefer when it names a supported player
-// that is installed, otherwise preferring IINA on macOS and falling back to mpv.
-// A stale prefer such as vlc is ignored rather than launched with mpv's flags.
+// that is installed, otherwise preferring IINA on macOS and falling back to mpv
+// a stale prefer such as vlc is ignored rather than launched with mpv's flags
 func Detect(prefer Kind) Player {
 	if prefer == MPV || prefer == IINA {
 		if p, ok := lookup(prefer); ok {
@@ -68,11 +71,15 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 	cmd := exec.CommandContext(ctx, p.Bin, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stderr = os.Stderr
+	// interrupt rather than kill so mpv restores the terminal and flushes state
+	// WaitDelay still forces a kill if it ignores the signal
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 5 * time.Second
 	return cmd.Run()
 }
 
-// args carries no referer flag: the proxy injects the referer upstream, so every
-// URL a player sees is localhost.
+// args carries no referer flag because the proxy injects the referer upstream
+// so every URL a player sees is localhost
 func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) ([]string, func()) {
 	if p.Kind == IINA {
 		args := []string{"--no-stdin", "--keep-running", "--mpv-force-media-title=" + title}
@@ -95,7 +102,9 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.Ski
 }
 
 // chaptersFile writes an ffmetadata chapters file marking intro and outro so the
-// player can jump past them, and returns a cleanup that removes it.
+// player can jump past them, and returns a cleanup that removes it
+// a write failure warns and disables skip rather than passing a broken file to
+// the player
 func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 	if len(skips) == 0 {
 		return "", nil
@@ -117,18 +126,33 @@ func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 
 	f, err := os.CreateTemp("", "miruro-*.ffmeta")
 	if err != nil {
+		log.Warn("skip disabled, cannot create chapters file", "err", err)
 		return "", nil
 	}
-	fmt.Fprintln(f, ";FFMETADATA1")
+	name := f.Name()
+
+	var werr error
+	write := func(format string, a ...any) {
+		if werr == nil {
+			_, werr = fmt.Fprintf(f, format, a...)
+		}
+	}
+	write(";FFMETADATA1\n")
 	for i, m := range marks {
 		end := m.at + 1
 		if i+1 < len(marks) {
 			end = marks[i+1].at
 		}
-		fmt.Fprintf(f, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n",
+		write("[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n",
 			int64(m.at*1000), int64(end*1000), m.title)
 	}
-	name := f.Name()
-	f.Close()
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		log.Warn("skip disabled, cannot write chapters file", "err", werr)
+		os.Remove(name)
+		return "", nil
+	}
 	return name, func() { os.Remove(name) }
 }
