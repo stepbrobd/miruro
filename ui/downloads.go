@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// errCancelled marks a download the user interrupted before it finished, so the
+// caller counts it as a failure and never as a silent success
+var errCancelled = errors.New("cancelled")
 
 type progressMsg struct {
 	i           int
@@ -81,8 +87,11 @@ func (m downloads) View() string {
 }
 
 // Downloads runs labelled tasks with a worker limit, rendering one live progress
-// bar per line. task receives a reporter for bytes done and total.
-func Downloads(labels []string, workers int, task func(i int, report func(done, total int64)) error) []error {
+// bar per line
+// each task receives a context that is cancelled when the user quits and a
+// reporter for bytes done and total
+// a task the user interrupts before it finishes is returned as errCancelled
+func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
 	n := len(labels)
 	width := 0
 	for _, l := range labels {
@@ -90,6 +99,9 @@ func Downloads(labels []string, workers int, task func(i int, report func(done, 
 			width = len(l)
 		}
 	}
+
+	dctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	m := downloads{
 		labels: labels,
@@ -106,19 +118,36 @@ func Downloads(labels []string, workers int, task func(i int, report func(done, 
 		m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
 	}
 
-	go schedule(labels, workers, task, m.ch)
+	go schedule(dctx, labels, workers, task, m.ch)
 
-	final, err := tea.NewProgram(m).Run()
-	if err != nil {
-		return drain(m.ch, n)
+	final, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
+
+	errs := make([]error, n)
+	fin := make([]bool, n)
+	switch {
+	case err == nil, errors.Is(err, tea.ErrInterrupted), ctx.Err() != nil:
+		// the UI exited on a finish, a quit key, or an interrupt
+		// stop any stragglers and take what the model recorded before it left
+		cancel()
+		if fm, ok := final.(downloads); ok {
+			copy(errs, fm.errs)
+			copy(fin, fm.fin)
+		}
+	default:
+		// no interactive terminal, so let the workers finish under the still-live
+		// context and collect their results directly
+		drain(m.ch, errs, fin, n)
 	}
-	if fm, ok := final.(downloads); ok {
-		return fm.errs
+
+	for i := range errs {
+		if !fin[i] && errs[i] == nil {
+			errs[i] = errCancelled
+		}
 	}
-	return make([]error, n)
+	return errs
 }
 
-func schedule(labels []string, workers int, task func(int, func(int64, int64)) error, ch chan tea.Msg) {
+func schedule(ctx context.Context, labels []string, workers int, task func(context.Context, int, func(int64, int64)) error, ch chan tea.Msg) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -140,22 +169,23 @@ func schedule(labels []string, workers int, task func(int, func(int64, int64)) e
 				last = now
 				ch <- progressMsg{i, done, total}
 			}
-			ch <- doneMsg{i, task(i, report)}
+			ch <- doneMsg{i, task(ctx, i, report)}
 		}(i)
 	}
 	wg.Wait()
 }
 
-// drain collects results when no interactive terminal is available.
-func drain(ch chan tea.Msg, n int) []error {
-	errs := make([]error, n)
+// drain collects results when no interactive terminal renders the bars
+// it is the sole reader of ch in that path, so counting n doneMsgs cannot
+// deadlock
+func drain(ch chan tea.Msg, errs []error, fin []bool, n int) {
 	for remain := n; remain > 0; {
 		if d, ok := (<-ch).(doneMsg); ok {
 			errs[d.i] = d.err
+			fin[d.i] = true
 			remain--
 		}
 	}
-	return errs
 }
 
 func ok(good bool) string {

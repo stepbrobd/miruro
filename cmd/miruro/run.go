@@ -175,17 +175,17 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 		labels[i] = "E" + num(ep)
 	}
 
-	errs := ui.Downloads(labels, flagParallel, func(i int, report func(done, total int64)) error {
+	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		ep := eps[i]
-		res, served, err := autoResolve(ctx, client, cat, ep, category, code)
+		res, served, err := autoResolve(dctx, client, cat, ep, category, code)
 		if err != nil {
 			return err
 		}
-		stream, err := client.Select(ctx, res, cfg.Quality)
+		stream, err := client.Select(dctx, res, cfg.Quality)
 		if err != nil {
 			return err
 		}
-		// As in resolve: the pin's variant describes the pinned provider only.
+		// the pin's variant describes the pinned provider only
 		variant := pinVariant
 		if served != code {
 			variant = "soft"
@@ -195,7 +195,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
-		return play.Download(ctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, report)
+		return play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, report)
 	})
 
 	var failed int
