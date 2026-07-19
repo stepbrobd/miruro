@@ -40,6 +40,8 @@
           deno
           nixpkgs-fmt
 
+          ffmpeg
+
           go
           go-tools
           gomod2nix
