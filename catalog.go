@@ -1,14 +1,10 @@
-// Package catalog fetches and parses the miruro episodes payload, the provider
-// and episode map keyed by AniList id.
-package catalog
+package miruro
 
 import (
 	"context"
 	"encoding/json"
 	"sort"
 	"strconv"
-
-	"ysun.co/miruro/pipe"
 )
 
 // Category is a closed set, an illegal value cannot flow downstream
@@ -68,8 +64,9 @@ type Catalog struct {
 	Aniskip   []SkipRange
 }
 
-func Fetch(ctx context.Context, c *pipe.Client, anilistID int) (*Catalog, error) {
-	body, err := c.Get(ctx, "episodes", map[string]string{"anilistId": strconv.Itoa(anilistID)})
+// Episodes fetches the provider and episode map for an AniList id.
+func (c *Client) Episodes(ctx context.Context, anilistID int) (*Catalog, error) {
+	body, err := c.pipe(ctx, "episodes", map[string]string{"anilistId": strconv.Itoa(anilistID)})
 	if err != nil {
 		return nil, err
 	}

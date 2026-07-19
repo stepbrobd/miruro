@@ -4,21 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro/anilist"
-	"ysun.co/miruro/catalog"
-	"ysun.co/miruro/download"
-	"ysun.co/miruro/history"
-	"ysun.co/miruro/pipe"
-	"ysun.co/miruro/player"
-	"ysun.co/miruro/sources"
+	"ysun.co/miruro"
+	"ysun.co/miruro/play"
 	"ysun.co/miruro/ui"
 )
 
@@ -35,20 +28,19 @@ func run(cmd *cobra.Command, args []string) error {
 		cfg.Dub = true
 	}
 
-	store, err := history.Open()
+	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	if flagDelete {
-		return store.Clear()
+		return st.clear()
 	}
 
-	hc := &http.Client{Timeout: 60 * time.Second}
-	client := pipe.New()
+	client := miruro.New()
 
-	category := catalog.Sub
+	category := miruro.Sub
 	if cfg.Dub {
-		category = catalog.Dub
+		category = miruro.Dub
 	}
 
 	var anilistID int
@@ -57,7 +49,7 @@ func run(cmd *cobra.Command, args []string) error {
 	pinned := cfg.Provider
 
 	if flagContinue {
-		id, t, cat, prov, ep, err := resume(store)
+		id, t, cat, prov, ep, err := resume(st)
 		if err != nil {
 			return err
 		}
@@ -66,14 +58,14 @@ func run(cmd *cobra.Command, args []string) error {
 			pinned = prov
 		}
 	} else {
-		id, t, err := findAnime(ctx, hc, args)
+		id, t, err := findAnime(ctx, client, args)
 		if err != nil {
 			return err
 		}
 		anilistID, title = id, t
 	}
 
-	cat, err := catalog.Fetch(ctx, client, anilistID)
+	cat, err := client.Episodes(ctx, anilistID)
 	if err != nil {
 		return err
 	}
@@ -92,12 +84,12 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagDownload {
-		return fetch(ctx, client, hc, cat, title, ep, category, pinned, cfg.DownloadDir, cfg.Quality)
+		return fetch(ctx, client, cat, title, ep, category, pinned, cfg.DownloadDir, cfg.Quality)
 	}
-	return watch(ctx, client, hc, store, cat, anilistID, title, numbers, ep, category, pinned, cfg)
+	return watch(ctx, client, st, cat, anilistID, title, numbers, ep, category, pinned, cfg)
 }
 
-func findAnime(ctx context.Context, hc *http.Client, args []string) (int, string, error) {
+func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
 		q, err := ui.Prompt("Search anime")
@@ -110,14 +102,14 @@ func findAnime(ctx context.Context, hc *http.Client, args []string) (int, string
 		return 0, "", errors.New("empty query")
 	}
 
-	media, err := anilist.Search(ctx, hc, query)
+	media, err := client.Search(ctx, query)
 	if err != nil {
 		return 0, "", err
 	}
 	if len(media) == 0 {
 		return 0, "", fmt.Errorf("no results for %q", query)
 	}
-	m, err := ui.Select("Select anime", media, func(x anilist.Media) string {
+	m, err := ui.Select("Select anime", media, func(x miruro.Media) string {
 		if x.Episodes > 0 {
 			return fmt.Sprintf("%s (%d eps)", x.Title(), x.Episodes)
 		}
@@ -129,15 +121,15 @@ func findAnime(ctx context.Context, hc *http.Client, args []string) (int, string
 	return m.ID, m.Title(), nil
 }
 
-func resume(store *history.Store) (int, string, catalog.Category, string, float64, error) {
-	entries, err := store.Load()
+func resume(st *store) (int, string, miruro.Category, string, float64, error) {
+	entries, err := st.load()
 	if err != nil {
 		return 0, "", "", "", 0, err
 	}
 	if len(entries) == 0 {
 		return 0, "", "", "", 0, errors.New("no history yet")
 	}
-	e, err := ui.Select("Resume", entries, func(x history.Entry) string {
+	e, err := ui.Select("Resume", entries, func(x entry) string {
 		return fmt.Sprintf("%s  ep %s  [%s %s]", x.Title, num(x.Episode), x.Provider, x.Category)
 	})
 	if err != nil {
@@ -163,43 +155,43 @@ func chooseEpisode(numbers []float64, start float64) (float64, error) {
 	return ui.Select("Select episode", numbers, num)
 }
 
-func fetch(ctx context.Context, c *pipe.Client, hc *http.Client, cat *catalog.Catalog, title string, ep float64, category catalog.Category, pinned, dir, quality string) error {
-	res, prov, err := resolve(ctx, c, cat, ep, category, pinned)
+func fetch(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, ep float64, category miruro.Category, pinned, dir, quality string) error {
+	res, prov, err := resolve(ctx, client, cat, ep, category, pinned)
 	if err != nil {
 		return err
 	}
-	stream, err := sources.Select(ctx, hc, res, quality)
+	stream, err := client.Select(ctx, res, quality)
 	if err != nil {
 		return err
 	}
 	log.Info("downloading", "title", title, "ep", num(ep), "provider", prov, "softsub", res.Softsub())
 	name := fmt.Sprintf("%s - E%s", title, num(ep))
-	if err := download.Fetch(ctx, hc, stream, res.Subtitles, dir, name); err != nil {
+	if err := play.Download(ctx, client.HTTP, stream, res.Subtitles, dir, name); err != nil {
 		return err
 	}
 	log.Info("saved", "dir", dir)
 	return nil
 }
 
-func watch(ctx context.Context, c *pipe.Client, hc *http.Client, store *history.Store, cat *catalog.Catalog, anilistID int, title string, numbers []float64, ep float64, category catalog.Category, pinned string, cfg config) error {
-	p := detectPlayer(cfg)
+func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers []float64, ep float64, category miruro.Category, pinned string, cfg config) error {
+	player := detectPlayer(cfg)
 	for {
-		res, prov, err := resolve(ctx, c, cat, ep, category, pinned)
+		res, prov, err := resolve(ctx, client, cat, ep, category, pinned)
 		if err != nil {
 			return err
 		}
 		pinned = prov
 
-		stream, err := sources.Select(ctx, hc, res, cfg.Quality)
+		stream, err := client.Select(ctx, res, cfg.Quality)
 		if err != nil {
 			return err
 		}
 
-		log.Info("playing", "title", title, "ep", num(ep), "provider", prov, "player", p.Kind, "softsub", res.Softsub())
-		if err := p.Play(ctx, stream, res.Subtitles, fmt.Sprintf("%s Episode %s", title, num(ep))); err != nil {
+		log.Info("playing", "title", title, "ep", num(ep), "provider", prov, "player", player.Kind, "softsub", res.Softsub())
+		if err := player.Play(ctx, stream, res.Subtitles, fmt.Sprintf("%s Episode %s", title, num(ep))); err != nil {
 			return err
 		}
-		_ = store.Save(history.Entry{AnilistID: anilistID, Title: title, Provider: prov, Category: category, Episode: ep})
+		_ = st.save(entry{AnilistID: anilistID, Title: title, Provider: prov, Category: category, Episode: ep})
 
 		next, stop, err := control(numbers, ep, title)
 		if err != nil {
@@ -266,14 +258,14 @@ func control(numbers []float64, ep float64, title string) (step, bool, error) {
 	}
 }
 
-func resolve(ctx context.Context, c *pipe.Client, cat *catalog.Catalog, ep float64, category catalog.Category, pinned string) (*sources.Result, string, error) {
+func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
 	avail := cat.Available(ep, category)
 	if len(avail) == 0 {
 		return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
 	}
 
 	if pinned == "" {
-		p, err := ui.Select("Select provider", avail, func(x catalog.Provider) string { return x.Code })
+		p, err := ui.Select("Select provider", avail, func(x miruro.Provider) string { return x.Code })
 		if err != nil {
 			return nil, "", err
 		}
@@ -286,9 +278,9 @@ func resolve(ctx context.Context, c *pipe.Client, cat *catalog.Catalog, ep float
 		if e == nil {
 			continue
 		}
-		res, err := sources.Resolve(ctx, c, e.ID, p.Code, category)
+		res, err := client.Sources(ctx, e.ID, p.Code, category)
 		if err != nil {
-			if errors.Is(err, pipe.ErrBlocked) {
+			if errors.Is(err, miruro.ErrBlocked) {
 				return nil, "", err
 			}
 			last = err
@@ -307,16 +299,16 @@ func resolve(ctx context.Context, c *pipe.Client, cat *catalog.Catalog, ep float
 	return nil, "", last
 }
 
-func detectPlayer(cfg config) player.Player {
-	prefer := player.Kind(cfg.Player)
+func detectPlayer(cfg config) play.Player {
+	prefer := play.Kind(cfg.Player)
 	if flagVLC {
-		prefer = player.VLC
+		prefer = play.VLC
 	}
-	return player.Detect(prefer)
+	return play.Detect(prefer)
 }
 
-func orderPinned(providers []catalog.Provider, code string) []catalog.Provider {
-	out := make([]catalog.Provider, 0, len(providers))
+func orderPinned(providers []miruro.Provider, code string) []miruro.Provider {
+	out := make([]miruro.Provider, 0, len(providers))
 	for _, p := range providers {
 		if p.Code == code {
 			out = append(out, p)
@@ -330,7 +322,7 @@ func orderPinned(providers []catalog.Provider, code string) []catalog.Provider {
 	return out
 }
 
-func find(eps []catalog.Episode, n float64) *catalog.Episode {
+func find(eps []miruro.Episode, n float64) *miruro.Episode {
 	for i := range eps {
 		if eps[i].Number == n {
 			return &eps[i]

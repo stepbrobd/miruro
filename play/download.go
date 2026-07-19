@@ -1,5 +1,4 @@
-// Package download saves an episode, natively for mp4 and through ffmpeg for hls.
-package download
+package play
 
 import (
 	"context"
@@ -10,21 +9,21 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"ysun.co/miruro/sources"
+	"ysun.co/miruro"
 )
 
-func Fetch(ctx context.Context, hc *http.Client, s sources.Stream, subs []sources.Subtitle, dir, name string) error {
+func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	dest := filepath.Join(dir, name+".mp4")
 
 	switch s.Kind {
-	case sources.MP4:
+	case miruro.MP4:
 		if err := grab(ctx, hc, s.URL, s.Referer, dest); err != nil {
 			return err
 		}
-	case sources.HLS:
+	case miruro.HLS:
 		if err := ffmpeg(ctx, s, dest); err != nil {
 			return err
 		}
@@ -67,7 +66,7 @@ func grab(ctx context.Context, hc *http.Client, url, referer, dest string) error
 	return err
 }
 
-func ffmpeg(ctx context.Context, s sources.Stream, dest string) error {
+func ffmpeg(ctx context.Context, s miruro.Stream, dest string) error {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return fmt.Errorf("ffmpeg is required to download hls streams")
 	}
@@ -82,7 +81,7 @@ func ffmpeg(ctx context.Context, s sources.Stream, dest string) error {
 	return cmd.Run()
 }
 
-func subLabel(s sources.Subtitle) string {
+func subLabel(s miruro.Subtitle) string {
 	if s.Label != "" {
 		return s.Label
 	}

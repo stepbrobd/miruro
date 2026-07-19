@@ -1,6 +1,5 @@
-// Package player launches an external video player with the referer and any
-// soft subtitles, detecting a sensible default per platform.
-package player
+// Package play sends a resolved stream to a video player or to disk.
+package play
 
 import (
 	"context"
@@ -9,7 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	"ysun.co/miruro/sources"
+	"ysun.co/miruro"
 )
 
 type Kind string
@@ -63,7 +62,7 @@ func binaries(k Kind) []string {
 	return []string{string(k)}
 }
 
-func (p Player) Play(ctx context.Context, s sources.Stream, subs []sources.Subtitle, title string) error {
+func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle, title string) error {
 	cmd := exec.CommandContext(ctx, p.Bin, p.args(s, subs, title)...)
 	if p.Detach {
 		return cmd.Start()
@@ -72,7 +71,7 @@ func (p Player) Play(ctx context.Context, s sources.Stream, subs []sources.Subti
 	return cmd.Run()
 }
 
-func (p Player) args(s sources.Stream, subs []sources.Subtitle, title string) []string {
+func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, title string) []string {
 	switch p.Kind {
 	case VLC:
 		args := []string{"--play-and-exit", "--meta-title", title}

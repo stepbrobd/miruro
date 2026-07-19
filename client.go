@@ -1,7 +1,7 @@
-// Package pipe is the sole HTTP boundary to the miruro secure pipe.
-// It owns the browser header set, the HTTP/2 transport, and the response
-// deobfuscation. Callers see decoded JSON bytes and two sentinel errors.
-package pipe
+// Package miruro is the data layer, an AniList-backed client for miruro.tv.
+// It owns the search, episode, and source resolution against the secure pipe,
+// including the browser header set, the HTTP/2 transport, and deobfuscation.
+package miruro
 
 import (
 	"bytes"
@@ -17,9 +17,10 @@ import (
 	"time"
 )
 
-const endpoint = "https://www.miruro.tv"
-
-const userAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+const (
+	endpoint  = "https://www.miruro.tv"
+	userAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
 
 var (
 	// ErrBlocked is fatal, the WAF rejected the request
@@ -42,7 +43,7 @@ type Client struct {
 func New() *Client {
 	return &Client{
 		Base: endpoint,
-		HTTP: &http.Client{Timeout: 30 * time.Second},
+		HTTP: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -53,8 +54,8 @@ type envelope struct {
 	Body   any               `json:"body"`
 }
 
-// Get runs an obfuscated secure-pipe GET and returns the decoded JSON body.
-func (c *Client) Get(ctx context.Context, path string, query map[string]string) ([]byte, error) {
+// pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body.
+func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
 	if query == nil {
 		query = map[string]string{}
 	}
@@ -115,6 +116,17 @@ func decode(body []byte, obf string) ([]byte, error) {
 	}
 	defer zr.Close()
 	return io.ReadAll(zr)
+}
+
+func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	return req, nil
 }
 
 func setHeaders(h http.Header) {

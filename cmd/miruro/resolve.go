@@ -3,16 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro/catalog"
-	"ysun.co/miruro/pipe"
-	"ysun.co/miruro/sources"
+	"ysun.co/miruro"
 )
 
 var (
@@ -55,15 +51,14 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid episode %q", resEpisode)
 	}
 
-	category := catalog.Sub
+	category := miruro.Sub
 	if resDub {
-		category = catalog.Dub
+		category = miruro.Dub
 	}
 
-	client := pipe.New()
-	hc := &http.Client{Timeout: 60 * time.Second}
+	client := miruro.New()
 
-	cat, err := catalog.Fetch(ctx, client, id)
+	cat, err := client.Episodes(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -81,12 +76,12 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		if e == nil {
 			continue
 		}
-		res, err := sources.Resolve(ctx, client, e.ID, p.Code, category)
+		res, err := client.Sources(ctx, e.ID, p.Code, category)
 		if err != nil {
 			last = err
 			continue
 		}
-		stream, err := sources.Select(ctx, hc, res, resQuality)
+		stream, err := client.Select(ctx, res, resQuality)
 		if err != nil {
 			last = err
 			continue
@@ -99,7 +94,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	return last
 }
 
-func emit(s sources.Stream, res *sources.Result, provider string) error {
+func emit(s miruro.Stream, res *miruro.Result, provider string) error {
 	if resJSON {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"url":       s.URL,

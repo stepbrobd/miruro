@@ -1,22 +1,13 @@
-// Package sources resolves an episode on a provider to playable streams and
-// subtitles through the miruro secure pipe.
-package sources
+package miruro
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"regexp"
 	"strings"
-
-	"ysun.co/miruro/catalog"
-	"ysun.co/miruro/pipe"
 )
-
-// ErrNoStream means the resolved source held nothing playable
-var ErrNoStream = errors.New("no playable stream")
 
 // Kind is a closed set of stream container kinds
 type Kind string
@@ -26,6 +17,9 @@ const (
 	MP4   Kind = "mp4"
 	Embed Kind = "embed"
 )
+
+// ErrNoStream means the resolved source held nothing playable
+var ErrNoStream = errors.New("no playable stream")
 
 type Stream struct {
 	URL     string
@@ -52,8 +46,9 @@ type Result struct {
 // Softsub reports whether the source carries external subtitle tracks.
 func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
 
-func Resolve(ctx context.Context, c *pipe.Client, episodeID, provider string, cat catalog.Category) (*Result, error) {
-	body, err := c.Get(ctx, "sources", map[string]string{
+// Sources resolves an episode on a provider to playable streams and subtitles.
+func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Category) (*Result, error) {
+	body, err := c.pipe(ctx, "sources", map[string]string{
 		"episodeId": episodeID,
 		"provider":  provider,
 		"category":  string(cat),
@@ -107,7 +102,7 @@ func Resolve(ctx context.Context, c *pipe.Client, episodeID, provider string, ca
 // Select applies the default quality heuristic, an author-owned decision.
 // it honours an explicit height when hls variants expose one, then prefers the
 // hls master for mpv to negotiate, then a direct mp4, and skips embeds
-func Select(ctx context.Context, hc *http.Client, r *Result, quality string) (Stream, error) {
+func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream, error) {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
 		switch s.Kind {
@@ -119,7 +114,7 @@ func Select(ctx context.Context, hc *http.Client, r *Result, quality string) (St
 	}
 
 	if len(hls) > 0 && quality != "" && quality != "best" {
-		if variants, err := expandMaster(ctx, hc, hls[0]); err == nil {
+		if variants, err := c.expandMaster(ctx, hls[0]); err == nil {
 			for _, v := range variants {
 				if strings.HasPrefix(v.Quality, strings.TrimSuffix(quality, "p")) {
 					return v, nil
@@ -140,15 +135,12 @@ var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 
 // expandMaster fetches an hls master playlist and returns its variant streams
 // labelled by height, falling back to the master itself when parsing yields none.
-func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
+func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
+	req, err := newGet(ctx, s.URL, s.Referer)
 	if err != nil {
 		return nil, err
 	}
-	if s.Referer != "" {
-		req.Header.Set("Referer", s.Referer)
-	}
-	resp, err := hc.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}

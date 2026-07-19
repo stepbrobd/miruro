@@ -1,5 +1,4 @@
-// Package anilist resolves a search query to AniList media, the id miruro keys on.
-package anilist
+package miruro
 
 import (
 	"bytes"
@@ -9,7 +8,7 @@ import (
 	"net/http"
 )
 
-const endpoint = "https://graphql.anilist.co"
+const anilistEndpoint = "https://graphql.anilist.co"
 
 const searchQuery = `query ($search: String, $perPage: Int) {
   Page(perPage: $perPage) {
@@ -37,56 +36,47 @@ func (m Media) Title() string {
 	return m.Romaji
 }
 
-type request struct {
-	Query     string         `json:"query"`
-	Variables map[string]any `json:"variables"`
-}
-
-type response struct {
-	Data struct {
-		Page struct {
-			Media []struct {
-				ID    int `json:"id"`
-				Title struct {
-					Romaji  string `json:"romaji"`
-					English string `json:"english"`
-				} `json:"title"`
-				Episodes int    `json:"episodes"`
-				Format   string `json:"format"`
-			} `json:"media"`
-		} `json:"Page"`
-	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
-}
-
-func Search(ctx context.Context, hc *http.Client, query string) ([]Media, error) {
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	payload, err := json.Marshal(request{
-		Query:     searchQuery,
-		Variables: map[string]any{"search": query, "perPage": 30},
+// Search resolves a query to AniList media through the public GraphQL API.
+func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
+	payload, err := json.Marshal(map[string]any{
+		"query":     searchQuery,
+		"variables": map[string]any{"search": query, "perPage": 30},
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anilistEndpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := hc.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	var out response
+	var out struct {
+		Data struct {
+			Page struct {
+				Media []struct {
+					ID    int `json:"id"`
+					Title struct {
+						Romaji  string `json:"romaji"`
+						English string `json:"english"`
+					} `json:"title"`
+					Episodes int    `json:"episodes"`
+					Format   string `json:"format"`
+				} `json:"media"`
+			} `json:"Page"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
