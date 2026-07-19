@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/log"
+
 	"ysun.co/miruro"
 )
 
@@ -20,9 +22,13 @@ import (
 // total is 0 for hls where the final size is not announced ahead of time
 type Progress func(done, total int64)
 
-func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name string, prog Progress) error {
+// Download writes the video and one sidecar per subtitle track
+// it reports how many sidecars failed so the caller can summarise the run, and
+// a failure is warned rather than returned because the video is the deliverable
+// and an episode already on disk must not be discarded over a missing sidecar
+func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name string, prog Progress) (int, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	name = safeName(name)
 	dest := filepath.Join(dir, name+".mp4")
@@ -30,23 +36,31 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	switch s.Kind {
 	case miruro.MP4:
 		if err := grab(ctx, hc, s.URL, dest, prog); err != nil {
-			return err
+			return 0, err
 		}
 	case miruro.HLS:
 		if err := ffmpeg(ctx, s.URL, dest, prog); err != nil {
-			return err
+			return 0, err
 		}
 	default:
-		return fmt.Errorf("cannot download %s stream", s.Kind)
+		return 0, fmt.Errorf("cannot download %s stream", s.Kind)
 	}
 
-	// the video is the deliverable, so a subtitle sidecar that 404s does not
-	// fail an episode whose video already landed on disk
+	var missed int
 	for i, sub := range subs {
 		side := filepath.Join(dir, fmt.Sprintf("%s.%d.%s.vtt", name, i, safeName(subLabel(sub))))
-		_ = grab(ctx, hc, sub.File, side, nil)
+		err := grab(ctx, hc, sub.File, side, nil)
+		if err == nil {
+			continue
+		}
+		// a cancelled run is not a missing subtitle, so report it as cancellation
+		if ctx.Err() != nil {
+			return missed, ctx.Err()
+		}
+		missed++
+		log.Warn("subtitle not saved", "episode", name, "label", subLabel(sub), "err", err)
 	}
-	return nil
+	return missed, nil
 }
 
 // grab streams url to dest atomically

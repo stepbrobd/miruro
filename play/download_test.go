@@ -41,7 +41,7 @@ func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
 	defer srv.Close()
 
 	dir, name := t.TempDir(), "Show - E1"
-	if err := Download(context.Background(), http.DefaultClient,
+	if _, err := Download(context.Background(), http.DefaultClient,
 		miruro.Stream{URL: srv.URL + "/media.m3u8", Kind: miruro.HLS},
 		nil, dir, name, nil); err != nil {
 		t.Fatalf("download: %v", err)
@@ -93,5 +93,42 @@ func TestSafeNameDefaultsEmpty(t *testing.T) {
 func TestSafeNameKeepsPlainTitles(t *testing.T) {
 	if got := safeName("Frieren - E5"); got != "Frieren - E5" {
 		t.Errorf("safeName mangled a plain title: %q", got)
+	}
+}
+
+// a sidecar that 404s must not discard a video already on disk, but the loss
+// has to be counted so the caller can report it
+func TestDownloadCountsMissingSidecars(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "video.mp4"):
+			w.Write([]byte("not really an mp4, but bytes on disk"))
+		case strings.HasSuffix(r.URL.Path, "good.vtt"):
+			w.Write([]byte("WEBVTT\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir, name := t.TempDir(), "Show - E1"
+	subs := []miruro.Subtitle{
+		{File: srv.URL + "/good.vtt", Label: "English"},
+		{File: srv.URL + "/gone.vtt", Label: "Spanish"},
+	}
+	missed, err := Download(context.Background(), http.DefaultClient,
+		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4},
+		subs, dir, name, nil)
+	if err != nil {
+		t.Fatalf("a missing sidecar must not fail the download: %v", err)
+	}
+	if missed != 1 {
+		t.Errorf("missed = %d, want 1", missed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name+".mp4")); err != nil {
+		t.Errorf("video did not survive the sidecar failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name+".0.English.vtt")); err != nil {
+		t.Errorf("the sidecar that resolved was not written: %v", err)
 	}
 }

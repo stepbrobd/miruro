@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -188,6 +189,10 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 		labels[i] = "E" + num(ep)
 	}
 
+	// workers run concurrently, so the tally of episodes that lost their
+	// subtitles is shared state
+	var bare atomic.Int64
+
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		ep := eps[i]
 		res, served, err := autoResolve(dctx, client, cat, ep, category, pin.Code)
@@ -203,7 +208,14 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
-		return play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, report)
+		missed, err := play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, report)
+		if err != nil {
+			return err
+		}
+		if missed > 0 {
+			bare.Add(1)
+		}
+		return nil
 	})
 
 	var failed int
@@ -217,6 +229,11 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d downloads failed", failed, len(eps))
+	}
+	// warn rather than log so a soft-subbed run that lost its sidecars is visible
+	// without --verbose
+	if n := bare.Load(); n > 0 {
+		log.Warn("episodes saved without subtitles", "count", n)
 	}
 	log.Info("saved", "dir", cfg.DownloadDir, "episodes", len(eps))
 	return nil
