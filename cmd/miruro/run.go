@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -288,19 +289,47 @@ func control(numbers []float64, ep float64, title string) (step, bool, error) {
 }
 
 // resolve prompts for a provider when none is pinned, then resolves with fallback.
+// the picker shows codes at once and fills each hard or soft label as its
+// background probe returns, so the choice is informed without a wait up front.
 func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
-	if pinned == "" {
-		avail := cat.Available(ep, category)
-		if len(avail) == 0 {
-			return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
-		}
-		p, err := ui.Select("Select provider", avail, func(x miruro.Provider) string { return x.Code })
-		if err != nil {
-			return nil, "", err
-		}
-		pinned = p.Code
+	if pinned != "" {
+		return autoResolve(ctx, client, cat, ep, category, pinned)
 	}
-	return autoResolve(ctx, client, cat, ep, category, pinned)
+
+	avail := cat.Available(ep, category)
+	if len(avail) == 0 {
+		return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
+	}
+
+	codes := make([]string, len(avail))
+	for i, p := range avail {
+		codes[i] = p.Code
+	}
+
+	probe := func(i int) (string, bool) {
+		p := avail[i]
+		e := find(p.Episodes(category), ep)
+		if e == nil {
+			return "unavailable", false
+		}
+		pctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+		res, err := client.Sources(pctx, e.ID, p.Code, category)
+		if err != nil || len(res.Streams) == 0 {
+			return "unavailable", false
+		}
+		variant := "hardsub"
+		if res.Softsub() {
+			variant = "softsub"
+		}
+		return fmt.Sprintf("%s %s", category, variant), true
+	}
+
+	idx, err := ui.PickProvider("Select provider", codes, probe)
+	if err != nil {
+		return nil, "", err
+	}
+	return autoResolve(ctx, client, cat, ep, category, avail[idx].Code)
 }
 
 // autoResolve tries the pinned provider first then the rest, never prompting.
