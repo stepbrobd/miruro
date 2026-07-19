@@ -8,12 +8,66 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"ysun.co/miruro"
 )
+
+// mpv is the real consumer of the proxy and a decoy-disguised segment is the
+// case that broke, so drive the actual binary through the whole chain
+// the segment is served with ServeContent, which answers a Range with 206, the
+// exact condition that previously slipped past the decoy strip
+func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
+	if _, err := exec.LookPath("mpv"); err != nil {
+		t.Skip("mpv not installed")
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+
+	seg := filepath.Join(t.TempDir(), "seg.ts")
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+		"-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", seg)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
+	}
+	raw, err := os.ReadFile(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disguised := append([]byte("\x89PNG\r\n\x1a\n"+strings.Repeat("D", 244)), raw...)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".ts") {
+			http.ServeContent(w, r, "seg.ts", time.Time{}, bytes.NewReader(disguised))
+			return
+		}
+		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", srv.URL)
+	}))
+	defer srv.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	play := exec.CommandContext(ctx, "mpv", "--no-config", "--vo=null", "--ao=null",
+		"--frames=1", "--msg-level=all=error",
+		px.URL(miruro.Stream{URL: srv.URL + "/media.m3u8", Kind: miruro.HLS}))
+	if out, err := play.CombinedOutput(); err != nil {
+		t.Fatalf("mpv could not play the proxied stream: %v: %s", err, out)
+	}
+}
 
 func TestProxyServesNormalizedHLS(t *testing.T) {
 	var upstream *httptest.Server
