@@ -29,7 +29,10 @@ type doneMsg struct {
 
 type downloads struct {
 	labels []string
+	// width sizes the label column
+	// term is the full terminal width
 	width  int
+	term   int
 	bars   []progress.Model
 	done   []int64
 	total  []int64
@@ -60,6 +63,10 @@ func (m downloads) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, listen(m.ch)
+	case tea.WindowSizeMsg:
+		// a resize arrives outside the ch stream, so it must not re-arm listen
+		// and start a second reader
+		m.term = msg.Width
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -74,7 +81,8 @@ func (m downloads) View() string {
 		name := fmt.Sprintf("%-*s", m.width, label)
 		switch {
 		case m.fin[i] && m.errs[i] != nil:
-			b.WriteString(fmt.Sprintf("  %s %s  %s\n", ok(false), name, m.errs[i]))
+			b.WriteString(errLine(ok(false), name, m.errs[i].Error(), m.term))
+			b.WriteByte('\n')
 		case m.fin[i]:
 			b.WriteString(fmt.Sprintf("  %s %s  done\n", ok(true), name))
 		case m.total[i] > 0:
@@ -186,6 +194,50 @@ func drain(ch chan tea.Msg, errs []error, fin []bool, n int) {
 			remain--
 		}
 	}
+}
+
+// defaultTerm is assumed until the first tea.WindowSizeMsg reports the real width
+const defaultTerm = 80
+
+const ellipsis = "..."
+
+// flatten keeps a multi-line error on one row
+// ffmpeg reports its failures across several lines, which would otherwise push
+// the still-live rows below out of place
+var flatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
+// errLine renders one failed task as a single line that fits the terminal
+// marker and label may carry ANSI styling, so only the plain message is cut and
+// the head is composed afterwards
+func errLine(marker, label, msg string, term int) string {
+	if term <= 0 {
+		term = defaultTerm
+	}
+	head := fmt.Sprintf("  %s %s  ", marker, label)
+	msg = flatten.Replace(msg)
+
+	room := term - lipgloss.Width(head)
+	if lipgloss.Width(msg) <= room {
+		return head + msg
+	}
+	// the label column alone already fills the terminal, so show what marker fits
+	if room < len(ellipsis) {
+		return head + ellipsis[:max(room, 0)]
+	}
+	return head + cut(msg, room-len(ellipsis)) + ellipsis
+}
+
+// cut returns the longest prefix of a plain string fitting w display columns
+func cut(s string, w int) string {
+	used := 0
+	for i, r := range s {
+		rw := lipgloss.Width(string(r))
+		if used+rw > w {
+			return s[:i]
+		}
+		used += rw
+	}
+	return s
 }
 
 func ok(good bool) string {
