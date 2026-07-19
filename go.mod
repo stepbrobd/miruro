@@ -3,6 +3,7 @@ module ysun.co/miruro
 go 1.26
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/log v1.0.0
 	github.com/spf13/cobra v1.10.2
 )
