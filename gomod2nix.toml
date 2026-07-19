@@ -33,6 +33,10 @@ schema = 3
     version = 'v0.2.3-0.20250311203215-f60798e515dc'
     hash = 'sha256-D9E/bMOyLXAUVOHA1/6o3i+vVmLfwIMOWib6sU7A6+Q='
 
+  [mod.'github.com/charmbracelet/harmonica']
+    version = 'v0.2.0'
+    hash = 'sha256-fi5N0IXhSbbYHdSZFngCfpT4kdiEaKedqj8YpnlvX0o='
+
   [mod.'github.com/charmbracelet/huh']
     version = 'v1.0.0'
     hash = 'sha256-vDqcsW9uBPDt0FaOA7Bij+Q9CkozggstOZ0r557TaC4='
