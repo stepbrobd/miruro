@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"ysun.co/miruro"
 )
@@ -81,8 +82,12 @@ func StartProxy(ctx context.Context) (*Proxy, error) {
 		return nil, err
 	}
 
+	// clone the default transport to keep HTTP/2 via ALPN, which the WAF needs
+	// bound the header wait so a stalled CDN does not wedge a fetch indefinitely
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 30 * time.Second
 	p := &Proxy{
-		hc:    &http.Client{},
+		hc:    &http.Client{Transport: tr},
 		token: hex.EncodeToString(tok),
 		done:  make(chan struct{}),
 	}
