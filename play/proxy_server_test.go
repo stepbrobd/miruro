@@ -161,7 +161,7 @@ func httpGetBytes(t *testing.T, u string) []byte {
 
 func firstProxiedLine(t *testing.T, body, base string) string {
 	t.Helper()
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), base) {
 			return strings.TrimSpace(line)
 		}

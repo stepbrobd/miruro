@@ -52,7 +52,7 @@ func childKind(body []byte) kind {
 // encrypted reports whether the playlist declares a key, which makes its
 // segments ciphertext that has to reach the player byte for byte
 func encrypted(body []byte) bool {
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	for line := range bytes.SplitSeq(body, []byte("\n")) {
 		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("#EXT-X-KEY")) {
 			continue
 		}
