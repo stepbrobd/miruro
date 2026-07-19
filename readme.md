@@ -1,6 +1,6 @@
 # Miruro
 
-Another CLI tool for watching weebs?
+Another CLI tool for weebs?
 
 Binary Cache:
 
