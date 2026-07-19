@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -67,13 +68,13 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no provider has episode %s", num(ep))
 	}
 	if resProvider != "" {
-		// --provider accepts code:variant everywhere. orderPinned matches on the
-		// bare code and silently leaves the order alone on a miss, so an unsplit
-		// pin here resolves whichever provider happens to be first. The variant
-		// itself is meaningless to resolve, which prints the full subtitles array
-		// and leaves the attach decision to the caller.
-		code, _ := splitPin(resProvider)
-		avail = orderPinned(avail, code)
+		// the variant is meaningless here since resolve prints the full subtitles
+		// array and leaves the attach decision to the caller
+		pin := ParsePin(resProvider)
+		if _, ok := cat.Providers[pin.Code]; !ok {
+			return fmt.Errorf("provider %q not in catalog", pin.Code)
+		}
+		avail = orderPinned(avail, pin.Code)
 	}
 
 	var last error
@@ -84,6 +85,9 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		}
 		res, err := client.Sources(ctx, e.ID, p.Code, category)
 		if err != nil {
+			if errors.Is(err, miruro.ErrBlocked) {
+				return err
+			}
 			last = err
 			continue
 		}

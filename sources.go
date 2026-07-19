@@ -44,6 +44,18 @@ type Result struct {
 
 func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
 
+// Playable reports whether Select can return a stream
+// an embed-only result carries no hls or mp4, so a caller must skip it rather
+// than accept it and fail later outside the fallback loop
+func (r *Result) Playable() bool {
+	for _, s := range r.Streams {
+		if s.Kind == HLS || s.Kind == MP4 {
+			return true
+		}
+	}
+	return false
+}
+
 // Sources resolves an episode on a provider to playable streams and subtitles.
 func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Category) (*Result, error) {
 	body, err := c.pipe(ctx, "sources", map[string]string{

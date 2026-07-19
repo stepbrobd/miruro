@@ -2,21 +2,41 @@ package main
 
 import "testing"
 
-func TestSplitPin(t *testing.T) {
+func TestParsePin(t *testing.T) {
 	cases := []struct {
-		in, code, variant string
+		in   string
+		want Pin
 	}{
-		{"bonk", "bonk", "soft"},
-		{"bonk:hard", "bonk", "hard"},
-		{"bonk:soft", "bonk", "soft"},
-		{"bonk:xyz", "bonk", "soft"},
-		{"", "", "soft"},
-		{"ally", "ally", "soft"},
+		{"bonk", Pin{"bonk", Soft}},
+		{"bonk:hard", Pin{"bonk", Hard}},
+		{"bonk:soft", Pin{"bonk", Soft}},
+		{"bonk:xyz", Pin{"bonk", Soft}},
+		{"", Pin{"", Soft}},
+		{"ally", Pin{"ally", Soft}},
 	}
 	for _, c := range cases {
-		code, variant := splitPin(c.in)
-		if code != c.code || variant != c.variant {
-			t.Errorf("splitPin(%q) = (%q, %q), want (%q, %q)", c.in, code, variant, c.code, c.variant)
+		if got := ParsePin(c.in); got != c.want {
+			t.Errorf("ParsePin(%q) = %+v, want %+v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestPinString(t *testing.T) {
+	cases := []struct {
+		pin  Pin
+		want string
+	}{
+		{Pin{"bonk", Hard}, "bonk:hard"},
+		{Pin{"ally", Soft}, "ally:soft"},
+		{Pin{"", Soft}, ""},
+	}
+	for _, c := range cases {
+		if got := c.pin.String(); got != c.want {
+			t.Errorf("%+v.String() = %q, want %q", c.pin, got, c.want)
+		}
+	}
+	// round trip through the persisted form
+	if got := ParsePin(Pin{"bonk", Hard}.String()); got != (Pin{"bonk", Hard}) {
+		t.Errorf("round trip lost the pin: %+v", got)
 	}
 }

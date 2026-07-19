@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -52,13 +53,16 @@ func run(cmd *cobra.Command, args []string) error {
 	pinned := cfg.Provider
 
 	if flagContinue {
-		id, t, cat, prov, ep, err := resume(st)
+		if len(args) > 0 {
+			log.Warn("--continue ignores the query")
+		}
+		e, err := resume(st)
 		if err != nil {
 			return err
 		}
-		anilistID, title, category, startEp = id, t, cat, ep
-		if prov != "" {
-			pinned = prov
+		anilistID, title, category, startEp = e.AnilistID, e.Title, e.Category, e.Episode
+		if e.Provider != "" {
+			pinned = e.Provider
 		}
 	} else {
 		id, t, err := findAnime(ctx, client, args)
@@ -86,10 +90,20 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if flagDownload {
-		return downloadEpisodes(ctx, client, cat, title, eps, category, pinned, cfg)
+	pin := ParsePin(pinned)
+	if pin.Code != "" {
+		if _, ok := cat.Providers[pin.Code]; !ok {
+			log.Warn("pinned provider not in catalog, using fallback order", "provider", pin.Code)
+		}
 	}
-	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pinned, cfg)
+	if !flagDownload && flagParallel > 1 {
+		log.Warn("--parallel applies only with --download")
+	}
+
+	if flagDownload {
+		return downloadEpisodes(ctx, client, cat, title, eps, category, pin, cfg)
+	}
+	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pin, cfg)
 }
 
 func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
@@ -124,31 +138,30 @@ func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, 
 	return m.ID, m.Title(), nil
 }
 
-func resume(st *store) (int, string, miruro.Category, string, float64, error) {
+func resume(st *store) (entry, error) {
 	entries, err := st.load()
 	if err != nil {
-		return 0, "", "", "", 0, err
+		return entry{}, err
 	}
 	if len(entries) == 0 {
-		return 0, "", "", "", 0, errors.New("no history yet")
+		return entry{}, errors.New("no history yet")
 	}
-	e, err := ui.Select("Resume", entries, func(x entry) string {
+	return ui.Select("Resume", entries, func(x entry) string {
 		return fmt.Sprintf("%s  ep %s  [%s %s]", x.Title, num(x.Episode), x.Provider, x.Category)
 	})
-	if err != nil {
-		return 0, "", "", "", 0, err
-	}
-	return e.AnilistID, e.Title, e.Category, e.Provider, e.Episode, nil
 }
 
 func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
 	if flagAll {
+		if flagEpisode != "" {
+			log.Warn("--all overrides --episode")
+		}
 		return numbers, nil
 	}
 	if flagEpisode != "" {
 		return parseEpisodes(flagEpisode, numbers)
 	}
-	if start >= 0 && contains(numbers, start) {
+	if start >= 0 && slices.Contains(numbers, start) {
 		return []float64{start}, nil
 	}
 	ep, err := ui.Select("Select episode", numbers, num)
@@ -158,16 +171,14 @@ func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
 	return []float64{ep}, nil
 }
 
-func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, eps []float64, category miruro.Category, pinned string, cfg config) error {
-	code, pinVariant := splitPin(pinned)
+func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, title string, eps []float64, category miruro.Category, pin Pin, cfg config) error {
 	px, err := play.StartProxy(ctx)
 	if err != nil {
 		return err
 	}
 	defer px.Close()
 
-	// client.HTTP's deadline spans the body read and truncates long episodes.
-	// a stalled cdn is bounded by the header timeout rather than a whole-request one
+	// bound only the header wait so a slow episode is not truncated mid-body
 	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}}
 
 	labels := make([]string, len(eps))
@@ -177,7 +188,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		ep := eps[i]
-		res, served, err := autoResolve(dctx, client, cat, ep, category, code)
+		res, served, err := autoResolve(dctx, client, cat, ep, category, pin.Code)
 		if err != nil {
 			return err
 		}
@@ -185,13 +196,8 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 		if err != nil {
 			return err
 		}
-		// the pin's variant describes the pinned provider only
-		variant := pinVariant
-		if served != code {
-			variant = "soft"
-		}
 		subs := res.Subtitles
-		if variant == "hard" {
+		if applied(pin, served) == Hard {
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
@@ -211,7 +217,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	return nil
 }
 
-func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pinned string, cfg config) error {
+func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pin Pin, cfg config) error {
 	player := detectPlayer(cfg)
 	px, err := play.StartProxy(ctx)
 	if err != nil {
@@ -223,11 +229,13 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 	queue = queue[1:]
 
 	for {
-		res, prov, variant, err := resolve(ctx, client, cat, ep, category, pinned)
+		res, served, carry, err := resolve(ctx, client, cat, ep, category, pin)
 		if err != nil {
 			return err
 		}
-		pinned = prov + ":" + variant
+		// carry the user's intent across episodes
+		// a transient fallback serves another provider but must not overwrite the pin
+		pin = carry
 
 		stream, err := client.Select(ctx, res, cfg.Quality)
 		if err != nil {
@@ -240,29 +248,35 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		}
 
 		subs := res.Subtitles
-		if variant == "hard" {
+		variant := applied(pin, served)
+		if variant == Hard {
 			subs = nil
 		}
 
-		log.Info("playing", "title", title, "ep", num(ep), "provider", prov, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
+		played := false
+		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
 		err = player.Play(ctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
 		switch {
 		case err == nil:
-			_ = st.save(entry{AnilistID: anilistID, Title: title, Provider: pinned, Category: category, Episode: ep})
+			played = true
+			if serr := st.save(entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}); serr != nil {
+				log.Warn("history not saved", "err", serr)
+			}
 		case ctx.Err() != nil:
 			// exec.CommandContext reports a context kill as an ExitError, so this
-			// guard has to come before the ExitError check below.
-			return err
+			// guard has to come before the ExitError check below
+			return ctx.Err()
 		case !errors.As(err, new(*exec.ExitError)):
 			return err
 		default:
-			// The player ran and failed: an unplayable stream, a proxy 502, or the
-			// user quitting mpv with a nonzero status. Fall through to the control
-			// menu, which offers changing provider, instead of ending the session.
+			// the player ran and failed on an unplayable stream, a proxy 502, or a
+			// nonzero quit
 			log.Warn("player exited", "err", err)
 		}
 
-		if len(queue) > 0 {
+		// only a played episode auto-advances
+		// a failure drops to the menu so a broken provider does not burn the range
+		if played && len(queue) > 0 {
 			ep = queue[0]
 			queue = queue[1:]
 			continue
@@ -276,7 +290,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			return nil
 		}
 		if next.reprovide {
-			pinned = ""
+			pin = Pin{}
 		}
 		if next.reselect {
 			ep, err = ui.Select("Select episode", numbers, num)
@@ -287,6 +301,16 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		}
 		ep = next.ep
 	}
+}
+
+// applied is the subtitle variant for one playback
+// the pin's variant describes the pinned provider only, so a fallback provider
+// resets to soft rather than suppressing its subtitles
+func applied(pin Pin, served string) Variant {
+	if served != pin.Code {
+		return Soft
+	}
+	return pin.Variant
 }
 
 type step struct {
@@ -333,36 +357,23 @@ func control(numbers []float64, ep float64, title string) (step, bool, error) {
 	}
 }
 
-// resolve prompts for a provider when none is pinned, then resolves with
-// fallback. It returns the served provider code and the subtitle variant
-// ("soft" attaches the subtitle file, "hard" plays the video as delivered).
-// A pinned provider carries its variant as "code:variant"; the interactive
-// picker asks only when the source actually ships a subtitle file.
-//
-// The picker shows codes at once and fills each label as its background probe
-// returns, so the choice is informed without a wait up front. A probe only
-// knows whether a .vtt exists, so it says so plainly and leaves the soft/hard
-// vocabulary to the follow-up prompt, which is the only place the user's
-// attach/don't-attach decision is made.
-func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, string, error) {
-	if pinned != "" {
-		code, variant := splitPin(pinned)
-		res, served, err := autoResolve(ctx, client, cat, ep, category, code)
+// resolve resolves an episode and returns the provider that served it and the
+// pin to carry forward
+// with a pinned provider it resolves with fallback and carries the pin unchanged
+// with no pin it runs the async picker, then asks soft or hard only when the
+// source ships a subtitle file, and carries the pick as the new pin
+func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pin Pin) (*miruro.Result, string, Pin, error) {
+	if pin.Code != "" {
+		res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code)
 		if err != nil {
-			return nil, "", "", err
+			return nil, "", pin, err
 		}
-		// The pin's variant describes the pinned provider. When fallback served a
-		// different one, that judgement does not transfer: drop to the soft
-		// default rather than suppressing a legitimate subtitle file.
-		if served != code {
-			variant = "soft"
-		}
-		return res, served, variant, nil
+		return res, served, pin, nil
 	}
 
 	avail := cat.Available(ep, category)
 	if len(avail) == 0 {
-		return nil, "", "", fmt.Errorf("no provider has episode %s", num(ep))
+		return nil, "", pin, fmt.Errorf("no provider has episode %s", num(ep))
 	}
 
 	codes := make([]string, len(avail))
@@ -370,6 +381,9 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 		codes[i] = p.Code
 	}
 
+	// the picker shows codes at once and fills each label as its probe returns
+	// a probe only knows whether a .vtt exists, so it reports that and leaves the
+	// soft or hard choice to the follow-up prompt
 	probe := func(i int) (string, bool) {
 		p := avail[i]
 		e := find(p.Episodes(category), ep)
@@ -379,7 +393,7 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 		pctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		res, err := client.Sources(pctx, e.ID, p.Code, category)
-		if err != nil || len(res.Streams) == 0 {
+		if err != nil || !res.Playable() {
 			return "unavailable", false
 		}
 		has := "no subs"
@@ -391,29 +405,31 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 
 	idx, err := ui.PickProvider("Select provider", codes, probe)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", pin, err
 	}
-	res, served, err := autoResolve(ctx, client, cat, ep, category, avail[idx].Code)
+	picked := avail[idx].Code
+	res, served, err := autoResolve(ctx, client, cat, ep, category, picked)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", pin, err
 	}
 
-	variant := "soft"
+	variant := Soft
 	if len(res.Subtitles) > 0 {
-		variant, err = ui.Select("Subtitles", []string{"soft", "hard"}, func(v string) string {
-			if v == "soft" {
+		choice, err := ui.Select("Subtitles", []Variant{Soft, Hard}, func(v Variant) string {
+			if v == Soft {
 				return "soft, attach subtitle file"
 			}
 			return "hard, subtitles already in the picture"
 		})
 		if err != nil {
-			return nil, "", "", err
+			return nil, "", pin, err
 		}
+		variant = choice
 	}
-	return res, served, variant, nil
+	return res, served, Pin{Code: picked, Variant: variant}, nil
 }
 
-// autoResolve tries the pinned provider first then the rest, never prompting.
+// autoResolve tries the pinned provider first then the rest, never prompting
 func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
 	avail := cat.Available(ep, category)
 	if len(avail) == 0 {
@@ -431,11 +447,17 @@ func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog
 			if errors.Is(err, miruro.ErrBlocked) {
 				return nil, "", err
 			}
-			last = err
+			if ctx.Err() != nil {
+				return nil, "", ctx.Err()
+			}
+			// name the provider so a report points at the one that failed
+			last = fmt.Errorf("%s: %w", p.Code, err)
 			continue
 		}
-		if len(res.Streams) == 0 {
-			last = fmt.Errorf("%s returned no streams", p.Code)
+		// an embed-only result is not playable, so skip it inside the loop rather
+		// than fail later at Select outside it
+		if !res.Playable() {
+			last = fmt.Errorf("%s has no playable stream", p.Code)
 			continue
 		}
 		return res, p.Code, nil
@@ -531,19 +553,10 @@ func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid episode %q", spec)
 	}
-	if !contains(numbers, n) {
+	if !slices.Contains(numbers, n) {
 		return nil, fmt.Errorf("episode %s not available", num(n))
 	}
 	return []float64{n}, nil
 }
 
 func num(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
-
-func contains(xs []float64, x float64) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
-}
