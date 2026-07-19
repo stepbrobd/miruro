@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func obfuscate(t *testing.T, plain []byte, version string) []byte {
@@ -36,5 +40,46 @@ func TestDecode(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Fatalf("version %s: got %s want %s", version, got, want)
 		}
+	}
+}
+
+// ResponseHeaderTimeout stops once headers arrive, so an upstream that answers
+// and then goes quiet mid-body needs a whole-request bound to fail rather than
+// hang the CLI with no output
+func TestClientBoundsAStalledBody(t *testing.T) {
+	if New().HTTP.Timeout == 0 {
+		t.Fatal("the api client has no whole-request timeout, a stalled body hangs forever")
+	}
+
+	stall := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-stall
+	}))
+	// the handler blocks until stall closes, and Close waits on the handler, so
+	// this defer has to run first
+	defer srv.Close()
+	defer close(stall)
+
+	// the same construction with a short bound, so the mechanism is proven
+	// without waiting out the real one
+	hc := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 500 * time.Millisecond}
+	resp, err := hc.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("headers should arrive before the bound trips: %v", err)
+	}
+	defer resp.Body.Close()
+
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadAll(resp.Body); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stalled body read returned without error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the body read was never bounded")
 	}
 }

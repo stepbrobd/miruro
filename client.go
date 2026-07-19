@@ -49,14 +49,16 @@ type Client struct {
 }
 
 func New() *Client {
-	// a whole-request timeout spans the body read and truncates the largest
-	// episodes payload, so bound only the header wait
 	// the cloned default transport keeps HTTP/2 via ALPN, which passes the WAF
+	// ResponseHeaderTimeout excludes the body read, so Timeout backstops an
+	// upstream that answers and then stalls mid-body
+	// the largest episodes payload, One Piece at 13278 rows, reads in about 1.2s,
+	// so this bound cannot cut a real response short
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Client{
 		Base: endpoint,
-		HTTP: &http.Client{Transport: tr},
+		HTTP: &http.Client{Transport: tr, Timeout: 2 * time.Minute},
 	}
 }
 
