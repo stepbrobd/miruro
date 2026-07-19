@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,9 +35,7 @@ func (f *hlsFixture) counts() map[string]int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(map[string]int, len(f.hits))
-	for k, v := range f.hits {
-		out[k] = v
-	}
+	maps.Copy(out, f.hits)
 	return out
 }
 
