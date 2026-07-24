@@ -287,40 +287,63 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			subs = nil
 		}
 
-		played := false
 		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
-		err = player.Play(ctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
-		switch {
-		case err == nil:
-			played = true
-			if serr := st.save(entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}); serr != nil {
-				log.Warn("history not saved", "err", serr)
+
+		// the menu is up while the player runs, so a pick races playback ending
+		// an early pick interrupts the player, a clean end mid-batch dismisses
+		// the menu to auto-advance
+		e := entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}
+		pctx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		var perr, werr error
+		go func() {
+			perr = player.Play(pctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
+			// save the moment playback ends cleanly rather than when the menu
+			// closes, so killing an idle menu cannot lose the watched entry
+			if perr == nil {
+				werr = st.save(e)
 			}
-		case ctx.Err() != nil:
-			// exec.CommandContext reports a context kill as an ExitError, so this
-			// guard has to come before the ExitError check below
-			return ctx.Err()
-		case !errors.As(err, new(*exec.ExitError)):
-			return err
-		default:
-			// the player ran and failed on an unplayable stream, a proxy 502, or a
-			// nonzero quit
-			log.Warn("player exited", "err", err)
+			close(done)
+		}()
+
+		batch := len(queue) > 0
+		wait := func() ui.End {
+			<-done
+			return outcome(perr, batch)
 		}
 
-		// only a played episode auto-advances
-		// a failure drops to the menu so a broken provider does not burn the range
-		if played && len(queue) > 0 {
+		action, ended, err := ui.Control(ctx, fmt.Sprintf("Episode %s of %s", num(ep), title), controls(numbers, ep), wait)
+		stop()
+		<-done
+		if err != nil {
+			return err
+		}
+		// outcome dismisses a failed playback only when the player never ran,
+		// which no menu action can fix
+		if action == "" && perr != nil {
+			return perr
+		}
+		if perr != nil {
+			if ended {
+				// keep the failure in scrollback after the menu clears
+				log.Warn("player exited", "err", perr)
+			} else {
+				// an early pick interrupts the player and still counts as watched
+				werr = st.save(e)
+			}
+		}
+		if werr != nil {
+			log.Warn("history not saved", "err", werr)
+		}
+
+		if action == "" {
 			ep = queue[0]
 			queue = queue[1:]
 			continue
 		}
 
-		next, stop, err := control(numbers, ep, title)
-		if err != nil {
-			return err
-		}
-		if stop {
+		next, quit := apply(action, numbers, ep)
+		if quit {
 			return nil
 		}
 		if next.reprovide {
@@ -335,6 +358,22 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			ep = next.ep
 		}
 		queue = ahead(queue, ep)
+	}
+}
+
+// outcome maps a playback result to the menu's reaction
+// a clean end mid-batch advances, a failure keeps the menu up so a broken
+// provider does not burn the range, and a player that never ran is fatal
+func outcome(err error, batch bool) ui.End {
+	switch {
+	case err == nil && batch:
+		return ui.End{Dismiss: true}
+	case err == nil:
+		return ui.End{Status: "finished"}
+	case errors.As(err, new(*exec.ExitError)):
+		return ui.End{Status: "player exited: " + err.Error()}
+	default:
+		return ui.End{Dismiss: true}
 	}
 }
 
@@ -366,9 +405,9 @@ type step struct {
 	reselect  bool
 }
 
-func control(numbers []float64, ep float64, title string) (step, bool, error) {
-	next, hasNext := neighbor(numbers, ep, +1)
-	prev, hasPrev := neighbor(numbers, ep, -1)
+func controls(numbers []float64, ep float64) []string {
+	_, hasNext := neighbor(numbers, ep, +1)
+	_, hasPrev := neighbor(numbers, ep, -1)
 
 	var actions []string
 	if hasNext {
@@ -378,29 +417,26 @@ func control(numbers []float64, ep float64, title string) (step, bool, error) {
 	if hasPrev {
 		actions = append(actions, "previous")
 	}
-	actions = append(actions, "select", "change provider", "quit")
+	return append(actions, "select", "change provider", "quit")
+}
 
-	choice, err := ui.Menu(fmt.Sprintf("Episode %s of %s", num(ep), title), actions)
-	if err != nil {
-		if errors.Is(err, ui.ErrAborted) {
-			return step{}, true, nil
-		}
-		return step{}, false, err
-	}
-
-	switch choice {
+// apply maps a menu action to the next step, quit included
+func apply(action string, numbers []float64, ep float64) (step, bool) {
+	switch action {
 	case "next":
-		return step{ep: next}, false, nil
+		n, _ := neighbor(numbers, ep, +1)
+		return step{ep: n}, false
 	case "previous":
-		return step{ep: prev}, false, nil
+		p, _ := neighbor(numbers, ep, -1)
+		return step{ep: p}, false
 	case "replay":
-		return step{ep: ep}, false, nil
+		return step{ep: ep}, false
 	case "select":
-		return step{reselect: true}, false, nil
+		return step{reselect: true}, false
 	case "change provider":
-		return step{ep: ep, reprovide: true}, false, nil
+		return step{ep: ep, reprovide: true}, false
 	default:
-		return step{}, true, nil
+		return step{}, true
 	}
 }
 

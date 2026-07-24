@@ -50,7 +50,3 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 	}
 	return items[idx], nil
 }
-
-func Menu(title string, actions []string) (string, error) {
-	return Select(title, actions, func(s string) string { return s })
-}

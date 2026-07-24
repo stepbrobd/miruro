@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -68,10 +70,14 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 	if cleanup != nil {
 		defer cleanup()
 	}
+	// the terminal belongs to the control menu while the player runs, so the
+	// player gets no stdin and its diagnostics feed the error instead of the tty
+	// mpv logs to stdout, so both streams land in the same buffer
+	var buf tail
 	cmd := exec.CommandContext(ctx, p.Bin, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-	// interrupt rather than kill so mpv restores the terminal and flushes state
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	// interrupt rather than kill so mpv flushes state before exiting
 	// WaitDelay still forces a kill if it ignores the signal
 	// windows cannot deliver an interrupt, and the failed signal would otherwise
 	// stall the whole WaitDelay before the kill lands
@@ -82,7 +88,36 @@ func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitl
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	return cmd.Run()
+	err := cmd.Run()
+	if err != nil {
+		if line := buf.last(); line != "" {
+			return fmt.Errorf("%w: %s", err, line)
+		}
+	}
+	return err
+}
+
+const tailMax = 2 << 10
+
+// tail keeps the end of the player's stderr for error reporting
+type tail struct{ b []byte }
+
+func (t *tail) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if n := len(t.b); n > tailMax {
+		t.b = t.b[n-tailMax:]
+	}
+	return len(p), nil
+}
+
+// last is the final non-empty line, where the player states its failure
+func (t *tail) last() string {
+	for _, line := range slices.Backward(strings.Split(string(t.b), "\n")) {
+		if l := strings.TrimSpace(line); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // args carries no referer flag because the proxy injects the referer upstream

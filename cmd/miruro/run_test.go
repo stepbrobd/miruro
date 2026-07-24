@@ -8,12 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/ui"
 )
 
 // sourcesServer decodes the pipe envelope and dispatches on the provider in
@@ -243,6 +246,73 @@ func TestNeighbor(t *testing.T) {
 			if got != tc.want || ok != tc.wantOK {
 				t.Errorf("neighbor(%v, %d) = (%v, %v), want (%v, %v)",
 					tc.ep, tc.dir, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestControls(t *testing.T) {
+	numbers := []float64{1, 2, 3}
+	for _, tc := range []struct {
+		name string
+		ep   float64
+		want []string
+	}{
+		{"first has no previous", 1, []string{"next", "replay", "select", "change provider", "quit"}},
+		{"middle has both", 2, []string{"next", "replay", "previous", "select", "change provider", "quit"}},
+		{"last has no next", 3, []string{"replay", "previous", "select", "change provider", "quit"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := controls(numbers, tc.ep); !slices.Equal(got, tc.want) {
+				t.Errorf("controls(ep %v) = %v, want %v", tc.ep, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApply(t *testing.T) {
+	numbers := []float64{1, 2, 3}
+	for _, tc := range []struct {
+		action   string
+		want     step
+		wantQuit bool
+	}{
+		{"next", step{ep: 3}, false},
+		{"previous", step{ep: 1}, false},
+		{"replay", step{ep: 2}, false},
+		{"select", step{reselect: true}, false},
+		{"change provider", step{ep: 2, reprovide: true}, false},
+		{"quit", step{}, true},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			got, quit := apply(tc.action, numbers, 2)
+			if got != tc.want || quit != tc.wantQuit {
+				t.Errorf("apply(%q) = (%+v, %v), want (%+v, %v)", tc.action, got, quit, tc.want, tc.wantQuit)
+			}
+		})
+	}
+}
+
+func TestOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no false binary")
+	}
+	exit := exec.Command("false").Run()
+	other := errors.New("no player")
+	for _, tc := range []struct {
+		name  string
+		err   error
+		batch bool
+		want  ui.End
+	}{
+		{"clean end mid-batch advances", nil, true, ui.End{Dismiss: true}},
+		{"clean end alone stays", nil, false, ui.End{Status: "finished"}},
+		{"failure stays", exit, true, ui.End{Status: "player exited: " + exit.Error()}},
+		{"unrunnable player dismisses", other, false, ui.End{Dismiss: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outcome(tc.err, tc.batch); got != tc.want {
+				t.Errorf("outcome = %+v, want %+v", got, tc.want)
 			}
 		})
 	}
