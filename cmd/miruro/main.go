@@ -45,7 +45,7 @@ func init() {
 	f.BoolVar(&flagDub, "dub", false, "Use dub instead of sub")
 	f.BoolVarP(&flagContinue, "continue", "c", false, "Resume from history")
 	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
-	f.BoolVar(&flagAll, "all", false, "Select every episode, for use with --download")
+	f.BoolVar(&flagAll, "all", false, "Select every episode, to binge or to download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")
 	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as mpv chapters via aniskip")
 	root.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "Log resolution and playback detail")

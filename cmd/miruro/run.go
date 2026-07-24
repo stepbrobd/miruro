@@ -107,6 +107,9 @@ func run(cmd *cobra.Command, args []string) error {
 	if !flagDownload && flagParallel > 1 {
 		log.Warn("--parallel applies only with --download")
 	}
+	if flagDownload && flagSkip {
+		log.Warn("--skip applies only to playback")
+	}
 
 	if flagDownload {
 		return downloadEpisodes(ctx, client, cat, anilistID, title, eps, category, pin, cfg)
