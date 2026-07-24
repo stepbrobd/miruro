@@ -1,6 +1,47 @@
 package miruro
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func testCatalog() *Catalog {
+	return &Catalog{Providers: map[string]Provider{
+		"bonk": {
+			Code: "bonk",
+			Sub:  []Episode{{ID: "b1", Number: 1}, {ID: "b2", Number: 2}},
+			Dub:  []Episode{{ID: "bd1", Number: 1}},
+		},
+		"ally": {
+			Code: "ally",
+			Sub:  []Episode{{ID: "a2", Number: 2}, {ID: "a3", Number: 2.5}},
+		},
+	}}
+}
+
+func TestNumbersUnion(t *testing.T) {
+	cat := testCatalog()
+	if got, want := cat.Numbers(Sub), []float64{1, 2, 2.5}; !slices.Equal(got, want) {
+		t.Errorf("Numbers(Sub) = %v, want %v", got, want)
+	}
+	if got, want := cat.Numbers(Dub), []float64{1}; !slices.Equal(got, want) {
+		t.Errorf("Numbers(Dub) = %v, want %v", got, want)
+	}
+}
+
+func TestAvailableOrdersByCode(t *testing.T) {
+	cat := testCatalog()
+	var got []string
+	for _, p := range cat.Available(2, Sub) {
+		got = append(got, p.Code)
+	}
+	if want := []string{"ally", "bonk"}; !slices.Equal(got, want) {
+		t.Errorf("Available(2, Sub) = %v, want %v", got, want)
+	}
+	if avail := cat.Available(2, Dub); len(avail) != 0 {
+		t.Errorf("Available(2, Dub) = %v, want none", avail)
+	}
+}
 
 func TestBestSkips(t *testing.T) {
 	rows := []skipEntry{

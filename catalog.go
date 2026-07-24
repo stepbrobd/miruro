@@ -170,9 +170,8 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	return out
 }
 
-// Available lists providers carrying the episode in the category, ordered by code
-// the default order is a placeholder
-// provider ranking is an author-owned decision
+// Available lists providers carrying the episode in the category, ordered by
+// code so runs are reproducible
 func (c *Catalog) Available(number float64, cat Category) []Provider {
 	var out []Provider
 	for _, p := range c.Providers {

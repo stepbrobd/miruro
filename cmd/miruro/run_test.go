@@ -270,6 +270,38 @@ func TestNeighbor(t *testing.T) {
 	}
 }
 
+func TestParseEpisodes(t *testing.T) {
+	numbers := []float64{1, 2, 2.5, 3, 10}
+	for _, tc := range []struct {
+		name    string
+		spec    string
+		want    []float64
+		wantErr bool
+	}{
+		{"single", "2", []float64{2}, false},
+		{"fractional", "2.5", []float64{2.5}, false},
+		{"range", "2-3", []float64{2, 2.5, 3}, false},
+		{"range with spaces", " 1 - 2 ", []float64{1, 2}, false},
+		{"range clamps to available", "2-20", []float64{2, 2.5, 3, 10}, false},
+		{"empty range", "4-9", nil, true},
+		{"absent single", "7", nil, true},
+		{"negative", "-5", nil, true},
+		{"garbage", "abc", nil, true},
+		{"bad range bound", "a-3", nil, true},
+		{"trailing dash", "3-", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEpisodes(tc.spec, numbers)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseEpisodes(%q) error = %v, wantErr %v", tc.spec, err, tc.wantErr)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("parseEpisodes(%q) = %v, want %v", tc.spec, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestControls(t *testing.T) {
 	numbers := []float64{1, 2, 3}
 	for _, tc := range []struct {
