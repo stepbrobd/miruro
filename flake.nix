@@ -27,7 +27,7 @@
         };
         modules = ./gomod2nix.toml;
         subPackages = [ "cmd/miruro" ];
-        ldflags = [ "-X" "main.version=${finalAttrs.version}" ];
+        ldflags = [ "-s -X main.version=${finalAttrs.version}" ];
         nativeBuildInputs = [ pkgs.installShellFiles ];
         postInstall = ''
           for shell in bash zsh fish; do
