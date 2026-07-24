@@ -2,18 +2,17 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
 
+	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
 )
 
 var (
-	resEpisode  string
 	resProvider string
 	resDub      bool
 	resQuality  string
@@ -21,9 +20,14 @@ var (
 )
 
 var resolveCmd = &cobra.Command{
-	Use:           "resolve <anilistId>",
-	Short:         "Resolve an episode to a stream URL without playing",
-	Args:          cobra.ExactArgs(1),
+	Use:   "resolve <query|anilistId> <episode>",
+	Short: "Resolve an episode to a stream URL without playing",
+	Long: `Resolve an episode to a stream URL without playing.
+
+A numeric first argument is read as an AniList id, anything else is searched
+on AniList and the top hit is used. The matched title is reported on stderr
+so a script consumer knows which title served.`,
+	Args:          cobra.ExactArgs(2),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runResolve,
@@ -31,79 +35,74 @@ var resolveCmd = &cobra.Command{
 
 func init() {
 	f := resolveCmd.Flags()
-	f.StringVarP(&resEpisode, "episode", "e", "", "Episode number")
-	f.StringVar(&resProvider, "provider", "", "Provider code, else auto with fallback")
+	f.StringVar(&resProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
 	f.BoolVar(&resDub, "dub", false, "Use dub instead of sub")
-	f.StringVarP(&resQuality, "quality", "q", "best", "Video quality")
+	f.StringVarP(&resQuality, "quality", "q", "", "Video quality, e.g. best or 1080p")
 	f.BoolVar(&resJSON, "json", false, "Emit JSON with referer and subtitles")
-	_ = resolveCmd.MarkFlagRequired("episode")
 	root.AddCommand(resolveCmd)
 }
 
 func runResolve(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	id, err := strconv.Atoi(args[0])
-	if err != nil {
-		return fmt.Errorf("anilistId must be numeric, got %q", args[0])
+	cfg := loadConfig()
+	if resQuality != "" {
+		cfg.Quality = resQuality
 	}
-	ep, err := strconv.ParseFloat(resEpisode, 64)
-	if err != nil {
-		return fmt.Errorf("invalid episode %q", resEpisode)
+	if resProvider != "" {
+		cfg.Provider = resProvider
+	}
+	if resDub {
+		cfg.Dub = true
 	}
 
 	category := miruro.Sub
-	if resDub {
+	if cfg.Dub {
 		category = miruro.Dub
 	}
 
 	client := miruro.New()
 
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		media, serr := client.Search(ctx, args[0])
+		if serr != nil {
+			return serr
+		}
+		if len(media) == 0 {
+			return fmt.Errorf("no results for %q", args[0])
+		}
+		id = media[0].ID
+		// name the match so a script consumer knows which title served
+		fmt.Fprintf(os.Stderr, "matched %q (anilist %d)\n", media[0].Title(), id)
+	}
+
+	ep, err := strconv.ParseFloat(args[1], 64)
+	if err != nil {
+		return fmt.Errorf("invalid episode %q", args[1])
+	}
+
 	cat, err := client.Episodes(ctx, id)
 	if err != nil {
 		return err
 	}
-	avail := cat.Available(ep, category)
-	if len(avail) == 0 {
-		return fmt.Errorf("no provider has episode %s", num(ep))
-	}
-	if resProvider != "" {
-		// the variant is meaningless here since resolve prints the full subtitles
-		// array and leaves the attach decision to the caller
-		pin := ParsePin(resProvider)
-		// provider sets are per title, so a real code can be missing from this one
-		// fall back rather than fail, matching the watch path
+
+	pin := ParsePin(cfg.Provider)
+	if pin.Code != "" {
 		if _, ok := cat.Providers[pin.Code]; !ok {
-			fmt.Fprintf(os.Stderr, "provider %q not in catalog, using fallback order\n", pin.Code)
+			log.Warn("pinned provider not in catalog, using fallback order", "provider", pin.Code)
 		}
-		avail = orderPinned(avail, pin.Code)
 	}
 
-	var last error
-	for _, p := range avail {
-		e := find(p.Episodes(category), ep)
-		if e == nil {
-			continue
-		}
-		res, err := client.Sources(ctx, e.ID, p.Code, category)
-		if err != nil {
-			if errors.Is(err, miruro.ErrBlocked) {
-				return err
-			}
-			last = err
-			continue
-		}
-		stream, err := client.Select(ctx, res, resQuality)
-		if err != nil {
-			last = err
-			continue
-		}
-		return emit(stream, res, p.Code)
+	res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code)
+	if err != nil {
+		return err
 	}
-	if last == nil {
-		last = fmt.Errorf("no source resolved")
+	stream, err := client.Select(ctx, res, cfg.Quality)
+	if err != nil {
+		return err
 	}
-	return last
+	return emit(stream, res, served)
 }
 
 func emit(s miruro.Stream, res *miruro.Result, provider string) error {
