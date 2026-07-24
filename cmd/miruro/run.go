@@ -37,12 +37,6 @@ func run(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if flagDelete {
-		return st.clear()
-	}
-	if flagDeleteCache {
-		return clearCache()
-	}
 
 	client := miruro.New()
 
@@ -228,9 +222,13 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 		return nil
 	})
 
-	var failed int
+	var failed, cancelled int
 	for i, err := range errs {
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, ui.ErrCancelled):
+			cancelled++
+		default:
 			failed++
 			// the TUI shows each failure on its task row, but a piped or scripted
 			// run draws no rows and would otherwise report only a count
@@ -239,6 +237,10 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d downloads failed", failed, len(eps))
+	}
+	if cancelled > 0 {
+		// map an interrupt onto the same silent 130 exit every other abort takes
+		return context.Canceled
 	}
 	// warn rather than log so a soft-subbed run that lost its sidecars is visible
 	// without --verbose
