@@ -48,7 +48,7 @@ func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m control) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key := msg.String(); key {
+	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -61,13 +61,6 @@ func (m control) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.pick(m.actions[m.cursor])
 	case "esc", "ctrl+c", "q":
 		return m.pick("quit")
-	default:
-		// a first letter picks its action outright, n for next, r for replay
-		for _, a := range m.actions {
-			if strings.HasPrefix(a, key) {
-				return m.pick(a)
-			}
-		}
 	}
 	return m, nil
 }

@@ -94,37 +94,22 @@ func TestControlCursorBounds(t *testing.T) {
 	}
 }
 
-func TestControlAccelerators(t *testing.T) {
-	for _, tc := range []struct {
-		key, want string
-	}{
-		{"n", "next"},
-		{"r", "replay"},
-		{"s", "select"},
-		{"c", "change provider"},
-		{"q", "quit"},
-	} {
-		m, cmd := step(t, controlFixture(), key(tc.key))
-		if m.choice != tc.want {
-			t.Errorf("key %q picked %q, want %q", tc.key, m.choice, tc.want)
-		}
-		if cmd == nil {
-			t.Errorf("key %q did not quit the program", tc.key)
-		}
-	}
-}
-
 func TestControlAbort(t *testing.T) {
-	m, _ := step(t, controlFixture(), key("esc"))
-	if m.choice != "quit" {
-		t.Errorf("esc picked %q, want quit", m.choice)
+	for _, k := range []string{"esc", "q"} {
+		m, _ := step(t, controlFixture(), key(k))
+		if m.choice != "quit" {
+			t.Errorf("%s picked %q, want quit", k, m.choice)
+		}
 	}
 }
 
-func TestControlUnknownKey(t *testing.T) {
-	m, cmd := step(t, controlFixture(), key("x"))
-	if m.choice != "" || m.done || cmd != nil {
-		t.Errorf("unknown key = (%q, done %v), want inert", m.choice, m.done)
+// letters must not pick, the other pickers only navigate and enter
+func TestControlLetterKey(t *testing.T) {
+	for _, k := range []string{"n", "r", "s", "c", "x"} {
+		m, cmd := step(t, controlFixture(), key(k))
+		if m.choice != "" || m.done || cmd != nil {
+			t.Errorf("key %q = (%q, done %v), want inert", k, m.choice, m.done)
+		}
 	}
 }
 
@@ -152,8 +137,8 @@ func TestControlKeyOverPipe(t *testing.T) {
 		return End{}
 	}
 	action, ended, err := Control(context.Background(), "t", []string{"next", "quit"}, wait,
-		tea.WithInput(strings.NewReader("n")), tea.WithoutRenderer())
-	if err != nil || action != "next" || ended {
-		t.Errorf("Control = (%q, %v, %v), want (next, false, nil)", action, ended, err)
+		tea.WithInput(strings.NewReader("j\r")), tea.WithoutRenderer())
+	if err != nil || action != "quit" || ended {
+		t.Errorf("Control = (%q, %v, %v), want (quit, false, nil)", action, ended, err)
 	}
 }
