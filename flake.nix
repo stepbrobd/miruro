@@ -12,6 +12,8 @@
       });
 
       packages.default = pkgs.buildGoApplication (lib.fix (finalAttrs: {
+        __structuredAttrs = true;
+        __darwinAllowLocalNetworking = true;
         pname = "miruro";
         meta.mainProgram = finalAttrs.pname;
         version = lib.fileContents ./version.txt;
