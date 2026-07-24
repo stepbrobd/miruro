@@ -203,10 +203,9 @@ func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 		return nil, fmt.Errorf("master playlist: status %d", resp.StatusCode)
 	}
 
-	base, err := url.Parse(s.URL)
-	if err != nil {
-		return nil, err
-	}
+	// base must be the URL the master was ultimately served from after
+	// redirects, or relative variants resolve against the wrong host
+	base := resp.Request.URL
 	var variants []Stream
 	var height string
 	master := false

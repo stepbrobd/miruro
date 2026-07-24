@@ -1,6 +1,12 @@
 package miruro
 
-import "testing"
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestParseHeight(t *testing.T) {
 	cases := map[string]int{
@@ -39,5 +45,34 @@ func TestPickQuality(t *testing.T) {
 
 	if _, ok := pickQuality([]Stream{{Quality: ""}, {Quality: "auto"}}, "720p"); ok {
 		t.Error("pickQuality matched on streams with no usable height label")
+	}
+}
+
+// a token-signed master can redirect to another host or path, so relative
+// variants must resolve against the URL the master was served from
+func TestExpandMasterRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/master.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/cdn/v2/master.m3u8", http.StatusFound)
+	})
+	mux.HandleFunc("/cdn/v2/master.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080\nindex-1080.m3u8\n")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client()}
+	variants, err := c.expandMaster(context.Background(), Stream{URL: srv.URL + "/master.m3u8", Kind: HLS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variants) != 1 {
+		t.Fatalf("got %d variants, want 1", len(variants))
+	}
+	if want := srv.URL + "/cdn/v2/index-1080.m3u8"; variants[0].URL != want {
+		t.Errorf("variant URL = %q, want %q", variants[0].URL, want)
+	}
+	if variants[0].Quality != "1080p" {
+		t.Errorf("variant quality = %q, want %q", variants[0].Quality, "1080p")
 	}
 }
