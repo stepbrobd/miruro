@@ -173,6 +173,37 @@ func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 	}
 }
 
+// a buffered kind reads the body whole, so an upstream that answers and then
+// stalls mid-body must trip the proxy deadline rather than wedge the player
+// or a download worker
+func TestProxyBoundsStalledSegment(t *testing.T) {
+	stall := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-stall
+	}))
+	// the handler blocks until stall closes, and Close waits on the handler,
+	// so this defer has to run first
+	defer upstream.Close()
+	defer close(stall)
+
+	// the proxy is built by hand so the short deadline is set before it serves
+	px := &Proxy{hc: &http.Client{}, token: "tok", timeout: 100 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(px.handle))
+	defer srv.Close()
+	px.base = srv.URL + "/tok"
+
+	resp, err := http.Get(px.proxied(upstream.URL+"/seg0.ts", "", segment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("stalled upstream answered %d, want 502", resp.StatusCode)
+	}
+}
+
 // a hostile or broken upstream serving an endless playlist must get a 502
 // rather than buffer until memory runs out
 func TestProxyRefusesOversizedPlaylist(t *testing.T) {

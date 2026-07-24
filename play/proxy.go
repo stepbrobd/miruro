@@ -29,6 +29,9 @@ const (
 	// tens of MB, so only a hostile or broken upstream hits these caps
 	maxPlaylistBody = 16 << 20
 	maxSegmentBody  = 256 << 20
+	// bufferedTimeout bounds one whole buffered fetch, generous enough for the
+	// largest real segment on a slow link
+	bufferedTimeout = 5 * time.Minute
 )
 
 var errToken = errors.New("bad token")
@@ -69,8 +72,10 @@ type Proxy struct {
 	hc    *http.Client
 	token string
 	base  string
-	done  chan struct{}
-	once  sync.Once
+	// timeout bounds one buffered fetch, zero disables the bound
+	timeout time.Duration
+	done    chan struct{}
+	once    sync.Once
 }
 
 // StartProxy binds a relay on an ephemeral localhost port
@@ -91,9 +96,10 @@ func StartProxy(ctx context.Context) (*Proxy, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	p := &Proxy{
-		hc:    &http.Client{Transport: tr},
-		token: hex.EncodeToString(tok),
-		done:  make(chan struct{}),
+		hc:      &http.Client{Transport: tr},
+		token:   hex.EncodeToString(tok),
+		timeout: bufferedTimeout,
+		done:    make(chan struct{}),
 	}
 	p.base = "http://" + ln.Addr().String() + "/" + p.token
 
@@ -155,7 +161,17 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := p.fetch(r, t)
+	// buffered kinds read the body whole, so a stalled upstream must trip a
+	// deadline rather than wedge the player or a download worker
+	// an opaque relay may stream a long video legitimately and stays unbounded
+	ctx := r.Context()
+	if t.Kind != opaque && p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+
+	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -220,8 +236,8 @@ func (p *Proxy) decode(path string) (target, error) {
 	return t, err
 }
 
-func (p *Proxy) fetch(r *http.Request, t target) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, t.URL, nil)
+func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
 	if err != nil {
 		return nil, err
 	}
