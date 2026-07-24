@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 )
 
@@ -73,10 +72,7 @@ func clearHistory(st *store) (int, error) {
 }
 
 func runCacheClear(*cobra.Command, []string) error {
-	segments, err := xdg.StateFile("miruro/segments")
-	if err != nil {
-		return err
-	}
+	segments := segmentsRoot()
 	// a file vanishing mid-walk only skews the printed size
 	var total int64
 	_ = filepath.WalkDir(segments, func(_ string, d fs.DirEntry, err error) error {

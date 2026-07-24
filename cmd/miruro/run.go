@@ -239,13 +239,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
-		// a cache directory that cannot be derived only costs resumption, so the
-		// download still proceeds without one
-		cache, err := cacheDir(anilistID, ep, category, served, cfg.Quality)
-		if err != nil {
-			log.Warn("segment cache unavailable, downloads will not resume", "err", err)
-			cache = ""
-		}
+		cache := cacheDir(anilistID, ep, category, served, cfg.Quality)
 		missed, err := play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, cache, report)
 		if err != nil {
 			return err

@@ -77,23 +77,24 @@ func (s *store) save(e entry) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Clean(s.path))
+	return os.Rename(tmp, s.path)
+}
+
+// segmentsRoot is the parent of every per-episode segment cache directory
+func segmentsRoot() string {
+	return filepath.Join(xdg.StateHome, "miruro", "segments")
 }
 
 // cacheDir names the segment directory for one episode
 // category, provider and quality are all part of the key because each selects a
 // different rendition, and reusing one for another would splice a video out of
 // the wrong source
-func cacheDir(anilistID int, ep float64, category miruro.Category, provider, quality string) (string, error) {
-	root, err := xdg.StateFile("miruro/segments")
-	if err != nil {
-		return "", err
-	}
+func cacheDir(anilistID int, ep float64, category miruro.Category, provider, quality string) string {
 	if quality == "" {
 		quality = "best"
 	}
 	key := fmt.Sprintf("%d-e%s-%s-%s-%s", anilistID, num(ep), category, provider, quality)
-	return filepath.Join(root, safeKey(key)), nil
+	return filepath.Join(segmentsRoot(), safeKey(key))
 }
 
 // safeKey reduces a cache key to one path component
@@ -111,14 +112,7 @@ func safeKey(s string) string {
 // the cache is only ever a resumption aid, so removing it can lose progress but
 // never a finished download
 func clearCache() error {
-	root, err := xdg.StateFile("miruro/segments")
-	if err != nil {
-		return err
-	}
-	if err := os.RemoveAll(root); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return os.RemoveAll(segmentsRoot())
 }
 
 func (s *store) clear() error {
