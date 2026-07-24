@@ -44,6 +44,49 @@ func TestTailLast(t *testing.T) {
 	}
 }
 
+// a missing player must fail the run before any resolution work, so Detect
+// reports rather than returning a bin that cannot exec
+func TestDetectErrorsWithoutPlayers(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if p, err := Detect(""); err == nil {
+		t.Errorf("empty PATH still detected %+v", p)
+	}
+}
+
+func TestDetectHonoursPreference(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script players")
+	}
+	dir := t.TempDir()
+	for _, name := range []string{"mpv", "iina"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	p, err := Detect(IINA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Kind != IINA {
+		t.Errorf("Detect(IINA) picked %s", p.Kind)
+	}
+
+	// a stale preference falls back to the platform default
+	p, err = Detect("vlc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := MPV
+	if runtime.GOOS == "darwin" {
+		want = IINA
+	}
+	if p.Kind != want {
+		t.Errorf("Detect(vlc) picked %s, want %s", p.Kind, want)
+	}
+}
+
 // fakePlayer writes a script that prints to stderr and exits with the given code
 func fakePlayer(t *testing.T, code int) Player {
 	t.Helper()

@@ -38,6 +38,14 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// watching needs a player, so a missing one fails before any prompt
+	var player play.Player
+	if !flagDownload {
+		if player, err = play.Detect(play.Kind(cfg.Player)); err != nil {
+			return err
+		}
+	}
+
 	client := miruro.New()
 
 	category := miruro.Sub
@@ -103,7 +111,7 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagDownload {
 		return downloadEpisodes(ctx, client, cat, anilistID, title, eps, category, pin, cfg)
 	}
-	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pin, cfg)
+	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pin, cfg, player)
 }
 
 func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
@@ -251,8 +259,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	return nil
 }
 
-func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pin Pin, cfg config) error {
-	player := detectPlayer(cfg)
+func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pin Pin, cfg config, player play.Player) error {
 	px, err := play.StartProxy(ctx)
 	if err != nil {
 		return err
@@ -528,10 +535,6 @@ func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
 		}
 	}
 	return out
-}
-
-func detectPlayer(cfg config) play.Player {
-	return play.Detect(play.Kind(cfg.Player))
 }
 
 // proxySubs routes sidecar subtitle fetches through the proxy so CDN gating is

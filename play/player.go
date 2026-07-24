@@ -3,6 +3,7 @@ package play
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,21 +33,26 @@ type Player struct {
 // Detect resolves a player, honouring prefer when it names a supported player
 // that is installed, otherwise preferring IINA on macOS and falling back to mpv
 // a stale prefer such as vlc is ignored rather than launched with mpv's flags
-func Detect(prefer Kind) Player {
+// it errors when nothing supported is installed, so a run fails before any
+// resolution work rather than at first playback
+func Detect(prefer Kind) (Player, error) {
 	if prefer == MPV || prefer == IINA {
 		if p, ok := lookup(prefer); ok {
-			return p
+			return p, nil
 		}
 	}
 	if runtime.GOOS == "darwin" {
 		if p, ok := lookup(IINA); ok {
-			return p
+			return p, nil
 		}
 	}
 	if p, ok := lookup(MPV); ok {
-		return p
+		return p, nil
 	}
-	return Player{Kind: MPV, Bin: string(MPV)}
+	if runtime.GOOS == "darwin" {
+		return Player{}, errors.New("no player found, install mpv or iina")
+	}
+	return Player{}, errors.New("no player found, install mpv")
 }
 
 func lookup(k Kind) (Player, bool) {
