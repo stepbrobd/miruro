@@ -156,6 +156,26 @@ func TestAutoResolve(t *testing.T) {
 	})
 }
 
+func TestMediaLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    miruro.Media
+		want string
+	}{
+		{"format and count", miruro.Media{English: "T", Format: "TV", Episodes: 12}, "T (TV, 12 eps)"},
+		{"mapped format", miruro.Media{English: "T", Format: "TV_SHORT", Episodes: 3}, "T (TV Short, 3 eps)"},
+		{"movie without count", miruro.Media{English: "T", Format: "MOVIE"}, "T (Movie)"},
+		{"unknown format passes through", miruro.Media{English: "T", Format: "WEIRD"}, "T (WEIRD)"},
+		{"bare title", miruro.Media{English: "T"}, "T"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mediaLabel(tc.m); got != tc.want {
+				t.Errorf("mediaLabel = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOrderPinned(t *testing.T) {
 	providers := []miruro.Provider{{Code: "ally"}, {Code: "bonk"}, {Code: "cost"}}
 	for _, tc := range []struct {

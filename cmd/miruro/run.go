@@ -134,16 +134,42 @@ func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, 
 	if len(media) == 0 {
 		return 0, "", fmt.Errorf("no results for %q", query)
 	}
-	m, err := ui.Select("Select anime", media, func(x miruro.Media) string {
-		if x.Episodes > 0 {
-			return fmt.Sprintf("%s (%d eps)", x.Title(), x.Episodes)
-		}
-		return x.Title()
-	})
+	m, err := ui.Select("Select anime", media, mediaLabel)
 	if err != nil {
 		return 0, "", err
 	}
 	return m.ID, m.Title(), nil
+}
+
+// formatNames maps AniList's format enum to display names
+var formatNames = map[string]string{
+	"TV":       "TV",
+	"TV_SHORT": "TV Short",
+	"MOVIE":    "Movie",
+	"SPECIAL":  "Special",
+	"OVA":      "OVA",
+	"ONA":      "ONA",
+	"MUSIC":    "Music",
+}
+
+// mediaLabel renders one search hit with what tells same-titled media apart,
+// the AniList format and the episode count
+func mediaLabel(x miruro.Media) string {
+	var meta []string
+	if x.Format != "" {
+		name, ok := formatNames[x.Format]
+		if !ok {
+			name = x.Format
+		}
+		meta = append(meta, name)
+	}
+	if x.Episodes > 0 {
+		meta = append(meta, fmt.Sprintf("%d eps", x.Episodes))
+	}
+	if len(meta) == 0 {
+		return x.Title()
+	}
+	return fmt.Sprintf("%s (%s)", x.Title(), strings.Join(meta, ", "))
 }
 
 func resume(st *store) (entry, error) {
