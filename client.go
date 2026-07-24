@@ -27,6 +27,10 @@ const (
 	// maxPipeBody caps the decoded pipe response against a decompression bomb
 	// the largest real payload, One Piece, decodes to about 8.7 MB
 	maxPipeBody = 64 << 20
+	// maxPipeRaw caps the wire body feeding decode
+	// base64 over gzip expands the payload, so anything that would decode
+	// within maxPipeBody fits under this with room to spare
+	maxPipeRaw = 96 << 20
 )
 
 var (
@@ -97,12 +101,15 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPipeRaw+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, err
+	}
+	if len(body) > maxPipeRaw {
+		return nil, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
 	}
 
 	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")

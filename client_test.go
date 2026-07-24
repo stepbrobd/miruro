@@ -3,10 +3,12 @@ package miruro
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +42,25 @@ func TestDecode(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Fatalf("version %s: got %s want %s", version, got, want)
 		}
+	}
+}
+
+// zeros streams an endless zero body for over-cap tests
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { return len(p), nil }
+
+// an endless chunked pipe body would otherwise buffer until memory runs out
+func TestPipeRefusesOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.CopyN(w, zeros{}, maxPipeRaw+1)
+	}))
+	defer srv.Close()
+
+	c := &Client{Base: srv.URL, HTTP: srv.Client()}
+	_, err := c.pipe(context.Background(), "/x", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("want an over-cap error, got %v", err)
 	}
 }
 

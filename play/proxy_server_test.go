@@ -173,6 +173,30 @@ func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 	}
 }
 
+// a hostile or broken upstream serving an endless playlist must get a 502
+// rather than buffer until memory runs out
+func TestProxyRefusesOversizedPlaylist(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.CopyN(w, zeros{}, maxPlaylistBody+1)
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.URL(miruro.Stream{URL: upstream.URL + "/media.m3u8", Kind: miruro.HLS}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("want 502 for an over-cap playlist, got %d", resp.StatusCode)
+	}
+}
+
 func TestProxyRelaysRange(t *testing.T) {
 	full := bytes.Repeat([]byte("A"), 1000)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,11 @@ import (
 	"sync"
 	"testing"
 )
+
+// zeros streams an endless zero body for over-cap tests
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { return len(p), nil }
 
 // hlsFixture synthesises a short multi-segment stream and serves it
 // counting requests is what lets a test prove a resumed run refetched only what
@@ -480,6 +486,36 @@ func TestCacheKeyRefetchesStaleShortKey(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".part"); !os.IsNotExist(err) {
 		t.Error("the .part file was left behind")
+	}
+}
+
+// an endless chunked playlist body would otherwise buffer until memory runs out
+func TestFetchTextRefusesOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.CopyN(w, zeros{}, maxTextBody+1)
+	}))
+	defer srv.Close()
+
+	u := srv.URL + "/media.m3u8"
+	_, err := fetchText(context.Background(), http.DefaultClient, u)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), u) {
+		t.Fatalf("want an over-cap error naming the URL, got %v", err)
+	}
+}
+
+// a playlist past the segment ceiling would mint that many cache files, so it
+// falls back to plain streaming instead
+func TestParsePlaylistRefusesAbsurdSegmentCount(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+	for i := range maxSegments + 1 {
+		fmt.Fprintf(&b, "#EXTINF:4.0,\nseg%d.ts\n", i)
+	}
+	b.WriteString("#EXT-X-ENDLIST\n")
+
+	_, err := parsePlaylist([]byte(b.String()), "https://cdn/media.m3u8")
+	if !errors.Is(err, errNoCache) {
+		t.Errorf("want errNoCache, got %v", err)
 	}
 }
 

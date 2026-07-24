@@ -33,6 +33,18 @@ const segWorkers = 4
 // aesKeyLen is the one key size AES-128 media streams use, per RFC 8216
 const aesKeyLen = 16
 
+// maxTextBody caps a playlist or key body
+// real playlists top out around single-digit MB, so only a hostile or broken
+// upstream hits this
+const maxTextBody = 16 << 20
+
+// maxSegments caps how many cache files one playlist can mint
+// a hostile playlist with millions of entries would mint millions of cache
+// files while ffmpeg can still stream it without caching
+// ten thousand four-second segments is over eleven hours, no real episode
+// comes close
+const maxSegments = 10000
+
 var (
 	bandwidthAttr = regexp.MustCompile(`BANDWIDTH=(\d+)`)
 	durationAttr  = regexp.MustCompile(`^#EXTINF:\s*([0-9.]+)`)
@@ -161,7 +173,14 @@ func fetchText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, err
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("playlist %s: status %d", rawURL, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTextBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxTextBody {
+		return nil, fmt.Errorf("playlist %s: body exceeds %d bytes", rawURL, maxTextBody)
+	}
+	return body, nil
 }
 
 // bestVariant picks the highest bandwidth rendition of a master playlist
@@ -260,6 +279,9 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 				return nil, err
 			}
 			pl.segAt = append(pl.segAt, len(pl.lines))
+			if len(pl.segAt) > maxSegments {
+				return nil, errNoCache
+			}
 			pl.durations = append(pl.durations, pending)
 			pending = -1
 			line = abs

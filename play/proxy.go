@@ -25,6 +25,10 @@ const (
 	// generous enough to clear a real image prefix while keeping the worst-case
 	// scan of a sync-free body cheap
 	scanHead = 256 * 1024
+	// real playlists top out around single-digit MB and real segments around
+	// tens of MB, so only a hostile or broken upstream hits these caps
+	maxPlaylistBody = 16 << 20
+	maxSegmentBody  = 256 << 20
 )
 
 var errToken = errors.New("bad token")
@@ -160,7 +164,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch t.Kind {
 	case playlist:
-		body, ok := buffered(w, resp)
+		body, ok := buffered(w, resp, maxPlaylistBody)
 		if !ok {
 			return
 		}
@@ -169,7 +173,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	case segment, cipher:
 		// a segment is fetched whole and de-obfuscated
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
-		body, ok := buffered(w, resp)
+		body, ok := buffered(w, resp, maxSegmentBody)
 		if !ok {
 			return
 		}
@@ -183,10 +187,16 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func buffered(w http.ResponseWriter, resp *http.Response) ([]byte, bool) {
-	body, err := io.ReadAll(resp.Body)
+// buffered reads a whole body of at most limit bytes
+// an endless chunked body would otherwise buffer until memory runs out
+func buffered(w http.ResponseWriter, resp *http.Response, limit int64) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return nil, false
+	}
+	if int64(len(body)) > limit {
+		http.Error(w, "upstream body too large", http.StatusBadGateway)
 		return nil, false
 	}
 	return body, true
