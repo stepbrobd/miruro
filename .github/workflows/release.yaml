@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: [version.txt]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  Release:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          version="v$(tr -d '[:space:]' < version.txt)"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "$version already released, skipping."
+            exit 0
+          fi
+
+          gh release create "$version" --target "$GITHUB_SHA" --generate-notes || gh release view "$version" >/dev/null
