@@ -71,7 +71,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err != nil {
 				t.Skipf("playlist not reachable, an upstream condition: %v", err)
 			}
-			t.Logf("segments=%d encrypted=%v", len(pl.segAt), pl.keyURI != "")
+			t.Logf("segments=%d encrypted=%v", len(pl.segAt), pl.encrypted)
 			pl = head(pl, segmentSample)
 
 			dir := t.TempDir()
@@ -175,8 +175,11 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 		durations: append([]float64{}, pl.durations[:n]...),
 		keyAt:     pl.keyAt,
 		keyURI:    pl.keyURI,
+		encrypted: pl.encrypted,
 	}
 	if out.keyAt >= cut {
+		// the key line was trimmed away but the stream stays marked encrypted,
+		// which only relaxes the TS check on the fetched segments
 		out.keyAt, out.keyURI = -1, ""
 	}
 	return out

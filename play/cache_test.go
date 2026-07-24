@@ -1,6 +1,7 @@
 package play
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -293,8 +294,48 @@ func TestParsePlaylistLeavesDataKeyAlone(t *testing.T) {
 	if pl.keyURI != "" {
 		t.Errorf("a data key should not be fetched, got %q", pl.keyURI)
 	}
+	if !pl.encrypted {
+		t.Error("a data key did not mark the stream encrypted")
+	}
 	if got := pl.localise("/cache", ""); !strings.Contains(got, "data:text/plain;base64,YWJjZA==") {
 		t.Errorf("data key did not survive:\n%s", got)
+	}
+}
+
+// METHOD=NONE switches encryption off, so the plaintext TS check still applies
+func TestParsePlaylistMethodNoneStaysPlain(t *testing.T) {
+	body := "#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n" +
+		"#EXTINF:1.0,\nhttps://cdn/a.ts\n#EXT-X-ENDLIST\n"
+	pl, err := parsePlaylist([]byte(body), "https://cdn/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.encrypted {
+		t.Error("METHOD=NONE marked the stream encrypted")
+	}
+}
+
+// segments under a data key are ciphertext even though no key is fetched, so
+// demanding TS sync bytes from them would fail every encrypted download
+func TestFetchSegmentsAcceptsCiphertextUnderDataKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("AES ciphertext with no sync byte anywhere in sight"))
+	}))
+	defer srv.Close()
+
+	body := "#EXTM3U\n" +
+		`#EXT-X-KEY:METHOD=AES-128,URI="data:text/plain;base64,YWJjZA=="` + "\n" +
+		"#EXTINF:1.0,\n" + srv.URL + "/a.ts\n#EXT-X-ENDLIST\n"
+	pl, err := parsePlaylist([]byte(body), srv.URL+"/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := fetchSegments(context.Background(), http.DefaultClient, pl, dir, nil); err != nil {
+		t.Fatalf("ciphertext segment rejected: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, segName(0))); err != nil || fi.Size() == 0 {
+		t.Errorf("segment not cached: %v", err)
 	}
 }
 
@@ -377,5 +418,81 @@ func TestFetchSegmentAcceptsCiphertext(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); err != nil {
 		t.Errorf("encrypted segment not cached: %v", err)
+	}
+}
+
+// a body of any other size cannot be an AES-128 key, and caching it would
+// poison every later resume
+func TestCacheKeyRejectsWrongSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html>Access Denied</html>"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	pl := &mediaPlaylist{keyURI: srv.URL + "/mon.key"}
+	if _, err := cacheKey(context.Background(), http.DefaultClient, pl, dir); err == nil {
+		t.Error("a body that cannot be a key was accepted")
+	}
+	for _, name := range []string{"key.bin", "key.bin.part"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s written for a rejected key", name)
+		}
+	}
+}
+
+// a stale key.bin of the wrong size predates the shape check and must be
+// refetched rather than trusted, while a whole one is reused without a fetch
+func TestCacheKeyRefetchesStaleShortKey(t *testing.T) {
+	good := []byte("0123456789abcdef")
+	var (
+		mu   sync.Mutex
+		hits int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Write(good)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "key.bin"), []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pl := &mediaPlaylist{keyURI: srv.URL + "/mon.key"}
+	path, err := cacheKey(context.Background(), http.DefaultClient, pl, dir)
+	if err != nil {
+		t.Fatalf("cacheKey: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, good) {
+		t.Errorf("stale key not overwritten, got %q, %v", got, err)
+	}
+	if _, err := cacheKey(context.Background(), http.DefaultClient, pl, dir); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	fetched := hits
+	mu.Unlock()
+	if fetched != 1 {
+		t.Errorf("key fetched %d times, want 1", fetched)
+	}
+	if _, err := os.Stat(path + ".part"); !os.IsNotExist(err) {
+		t.Error("the .part file was left behind")
+	}
+}
+
+// a playlist without EXT-X-ENDLIST is still growing, and a snapshot of it
+// would remux into a finished-looking partial episode
+func TestResolvePlaylistRejectsGrowingPlaylist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "#EXTM3U\n#EXTINF:1.0,\nseg0.ts\n")
+	}))
+	defer srv.Close()
+
+	_, err := resolvePlaylist(context.Background(), http.DefaultClient, srv.URL+"/media.m3u8")
+	if !errors.Is(err, errNoCache) {
+		t.Errorf("want errNoCache, got %v", err)
 	}
 }

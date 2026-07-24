@@ -30,6 +30,9 @@ var errNoCache = errors.New("playlist not cacheable")
 // stays deliberately small
 const segWorkers = 4
 
+// aesKeyLen is the one key size AES-128 media streams use, per RFC 8216
+const aesKeyLen = 16
+
 var (
 	bandwidthAttr = regexp.MustCompile(`BANDWIDTH=(\d+)`)
 	durationAttr  = regexp.MustCompile(`^#EXTINF:\s*([0-9.]+)`)
@@ -45,6 +48,9 @@ type mediaPlaylist struct {
 	durations []float64
 	keyAt     int
 	keyURI    string
+	// encrypted means an EXT-X-KEY with a method other than NONE applies to
+	// the segments, even when the key is inline or not fetchable
+	encrypted bool
 }
 
 // manifest records what the cache directory holds
@@ -86,6 +92,14 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	// the remux reports its own output size, which would send the bar backwards
 	// after the fetch already counted every segment
 	if err := remux(ctx, local, dest, nil); err != nil {
+		// a remux that failed with the context still live means the cached
+		// bytes themselves are bad, and replaying them can only fail again
+		// a cancelled remux keeps the cache so the interrupted run resumes
+		if ctx.Err() == nil {
+			if werr := wipe(dir); werr != nil {
+				log.Warn("bad cache not removed", "dir", dir, "err", werr)
+			}
+		}
 		return err
 	}
 	// the episode is on disk, so the segments are dead weight
@@ -124,6 +138,12 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 		if bytes.Contains(body, []byte(tag)) {
 			return nil, errNoCache
 		}
+	}
+	// a playlist without an endlist is still growing, and a snapshot of it
+	// would remux into a finished-looking partial episode
+	// ffmpeg follows a live playlist as it grows, so the fallback stays whole
+	if !bytes.Contains(body, []byte("#EXT-X-ENDLIST")) {
+		return nil, errNoCache
 	}
 	return parsePlaylist(body, srcURL)
 }
@@ -203,8 +223,15 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 		switch {
 		case trimmed == "":
 		case strings.HasPrefix(trimmed, "#EXT-X-KEY"):
+			if strings.Contains(trimmed, "METHOD=NONE") {
+				break
+			}
+			// any other method leaves the segments ciphertext, even when the
+			// key line carries no fetchable URI, so mark that before any of
+			// the URI checks below can bail out
+			pl.encrypted = true
 			m := uriAttr.FindStringSubmatch(trimmed)
-			if m == nil || strings.Contains(trimmed, "METHOD=NONE") {
+			if m == nil {
 				break
 			}
 			// only one key is rewritten to its cached copy, so a playlist that
@@ -340,17 +367,23 @@ func cacheKey(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir strin
 		return "", nil
 	}
 	path := filepath.Join(dir, "key.bin")
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+	// only a key of exactly the AES-128 size is trusted on resume, anything
+	// else is a cached error body and gets refetched
+	if fi, err := os.Stat(path); err == nil && fi.Size() == aesKeyLen {
 		return path, nil
 	}
 	body, err := fetchText(ctx, hc, pl.keyURI)
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	if len(body) != aesKeyLen {
+		return "", fmt.Errorf("key %s is %d bytes, want %d", pl.keyURI, len(body), aesKeyLen)
+	}
+	part := path + ".part"
+	if err := os.WriteFile(part, body, 0o644); err != nil {
 		return "", err
 	}
-	return path, nil
+	return path, os.Rename(part, path)
 }
 
 func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir string, prog Progress) error {
@@ -385,7 +418,7 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), pl.keyURI == "")
+				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), !pl.encrypted)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
