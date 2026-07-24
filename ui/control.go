@@ -2,106 +2,54 @@ package ui
 
 import (
 	"context"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/huh"
 )
 
-// End is the menu's reaction to playback stopping
-type End struct {
-	Dismiss bool   // drop the menu and hand control back
-	Status  string // line shown under the title when the menu stays
-}
+type endMsg struct{ dismiss bool }
 
-type endMsg End
-
+// control embeds the shared select form and adds playback ending as a second
+// event source, keys stay with huh so the menu behaves like every other prompt
 type control struct {
-	title   string
-	status  string
-	actions []string
-	cursor  int
-	choice  string
-	ended   bool
-	done    bool
-	wait    func() End
+	form      *huh.Form
+	wait      func() bool
+	ended     bool
+	dismissed bool
 }
 
 func (m control) Init() tea.Cmd {
-	return func() tea.Msg { return endMsg(m.wait()) }
+	return tea.Batch(m.form.Init(), func() tea.Msg { return endMsg{m.wait()} })
 }
 
 func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case endMsg:
+	if end, ok := msg.(endMsg); ok {
 		m.ended = true
-		if msg.Dismiss {
-			m.done = true
+		if end.dismiss {
+			m.dismissed = true
 			return m, tea.Quit
 		}
-		m.status = msg.Status
 		return m, nil
-	case tea.KeyMsg:
-		return m.key(msg)
 	}
-	return m, nil
-}
-
-func (m control) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case "down", "j":
-		if m.cursor < len(m.actions)-1 {
-			m.cursor++
-		}
-	case "enter":
-		return m.pick(m.actions[m.cursor])
-	case "esc", "ctrl+c", "q":
-		return m.pick("quit")
-	}
-	return m, nil
-}
-
-func (m control) pick(action string) (tea.Model, tea.Cmd) {
-	m.choice = action
-	m.done = true
-	return m, tea.Quit
+	f, cmd := m.form.Update(msg)
+	m.form = f.(*huh.Form)
+	return m, cmd
 }
 
 func (m control) View() string {
-	if m.done {
+	if m.dismissed {
 		return ""
 	}
-
-	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(nord8)).Bold(true).Render(m.title))
-	b.WriteByte('\n')
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(nord3)).Render(m.status))
-	b.WriteString("\n\n")
-
-	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(nord13))
-	rowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(nord4))
-	for i, a := range m.actions {
-		point := "  "
-		if i == m.cursor {
-			point = cursorStyle.Render("> ")
-		}
-		b.WriteString(point)
-		b.WriteString(rowStyle.Render(a))
-		b.WriteByte('\n')
-	}
-	return b.String()
+	return m.form.View()
 }
 
 // Control shows the action menu while playback runs
-// wait blocks until playback ends and returns how the menu reacts to it
-// the action is "" when the end dismissed the menu, and ended reports whether
-// playback was already over when the menu closed
-func Control(ctx context.Context, title string, actions []string, wait func() End, opts ...tea.ProgramOption) (action string, ended bool, err error) {
-	m := control{title: title, status: "playing", actions: actions, wait: wait}
+// wait blocks until playback ends and reports whether the menu dismisses
+// itself, the action is "" on a dismissal and quit on an aborted form, and
+// ended reports whether playback was already over when the menu closed
+func Control(ctx context.Context, title string, actions []string, wait func() bool, opts ...tea.ProgramOption) (action string, ended bool, err error) {
+	idx := 0
+	m := control{form: menu(title, actions, func(s string) string { return s }, &idx), wait: wait}
 	// the caller's context owns signal handling
 	// bubbletea's own handler would swallow a SIGTERM and end the program with
 	// no error, indistinguishable from a dismissal
@@ -114,5 +62,12 @@ func Control(ctx context.Context, title string, actions []string, wait func() En
 		return "", false, err
 	}
 	fm := final.(control)
-	return fm.choice, fm.ended, nil
+	switch {
+	case fm.dismissed:
+		return "", true, nil
+	case fm.form.State == huh.StateCompleted:
+		return actions[idx], fm.ended, nil
+	default:
+		return "quit", fm.ended, nil
+	}
 }

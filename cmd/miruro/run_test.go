@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"ysun.co/miruro"
-	"ysun.co/miruro/ui"
 )
 
 // sourcesServer decodes the pipe envelope and dispatches on the provider in
@@ -303,12 +302,12 @@ func TestOutcome(t *testing.T) {
 		name  string
 		err   error
 		batch bool
-		want  ui.End
+		want  bool
 	}{
-		{"clean end mid-batch advances", nil, true, ui.End{Dismiss: true}},
-		{"clean end alone stays", nil, false, ui.End{Status: "finished"}},
-		{"failure stays", exit, true, ui.End{Status: "player exited: " + exit.Error()}},
-		{"unrunnable player dismisses", other, false, ui.End{Dismiss: true}},
+		{"clean end mid-batch advances", nil, true, true},
+		{"clean end alone stays", nil, false, false},
+		{"failure stays", exit, true, false},
+		{"unrunnable player dismisses", other, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := outcome(tc.err, tc.batch); got != tc.want {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 )
 
@@ -29,24 +30,29 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 	if len(items) == 0 {
 		return zero, errors.New("nothing to select")
 	}
+	idx := 0
+	if err := menu(title, items, label, &idx).Run(); err != nil {
+		return zero, err
+	}
+	return items[idx], nil
+}
 
+// menu is the one select form, so every list prompt shares keymap and theme
+func menu[T any](title string, items []T, label func(T) string, idx *int) *huh.Form {
 	opts := make([]huh.Option[int], len(items))
 	for i, it := range items {
 		opts[i] = huh.NewOption(label(it), i)
 	}
-
-	idx := 0
-	form := huh.NewForm(huh.NewGroup(
+	f := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[int]().
 			Title(title).
 			Options(opts...).
-			Value(&idx).
+			Value(idx).
 			Height(16).
 			Filtering(true),
 	)).WithTheme(theme())
-
-	if err := form.Run(); err != nil {
-		return zero, err
-	}
-	return items[idx], nil
+	// only Run wires these, an embedded form must quit the host program itself
+	f.SubmitCmd = tea.Quit
+	f.CancelCmd = tea.Quit
+	return f
 }

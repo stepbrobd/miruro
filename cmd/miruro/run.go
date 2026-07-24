@@ -307,7 +307,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		}()
 
 		batch := len(queue) > 0
-		wait := func() ui.End {
+		wait := func() bool {
 			<-done
 			return outcome(perr, batch)
 		}
@@ -361,19 +361,17 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 	}
 }
 
-// outcome maps a playback result to the menu's reaction
+// outcome reports whether the menu dismisses itself when playback stops
 // a clean end mid-batch advances, a failure keeps the menu up so a broken
 // provider does not burn the range, and a player that never ran is fatal
-func outcome(err error, batch bool) ui.End {
+func outcome(err error, batch bool) bool {
 	switch {
-	case err == nil && batch:
-		return ui.End{Dismiss: true}
 	case err == nil:
-		return ui.End{Status: "finished"}
+		return batch
 	case errors.As(err, new(*exec.ExitError)):
-		return ui.End{Status: "player exited: " + err.Error()}
+		return false
 	default:
-		return ui.End{Dismiss: true}
+		return true
 	}
 }
 
