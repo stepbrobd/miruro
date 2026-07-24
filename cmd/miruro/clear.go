@@ -77,8 +77,7 @@ func runCacheClear(*cobra.Command, []string) error {
 	if err != nil {
 		return err
 	}
-	// a file that vanishes mid-walk only skews the printed size, so walk errors
-	// are skipped rather than failed
+	// a file vanishing mid-walk only skews the printed size
 	var total int64
 	_ = filepath.WalkDir(segments, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -100,8 +99,7 @@ func runCacheClear(*cobra.Command, []string) error {
 	return nil
 }
 
-// humanBytes mirrors ui's progress formatting so the freed size reads the same
-// as the download that produced it
+// humanBytes matches ui's progress formatting
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {

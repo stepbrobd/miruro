@@ -131,29 +131,24 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 	results := make([]error, n)
 	done := make(chan struct{})
 	go func() {
+		// closing after schedule's wg.Wait publishes every results write
 		schedule(dctx, labels, workers, task, m.ch, results)
-		// schedule returns only after its wg.Wait, so this close is the
-		// happens-before edge publishing every results write to the loop below
 		close(done)
 	}()
 
 	_, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
 
+	// a finish, quit key, or interrupt stops the workers
+	// any other error means no terminal, and they run to completion
 	if err == nil || errors.Is(err, tea.ErrInterrupted) || ctx.Err() != nil {
-		// the UI exited on a finish, a quit key, or an interrupt, so stop the
-		// workers
-		// any other error means no interactive terminal, and the workers keep
-		// the still-live context and run to completion
 		cancel()
 	}
-	// consuming ch keeps senders unblocked until every worker has been joined
-	// the model's errs and fin only ever fed the render, results is the truth
+	// consuming ch keeps senders unblocked until the workers join
 	for {
 		select {
 		case <-m.ch:
 		case <-done:
-			// the workers are joined, so closing ch releases a listen command
-			// tea may still have parked on it
+			// releases a listen command tea may still have parked on ch
 			close(m.ch)
 			return results
 		}
@@ -179,8 +174,7 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 			var mu sync.Mutex
 			var last time.Time
 			report := func(done, total int64) {
-				// a task may report from several goroutines at once, so the
-				// throttle state needs its own lock
+				// reports arrive from several goroutines at once
 				mu.Lock()
 				now := time.Now()
 				fresh := now.Sub(last) >= 80*time.Millisecond
@@ -191,17 +185,14 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 				if !fresh {
 					return
 				}
-				// a dropped update only costs a repaint, so never block on a
-				// reader that already left
+				// a dropped update only costs a repaint
 				select {
 				case ch <- progressMsg{i, done, total}:
 				case <-ctx.Done():
 				}
 			}
 			err := task(ctx, i, report)
-			// a real failure that raced the cancellation is deliberately folded
-			// into ErrCancelled, matching the old fin-based semantics where an
-			// interrupted task always read as cancelled
+			// a failure that raced the cancellation reads as cancelled
 			if err != nil && ctx.Err() != nil {
 				err = ErrCancelled
 			}

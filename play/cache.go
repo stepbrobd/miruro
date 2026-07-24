@@ -34,15 +34,11 @@ const segWorkers = 4
 const aesKeyLen = 16
 
 // maxTextBody caps a playlist or key body
-// real playlists top out around single-digit MB, so only a hostile or broken
-// upstream hits this
+// real playlists stay under a few MB
 const maxTextBody = 16 << 20
 
 // maxSegments caps how many cache files one playlist can mint
-// a hostile playlist with millions of entries would mint millions of cache
-// files while ffmpeg can still stream it without caching
-// ten thousand four-second segments is over eleven hours, no real episode
-// comes close
+// ten thousand four-second segments is over eleven hours of video
 const maxSegments = 10000
 
 var (
@@ -104,9 +100,8 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	// the remux reports its own output size, which would send the bar backwards
 	// after the fetch already counted every segment
 	if err := remux(ctx, local, dest, nil); err != nil {
-		// a remux that failed with the context still live means the cached
-		// bytes themselves are bad, and replaying them can only fail again
-		// a cancelled remux keeps the cache so the interrupted run resumes
+		// a failed remux with a live context means the cached bytes are bad
+		// a cancelled one keeps the cache for resume
 		if ctx.Err() == nil {
 			if werr := wipe(dir); werr != nil {
 				log.Warn("bad cache not removed", "dir", dir, "err", werr)
@@ -151,9 +146,8 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 			return nil, errNoCache
 		}
 	}
-	// a playlist without an endlist is still growing, and a snapshot of it
-	// would remux into a finished-looking partial episode
-	// ffmpeg follows a live playlist as it grows, so the fallback stays whole
+	// a still-growing playlist would snapshot into a truncated episode, while
+	// the ffmpeg fallback follows it live
 	if !bytes.Contains(body, []byte("#EXT-X-ENDLIST")) {
 		return nil, errNoCache
 	}
@@ -245,9 +239,8 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 			if strings.Contains(trimmed, "METHOD=NONE") {
 				break
 			}
-			// any other method leaves the segments ciphertext, even when the
-			// key line carries no fetchable URI, so mark that before any of
-			// the URI checks below can bail out
+			// any other method leaves the segments ciphertext even without a
+			// fetchable key URI
 			pl.encrypted = true
 			m := uriAttr.FindStringSubmatch(trimmed)
 			if m == nil {
@@ -389,8 +382,7 @@ func cacheKey(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir strin
 		return "", nil
 	}
 	path := filepath.Join(dir, "key.bin")
-	// only a key of exactly the AES-128 size is trusted on resume, anything
-	// else is a cached error body and gets refetched
+	// anything but a whole AES-128 key is a cached error body, refetch it
 	if fi, err := os.Stat(path); err == nil && fi.Size() == aesKeyLen {
 		return path, nil
 	}
@@ -457,8 +449,7 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 				done += written
 				d := done
 				mu.Unlock()
-				// the progress callback can block on UI delivery, so it must
-				// never run under mu
+				// prog can block on ui delivery, so it never runs under mu
 				if prog != nil {
 					prog(d, 0)
 				}

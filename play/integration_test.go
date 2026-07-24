@@ -178,8 +178,7 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 		encrypted: pl.encrypted,
 	}
 	if out.keyAt >= cut {
-		// the key line was trimmed away but the stream stays marked encrypted,
-		// which only relaxes the TS check on the fetched segments
+		// staying marked encrypted only relaxes the TS check
 		out.keyAt, out.keyURI = -1, ""
 	}
 	return out

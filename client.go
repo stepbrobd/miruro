@@ -27,9 +27,8 @@ const (
 	// maxPipeBody caps the decoded pipe response against a decompression bomb
 	// the largest real payload, One Piece, decodes to about 8.7 MB
 	maxPipeBody = 64 << 20
-	// maxPipeRaw caps the wire body feeding decode
-	// base64 over gzip expands the payload, so anything that would decode
-	// within maxPipeBody fits under this with room to spare
+	// maxPipeRaw caps the wire body feeding decode, sized so anything that
+	// decodes within maxPipeBody fits despite the base64 over gzip expansion
 	maxPipeRaw = 96 << 20
 )
 

@@ -37,8 +37,7 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	}
 	name = safeName(name)
 	dest := filepath.Join(dir, name+".mp4")
-	// grab and runFFmpeg rename a .part into dest only on success, so an
-	// existing dest is always a complete download and never refetched
+	// dest only ever appears via a .part rename, so it is always complete
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		if prog != nil {
 			prog(fi.Size(), fi.Size())
@@ -134,8 +133,7 @@ func (r *reader) Read(p []byte) (int, error) {
 // a playlist this package cannot take apart is still downloadable, it just
 // starts over when interrupted
 func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog Progress) error {
-	// checking up front keeps a missing binary from surfacing only after the
-	// whole segment fetch, where the failed remux would then wipe a good cache
+	// fail before fetching so a missing binary cannot wipe a good cache
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return errors.New("ffmpeg is required to download hls streams")
 	}
