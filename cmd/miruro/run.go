@@ -322,54 +322,22 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 
 		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
 
-		// the menu is up while the player runs, so a pick races playback ending
-		// an early pick interrupts the player, a clean end mid-batch dismisses
-		// the menu to auto-advance
 		e := entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}
-		pctx, stop := context.WithCancel(ctx)
-		done := make(chan struct{})
-		var perr, werr error
-		go func() {
-			perr = player.Play(pctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
-			// save the moment playback ends cleanly rather than when the menu
-			// closes, so killing an idle menu cannot lose the watched entry
-			if perr == nil {
-				werr = st.save(e)
-			}
-			close(done)
-		}()
-
-		batch := len(queue) > 0
-		wait := func() bool {
-			<-done
-			return outcome(perr, batch)
-		}
-
-		action, ended, err := ui.Control(ctx, fmt.Sprintf("Episode %s of %s", num(ep), title), controls(numbers, ep), wait)
-		stop()
-		<-done
+		action, err := playAndControl(ctx,
+			fmt.Sprintf("Episode %s of %s", num(ep), title),
+			controls(numbers, ep),
+			len(queue) > 0,
+			func(pctx context.Context) error {
+				return player.Play(pctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
+			},
+			func() error { return st.save(e) },
+		)
 		if err != nil {
 			return err
 		}
-		// outcome dismisses a failed playback only when the player never ran,
-		// which no menu action can fix
-		if action == "" && perr != nil {
-			return perr
-		}
-		if perr != nil {
-			if ended {
-				// keep the failure in scrollback after the menu clears
-				log.Warn("player exited", "err", perr)
-			} else {
-				// an early pick interrupts the player and still counts as watched
-				werr = st.save(e)
-			}
-		}
-		if werr != nil {
-			log.Warn("history not saved", "err", werr)
-		}
 
 		if action == "" {
+			// the menu only dismisses itself mid-batch, so the queue is not empty
 			ep = queue[0]
 			queue = queue[1:]
 			continue
@@ -392,6 +360,54 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		}
 		queue = ahead(queue, ep)
 	}
+}
+
+// playAndControl runs one playback with the action menu raised over it and
+// joins both before returning the picked action, "" on a dismissal
+// the menu is up while the player runs, so a pick races playback ending
+// an early pick interrupts the player, a clean end mid-batch dismisses the
+// menu to auto-advance
+func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context) error, save func() error) (string, error) {
+	pctx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var perr, werr error
+	go func() {
+		perr = run(pctx)
+		// save the moment playback ends cleanly rather than when the menu
+		// closes, so killing an idle menu cannot lose the watched entry
+		if perr == nil {
+			werr = save()
+		}
+		close(done)
+	}()
+
+	wait := func() bool {
+		<-done
+		return outcome(perr, batch)
+	}
+	action, ended, err := ui.Control(ctx, title, actions, wait)
+	stop()
+	<-done
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case action == "" && perr != nil:
+		// outcome dismisses a failed playback only when the player never ran,
+		// which no menu action can fix
+		return "", perr
+	case perr != nil && ended:
+		// keep the failure in scrollback after the menu clears
+		log.Warn("player exited", "err", perr)
+	case perr != nil:
+		// an early pick interrupts the player and still counts as watched
+		werr = save()
+	}
+	if werr != nil {
+		log.Warn("history not saved", "err", werr)
+	}
+	return action, nil
 }
 
 // outcome reports whether the menu dismisses itself when playback stops
