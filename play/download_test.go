@@ -2,6 +2,7 @@ package play
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -132,5 +133,40 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, name+".0.English.vtt")); err != nil {
 		t.Errorf("the sidecar that resolved was not written: %v", err)
+	}
+}
+
+// noNet fails the test on any request, proving a path never touches the network
+type noNet struct{ t *testing.T }
+
+func (n noNet) RoundTrip(r *http.Request) (*http.Response, error) {
+	n.t.Errorf("request for %s on a path that must not touch the network", r.URL)
+	return nil, errors.New("no network")
+}
+
+// an existing dest is always a complete download, so a rerun must report it
+// finished and fetch nothing
+func TestDownloadSkipsExistingEpisode(t *testing.T) {
+	dir, name := t.TempDir(), "Show - E1"
+	body := []byte("finished episode")
+	if err := os.WriteFile(filepath.Join(dir, name+".mp4"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hc := &http.Client{Transport: noNet{t}}
+	var done, total int64 = -1, -1
+	missed, err := Download(context.Background(), hc,
+		miruro.Stream{URL: "http://unused/video.mp4", Kind: miruro.MP4},
+		[]miruro.Subtitle{{File: "http://unused/sub.vtt", Label: "English"}},
+		dir, name, "", func(d, tot int64) { done, total = d, tot })
+	if err != nil {
+		t.Fatalf("an existing episode failed the rerun: %v", err)
+	}
+	if missed != 0 {
+		t.Errorf("missed = %d, want 0", missed)
+	}
+	want := int64(len(body))
+	if done != want || total != want {
+		t.Errorf("progress reported %d of %d, want %d of %d", done, total, want, want)
 	}
 }

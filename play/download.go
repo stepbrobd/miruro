@@ -24,6 +24,8 @@ import (
 type Progress func(done, total int64)
 
 // Download writes the video and one sidecar per subtitle track
+// an episode already on disk is skipped whole, so sidecar subtitles are only
+// fetched together with a fresh video download
 // cache names a directory for hls segments, so an interrupted episode resumes
 // from what it already fetched, and an empty cache disables that
 // it reports how many sidecars failed so the caller can summarise the run, and
@@ -35,6 +37,14 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	}
 	name = safeName(name)
 	dest := filepath.Join(dir, name+".mp4")
+	// grab and runFFmpeg rename a .part into dest only on success, so an
+	// existing dest is always a complete download and never refetched
+	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
+		if prog != nil {
+			prog(fi.Size(), fi.Size())
+		}
+		return 0, nil
+	}
 
 	switch s.Kind {
 	case miruro.MP4:
@@ -124,6 +134,11 @@ func (r *reader) Read(p []byte) (int, error) {
 // a playlist this package cannot take apart is still downloadable, it just
 // starts over when interrupted
 func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog Progress) error {
+	// checking up front keeps a missing binary from surfacing only after the
+	// whole segment fetch, where the failed remux would then wipe a good cache
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return errors.New("ffmpeg is required to download hls streams")
+	}
 	if cache != "" {
 		err := cachedHLS(ctx, hc, srcURL, dest, cache, prog)
 		if !errors.Is(err, errNoCache) {
