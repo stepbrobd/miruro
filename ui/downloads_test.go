@@ -1,8 +1,13 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -98,6 +103,82 @@ func TestErrLineNarrowTerm(t *testing.T) {
 				t.Errorf("label was sliced:\n%q", got)
 			}
 		})
+	}
+}
+
+// tests run without a terminal, so tea fails to start, the context stays live,
+// and Downloads collects through the consume-until-done path
+
+func TestDownloadsCompletion(t *testing.T) {
+	want := []error{nil, errors.New("boom"), nil, errors.New("split")}
+	labels := []string{"a", "b", "c", "d"}
+
+	errs := Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64)) error {
+		report(1, 2)
+		report(2, 2)
+		return want[i]
+	})
+
+	if len(errs) != len(want) {
+		t.Fatalf("got %d results, want %d", len(errs), len(want))
+	}
+	for i := range want {
+		if errs[i] != want[i] {
+			t.Errorf("task %d: got %v, want %v", i, errs[i], want[i])
+		}
+	}
+}
+
+func TestDownloadsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	labels := []string{"a", "b", "c"}
+
+	// cancel only once every task is parked in its body, so each slot must be
+	// filled by the relabelling rather than by a task that never started
+	var started sync.WaitGroup
+	started.Add(len(labels))
+	go func() {
+		started.Wait()
+		cancel()
+	}()
+
+	res := make(chan []error, 1)
+	go func() {
+		res <- Downloads(ctx, labels, len(labels), func(ctx context.Context, i int, report func(done, total int64)) error {
+			started.Done()
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case errs := <-res:
+		for i, err := range errs {
+			if !errors.Is(err, ErrCancelled) {
+				t.Errorf("task %d: got %v, want ErrCancelled", i, err)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Downloads did not return after cancellation")
+	}
+}
+
+func TestDownloadsJoinsWorkers(t *testing.T) {
+	labels := []string{"a", "b", "c", "d", "e"}
+	flags := make([]atomic.Bool, len(labels))
+
+	Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64)) error {
+		// stagger the returns so a missing join has goroutines to leave behind
+		time.Sleep(time.Duration(i) * time.Millisecond)
+		flags[i].Store(true)
+		return nil
+	})
+
+	for i := range flags {
+		if !flags[i].Load() {
+			t.Errorf("task %d was still running when Downloads returned", i)
+		}
 	}
 }
 

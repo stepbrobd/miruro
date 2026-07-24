@@ -13,9 +13,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// errCancelled marks a download the user interrupted before it finished, so the
-// caller counts it as a failure and never as a silent success
-var errCancelled = errors.New("cancelled")
+// ErrCancelled marks a download the user interrupted before it finished, so
+// the caller counts it as a failure and never as a silent success
+var ErrCancelled = errors.New("cancelled")
 
 type progressMsg struct {
 	i           int
@@ -98,7 +98,9 @@ func (m downloads) View() string {
 // bar per line
 // each task receives a context that is cancelled when the user quits and a
 // reporter for bytes done and total
-// a task the user interrupts before it finishes is returned as errCancelled
+// a task the user interrupts before it finishes is returned as ErrCancelled
+// by the time Downloads returns no goroutine it spawned is still running and
+// every child process a task started has been reaped
 func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
 	n := len(labels)
 	width := 0
@@ -126,36 +128,42 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 		m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
 	}
 
-	go schedule(dctx, labels, workers, task, m.ch)
+	results := make([]error, n)
+	done := make(chan struct{})
+	go func() {
+		schedule(dctx, labels, workers, task, m.ch, results)
+		// schedule returns only after its wg.Wait, so this close is the
+		// happens-before edge publishing every results write to the loop below
+		close(done)
+	}()
 
-	final, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
+	_, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
 
-	errs := make([]error, n)
-	fin := make([]bool, n)
-	switch {
-	case err == nil, errors.Is(err, tea.ErrInterrupted), ctx.Err() != nil:
-		// the UI exited on a finish, a quit key, or an interrupt
-		// stop any stragglers and take what the model recorded before it left
+	if err == nil || errors.Is(err, tea.ErrInterrupted) || ctx.Err() != nil {
+		// the UI exited on a finish, a quit key, or an interrupt, so stop the
+		// workers
+		// any other error means no interactive terminal, and the workers keep
+		// the still-live context and run to completion
 		cancel()
-		if fm, ok := final.(downloads); ok {
-			copy(errs, fm.errs)
-			copy(fin, fm.fin)
-		}
-	default:
-		// no interactive terminal, so let the workers finish under the still-live
-		// context and collect their results directly
-		drain(m.ch, errs, fin, n)
 	}
-
-	for i := range errs {
-		if !fin[i] && errs[i] == nil {
-			errs[i] = errCancelled
+	// consuming ch keeps senders unblocked until every worker has been joined
+	// the model's errs and fin only ever fed the render, results is the truth
+	for {
+		select {
+		case <-m.ch:
+		case <-done:
+			// the workers are joined, so closing ch releases a listen command
+			// tea may still have parked on it
+			close(m.ch)
+			return results
 		}
 	}
-	return errs
 }
 
-func schedule(ctx context.Context, labels []string, workers int, task func(context.Context, int, func(int64, int64)) error, ch chan tea.Msg) {
+// schedule runs every task under the worker limit
+// worker i writes results[i] exactly once before its wg.Done, so the slice is
+// fully populated when schedule returns
+func schedule(ctx context.Context, labels []string, workers int, task func(context.Context, int, func(int64, int64)) error, ch chan tea.Msg, results []error) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -168,32 +176,44 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			var mu sync.Mutex
 			var last time.Time
 			report := func(done, total int64) {
+				// a task may report from several goroutines at once, so the
+				// throttle state needs its own lock
+				mu.Lock()
 				now := time.Now()
-				if now.Sub(last) < 80*time.Millisecond {
+				fresh := now.Sub(last) >= 80*time.Millisecond
+				if fresh {
+					last = now
+				}
+				mu.Unlock()
+				if !fresh {
 					return
 				}
-				last = now
-				ch <- progressMsg{i, done, total}
+				// a dropped update only costs a repaint, so never block on a
+				// reader that already left
+				select {
+				case ch <- progressMsg{i, done, total}:
+				case <-ctx.Done():
+				}
 			}
-			ch <- doneMsg{i, task(ctx, i, report)}
+			err := task(ctx, i, report)
+			// a real failure that raced the cancellation is deliberately folded
+			// into ErrCancelled, matching the old fin-based semantics where an
+			// interrupted task always read as cancelled
+			if err != nil && ctx.Err() != nil {
+				err = ErrCancelled
+			}
+			results[i] = err
+			// a dropped doneMsg is fine, results carries the truth
+			select {
+			case ch <- doneMsg{i, err}:
+			case <-ctx.Done():
+			}
 		}(i)
 	}
 	wg.Wait()
-}
-
-// drain collects results when no interactive terminal renders the bars
-// it is the sole reader of ch in that path, so counting n doneMsgs cannot
-// deadlock
-func drain(ch chan tea.Msg, errs []error, fin []bool, n int) {
-	for remain := n; remain > 0; {
-		if d, ok := (<-ch).(doneMsg); ok {
-			errs[d.i] = d.err
-			fin[d.i] = true
-			remain--
-		}
-	}
 }
 
 // defaultTerm is assumed until the first tea.WindowSizeMsg reports the real width

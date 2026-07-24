@@ -420,7 +420,6 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 
 				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), !pl.encrypted)
 				mu.Lock()
-				defer mu.Unlock()
 				if err != nil {
 					errs = append(errs, fmt.Errorf("segment %d: %w", n, err))
 					// one dead segment makes the remux incomplete, so stop early
@@ -430,11 +429,16 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 					default:
 						close(fatal)
 					}
+					mu.Unlock()
 					return
 				}
 				done += written
+				d := done
+				mu.Unlock()
+				// the progress callback can block on UI delivery, so it must
+				// never run under mu
 				if prog != nil {
-					prog(done, 0)
+					prog(d, 0)
 				}
 			}(n, pl.lines[at])
 			continue
