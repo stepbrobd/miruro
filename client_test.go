@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +43,101 @@ func TestDecode(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Fatalf("version %s: got %s want %s", version, got, want)
 		}
+	}
+}
+
+// the taxonomy switch tests 403 html before the general >= 400 branch
+// a reorder would report a WAF rejection as recoverable ErrUpstream and send
+// the fallback loop back into the block, so every case asserts on the
+// sentinel with errors.Is rather than on message text
+func TestPipeErrorTaxonomy(t *testing.T) {
+	plain := []byte(`{"providers":{"bonk":{}}}`)
+	cases := []struct {
+		name    string
+		status  int
+		ctype   string
+		obf     string
+		body    []byte
+		cancel  bool
+		wantErr error
+		want    []byte
+	}{
+		{
+			name:    "forbidden html is a fatal block",
+			status:  http.StatusForbidden,
+			ctype:   "text/html",
+			body:    []byte("<html>blocked</html>"),
+			wantErr: ErrBlocked,
+		},
+		{
+			name:    "server error is recoverable",
+			status:  http.StatusInternalServerError,
+			wantErr: ErrUpstream,
+		},
+		{
+			name:    "html with an ok status is recoverable",
+			status:  http.StatusOK,
+			ctype:   "text/html",
+			body:    []byte("<html>challenge</html>"),
+			wantErr: ErrUpstream,
+		},
+		{
+			name:   "xor envelope round-trips",
+			status: http.StatusOK,
+			obf:    "2",
+			body:   obfuscate(t, plain, "2"),
+			want:   plain,
+		},
+		{
+			name:   "plain gzip envelope round-trips",
+			status: http.StatusOK,
+			obf:    "1",
+			body:   obfuscate(t, plain, "1"),
+			want:   plain,
+		},
+		{
+			name:    "a cancelled context surfaces as such",
+			status:  http.StatusOK,
+			cancel:  true,
+			wantErr: context.Canceled,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.ctype != "" {
+					w.Header().Set("Content-Type", tc.ctype)
+				}
+				if tc.obf != "" {
+					w.Header().Set("x-obfuscated", tc.obf)
+				}
+				w.WriteHeader(tc.status)
+				w.Write(tc.body)
+			}))
+			defer srv.Close()
+
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			c := &Client{Base: srv.URL, HTTP: srv.Client()}
+			got, err := c.pipe(ctx, "sources", nil)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("pipe error = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("pipe body = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
