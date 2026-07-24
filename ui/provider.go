@@ -37,7 +37,15 @@ type picker struct {
 	stage   int
 	vcursor int // 0 soft, 1 hard
 	variant string
+	done    bool
 	ch      chan tea.Msg
+}
+
+// quit ends the program and blanks the view so the next prompt does not
+// render under a stale frame
+func (m picker) quit() (tea.Model, tea.Cmd) {
+	m.done = true
+	return m, tea.Quit
 }
 
 func (m picker) Init() tea.Cmd { return listen(m.ch) }
@@ -85,10 +93,10 @@ func (m picker) providerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.choice, m.variant = m.cursor, "soft"
-		return m, tea.Quit
+		return m.quit()
 	case "esc", "ctrl+c", "q":
 		m.choice = -1
-		return m, tea.Quit
+		return m.quit()
 	}
 	return m, nil
 }
@@ -105,17 +113,20 @@ func (m picker) variantKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.vcursor == 1 {
 			m.variant = "hard"
 		}
-		return m, tea.Quit
+		return m.quit()
 	case "esc":
 		m.stage = stageProvider
 	case "ctrl+c", "q":
 		m.choice = -1
-		return m, tea.Quit
+		return m.quit()
 	}
 	return m, nil
 }
 
 func (m picker) View() string {
+	if m.done {
+		return ""
+	}
 	if m.stage == stageVariant {
 		return m.variantView()
 	}
