@@ -441,8 +441,9 @@ func apply(action string, numbers []float64, ep float64) (step, bool) {
 // resolve resolves an episode and returns the provider that served it and the
 // pin to carry forward
 // with a pinned provider it resolves with fallback and carries the pin unchanged
-// with no pin it runs the async picker, then asks soft or hard only when the
-// source ships a subtitle file, and carries the pick as the new pin
+// with no pin it asks for a provider first and resolves after, so a dead pick
+// falls back like a pinned one, then asks soft or hard only when the pick
+// itself served and ships a subtitle file
 func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pin Pin) (*miruro.Result, string, Pin, error) {
 	if pin.Code != "" {
 		res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code)
@@ -457,44 +458,27 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 		return nil, "", pin, fmt.Errorf("no provider has episode %s", num(ep))
 	}
 
-	codes := make([]string, len(avail))
-	for i, p := range avail {
-		codes[i] = p.Code
-	}
-
-	// the picker shows codes at once and fills each label as its probe returns
-	// a provider that ships a .vtt gets a soft or hard follow-up inside the same
-	// program, so the choice cannot be skipped by a leaked keypress
-	probe := func(i int) (string, bool, bool) {
-		p := avail[i]
-		e := find(p.Episodes(category), ep)
-		if e == nil {
-			return "unavailable", false, false
-		}
-		pctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		defer cancel()
-		res, err := client.Sources(pctx, e.ID, p.Code, category)
-		if err != nil || !res.Playable() {
-			return "unavailable", false, false
-		}
-		subs := res.Softsub()
-		has := "no subs"
-		if subs {
-			has = "subs"
-		}
-		return fmt.Sprintf("%s %s", category, has), true, subs
-	}
-
-	idx, variant, err := ui.PickProvider("Select provider", codes, probe)
+	picked, err := ui.Select("Select provider", avail, func(p miruro.Provider) string { return p.Code })
 	if err != nil {
 		return nil, "", pin, err
 	}
-	picked := avail[idx].Code
-	res, served, err := autoResolve(ctx, client, cat, ep, category, picked)
+	res, served, err := autoResolve(ctx, client, cat, ep, category, picked.Code)
 	if err != nil {
 		return nil, "", pin, err
 	}
-	return res, served, Pin{Code: picked, Variant: Variant(variant)}, nil
+	variant := Soft
+	if served == picked.Code && res.Softsub() {
+		variant, err = ui.Select("Subtitles for "+picked.Code, []Variant{Soft, Hard}, func(v Variant) string {
+			if v == Hard {
+				return "hard, subtitles already in the picture"
+			}
+			return "soft, attach subtitle file"
+		})
+		if err != nil {
+			return nil, "", pin, err
+		}
+	}
+	return res, served, Pin{Code: picked.Code, Variant: variant}, nil
 }
 
 // autoResolve tries the pinned provider first then the rest, never prompting
