@@ -350,9 +350,9 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		// a transient fallback serves another provider but must not overwrite the pin
 		pin = carry
 
-		stream, err := client.Select(ctx, res, cfg.Quality)
-		if err != nil {
-			return err
+		ranked := client.Rank(ctx, res, cfg.Quality)
+		if len(ranked) == 0 {
+			return miruro.ErrNoStream
 		}
 
 		var skips []miruro.SkipRange
@@ -366,16 +366,19 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			subs = nil
 		}
 
-		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
+		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "server", ranked[0].Server, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
+
+		mediaTitle := fmt.Sprintf("%s Episode %s", title, num(ep))
+		launch := func(pctx context.Context, s miruro.Stream) error {
+			return player.Play(pctx, px.Stream(s), px.Subtitles(subs, s.Referer), skips, mediaTitle)
+		}
 
 		e := entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}
 		action, err := playAndControl(ctx,
 			fmt.Sprintf("Episode %s of %s", num(ep), title),
 			controls(numbers, ep),
 			len(queue) > 0,
-			func(pctx context.Context) error {
-				return player.Play(pctx, px.Stream(stream), px.Subtitles(subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
-			},
+			func(pctx context.Context) error { return playStreams(pctx, px, ranked, launch) },
 			func() error { return st.save(e) },
 		)
 		if err != nil {
@@ -406,6 +409,32 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		}
 		queue = ahead(queue, ep)
 	}
+}
+
+// playStreams hands each stream in turn to play until one of them plays
+// a provider serving an episode from several hosts is not dead when the first
+// of them is, and the action menu stays raised throughout because this runs
+// inside the playback goroutine
+func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, play func(context.Context, miruro.Stream) error) error {
+	var err error
+	for _, s := range ranked {
+		before := px.Served()
+		err = play(ctx, s)
+		if !deadStream(err, before, px.Served()) || ctx.Err() != nil {
+			return err
+		}
+		log.Warn("stream did not play, trying the next", "server", s.Server, "err", err)
+	}
+	return err
+}
+
+// deadStream reports whether a finished playback is worth retrying on another
+// stream
+// a player that exits with an error before the proxy relayed a single media
+// body never started, which is what tells a dead stream from one the user quit
+// a few seconds in
+func deadStream(err error, before, after int) bool {
+	return err != nil && after == before
 }
 
 // playAndControl runs one playback with the action menu raised over it and

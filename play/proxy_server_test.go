@@ -363,3 +363,47 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 		}
 	}
 }
+
+// Served has to say whether the player got picture, so a playlist, an aes key,
+// and a subtitle sidecar must not raise it
+func TestProxyServedCountsPictureOnly(t *testing.T) {
+	seg := tsBlob(12)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".m3u8"):
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s\n#EXT-X-ENDLIST\n", "seg0.ts")
+		case strings.HasSuffix(r.URL.Path, ".ts"):
+			w.Write(seg)
+		default:
+			io.WriteString(w, "WEBVTT\n")
+		}
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	body := httpGetString(t, px.URL(miruro.Stream{URL: upstream.URL + "/media.m3u8", Kind: miruro.HLS}))
+	if px.Served() != 0 {
+		t.Errorf("a playlist raised Served to %d", px.Served())
+	}
+
+	httpGetBytes(t, px.Opaque(upstream.URL+"/key.bin", ""))
+	httpGetString(t, px.Subtitles([]miruro.Subtitle{{File: upstream.URL + "/en.vtt", Lang: "en"}}, "")[0].File)
+	if px.Served() != 0 {
+		t.Errorf("a key or a sidecar raised Served to %d", px.Served())
+	}
+
+	httpGetBytes(t, firstProxiedLine(t, body, px.base))
+	if px.Served() != 1 {
+		t.Errorf("a segment left Served at %d, want 1", px.Served())
+	}
+
+	httpGetBytes(t, px.URL(miruro.Stream{URL: upstream.URL + "/video.mp4", Kind: miruro.MP4}))
+	if px.Served() != 2 {
+		t.Errorf("an mp4 body left Served at %d, want 2", px.Served())
+	}
+}

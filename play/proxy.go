@@ -15,6 +15,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ysun.co/miruro"
@@ -45,8 +46,18 @@ const (
 	playlist kind = "playlist"
 	segment  kind = "segment" // TS that may carry a decoy prefix
 	cipher   kind = "cipher"  // encrypted TS that must reach the player unchanged
+	media    kind = "media"   // a whole video body such as an mp4
 	opaque   kind = "opaque"  // byte relay that forwards a range
 )
+
+// relayed reports whether a body passes through untouched, which is what makes
+// it safe to forward a Range and wrong to bound with a buffered deadline
+func (k kind) relayed() bool { return k == media || k == opaque }
+
+// picture reports whether a body is part of the video the player was handed
+// an aes key and a subtitle sidecar ride the opaque path too, so counting them
+// would make Served say the stream played when only its sidecar loaded
+func (k kind) picture() bool { return k == segment || k == cipher || k == media }
 
 // suffix keeps a real extension on the path because ffmpeg's hls demuxer rejects
 // segments whose extension it does not recognise
@@ -74,6 +85,9 @@ type Proxy struct {
 	hc    *http.Client
 	token string
 	base  string
+	// served counts the media bodies relayed, so a caller can tell a player that
+	// never got picture from one the user quit
+	served atomic.Int64
 	// timeout bounds one buffered fetch, zero disables the bound
 	timeout time.Duration
 	done    chan struct{}
@@ -120,6 +134,11 @@ func StartProxy(ctx context.Context) (*Proxy, error) {
 	return p, nil
 }
 
+// Served counts the media bodies the proxy has relayed
+// a player that exits with an error without raising this never started, which
+// is what tells a dead stream from one the user quit
+func (p *Proxy) Served() int { return int(p.served.Load()) }
+
 func (p *Proxy) Close() error {
 	p.once.Do(func() { close(p.done) })
 	return p.srv.Close()
@@ -127,7 +146,7 @@ func (p *Proxy) Close() error {
 
 // URL returns the localhost address a player or ffmpeg should open for s
 func (p *Proxy) URL(s miruro.Stream) string {
-	k := opaque
+	k := media
 	if s.Kind == miruro.HLS {
 		k = playlist
 	}
@@ -215,7 +234,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	// deadline rather than wedge the player or a download worker
 	// an opaque relay may stream a long video legitimately and stays unbounded
 	ctx := r.Context()
-	if t.Kind != opaque && p.timeout > 0 {
+	if !t.Kind.relayed() && p.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.timeout)
 		defer cancel()
@@ -248,8 +267,12 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Write(body)
+		p.served.Add(1)
 	default:
 		relay(w, resp)
+		if t.Kind.picture() {
+			p.served.Add(1)
+		}
 	}
 }
 
@@ -303,9 +326,9 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 	if t.Referer != "" {
 		req.Header.Set("Referer", t.Referer)
 	}
-	// forward a range only for an opaque body such as an mp4 or a .vtt
+	// forward a range only for a relayed body such as an mp4 or a .vtt
 	// a segment must arrive whole so the decoy strip and any decryption line up
-	if rng := r.Header.Get("Range"); rng != "" && t.Kind == opaque {
+	if rng := r.Header.Get("Range"); rng != "" && t.Kind.relayed() {
 		req.Header.Set("Range", rng)
 	}
 

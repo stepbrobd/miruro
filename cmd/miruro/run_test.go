@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -517,5 +518,102 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 	}
 	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != "episode bytes" {
 		t.Errorf("saved %q (%v), want the live stream's body", body, err)
+	}
+}
+
+// fakePlay stands in for the player, fetching what it was handed the way a real
+// one does, so the proxy sees exactly what playback would have made it see
+func fakePlay(t *testing.T, px *play.Proxy, tried *[]string) func(context.Context, miruro.Stream) error {
+	return func(ctx context.Context, s miruro.Stream) error {
+		*tried = append(*tried, s.Server)
+		resp, err := http.Get(px.Stream(s).URL)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("player exit 2: %d", resp.StatusCode)
+		}
+		return nil
+	}
+}
+
+func TestPlayStreams(t *testing.T) {
+	ctx := context.Background()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/dead") {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	dead := miruro.Stream{URL: cdn.URL + "/dead.mp4", Kind: miruro.MP4, Server: "HD-1"}
+	live := miruro.Stream{URL: cdn.URL + "/live.mp4", Kind: miruro.MP4, Server: "HD-2"}
+
+	t.Run("a stream that never started falls through", func(t *testing.T) {
+		var tried []string
+		if err := playStreams(ctx, px, []miruro.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
+			t.Fatalf("the live stream did not play: %v", err)
+		}
+		if !slices.Equal(tried, []string{"HD-1", "HD-2"}) {
+			t.Errorf("tried %v, want both servers in order", tried)
+		}
+	})
+
+	// quitting the player two seconds in is not a dead stream, and restarting on
+	// another server would fight the user
+	t.Run("a stream that played is not retried", func(t *testing.T) {
+		var tried []string
+		quit := errors.New("player exit 4")
+		err := playStreams(ctx, px, []miruro.Stream{live, dead}, func(ctx context.Context, s miruro.Stream) error {
+			fakePlay(t, px, &tried)(ctx, s)
+			return quit
+		})
+		if !errors.Is(err, quit) {
+			t.Errorf("err = %v, want the player's own failure", err)
+		}
+		if !slices.Equal(tried, []string{"HD-2"}) {
+			t.Errorf("tried %v, want only the stream that played", tried)
+		}
+	})
+
+	t.Run("every stream dead reports the last failure", func(t *testing.T) {
+		var tried []string
+		err := playStreams(ctx, px, []miruro.Stream{dead, dead}, fakePlay(t, px, &tried))
+		if err == nil {
+			t.Fatal("nothing played, playback must fail")
+		}
+		if len(tried) != 2 {
+			t.Errorf("tried %d streams, want 2", len(tried))
+		}
+	})
+}
+
+func TestDeadStream(t *testing.T) {
+	fail := errors.New("player exit 2")
+	cases := []struct {
+		err           error
+		before, after int
+		want          bool
+	}{
+		{fail, 0, 0, true},  // exited with an error having got no picture
+		{fail, 3, 7, false}, // played, then failed, so the user or the CDN quit
+		{nil, 0, 0, false},  // a clean exit is never retried
+		{nil, 0, 9, false},  //
+		{fail, 2, 2, true},  // a later episode starts the count above zero
+	}
+	for _, c := range cases {
+		if got := deadStream(c.err, c.before, c.after); got != c.want {
+			t.Errorf("deadStream(%v, %d, %d) = %v, want %v", c.err, c.before, c.after, got, c.want)
+		}
 	}
 }
