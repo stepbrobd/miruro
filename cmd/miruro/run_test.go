@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"testing"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/play"
 )
 
 // sourcesServer decodes the pipe envelope and dispatches on the provider in
@@ -93,7 +96,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
-		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk")
+		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +117,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk")
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
 		if !errors.Is(err, miruro.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
@@ -131,7 +134,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
-		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "")
+		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +149,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "")
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "", nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
@@ -366,5 +369,108 @@ func TestOutcome(t *testing.T) {
 				t.Errorf("outcome = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// a retried episode must move past the providers it already burned, or the
+// fallback loop would resolve the same dead source forever
+func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"bonk": serveJSON(hlsPayload),
+	}, nil)
+	defer srv.Close()
+
+	client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+	_, served, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if served != "bonk" {
+		t.Errorf("served = %q, want bonk", served)
+	}
+
+	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true, "bonk": true})
+	if err == nil || !strings.Contains(err.Error(), "no source resolved") {
+		t.Fatalf("err = %v, want the no-source error once every provider is spent", err)
+	}
+}
+
+// a provider that resolves and then dies mid-download used to lose the episode
+func TestSaveFallsBackToAnotherProvider(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/dead") {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, "episode bytes")
+	}))
+	defer cdn.Close()
+
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/dead.mp4","type":"mp4"}]}`),
+		"bonk": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.mp4","type":"mp4"}]}`),
+	}, nil)
+	defer srv.Close()
+
+	ctx := context.Background()
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	dir := t.TempDir()
+	sv := saver{
+		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
+		px:       px,
+		hc:       http.DefaultClient,
+		cat:      twoProviderCatalog(),
+		title:    "Show",
+		category: miruro.Sub,
+		cfg:      config{Quality: "best", DownloadDir: dir},
+	}
+	if _, err := sv.save(ctx, 1, nil); err != nil {
+		t.Fatalf("the fallback provider did not save the episode: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4"))
+	if err != nil || string(body) != "episode bytes" {
+		t.Errorf("saved %q (%v), want the live provider's body", body, err)
+	}
+}
+
+// with every provider dead the episode fails, and the report has to name the
+// download that failed rather than the resolution that ran out of providers
+func TestSaveReportsTheDownloadFailure(t *testing.T) {
+	cdn := httptest.NewServer(http.NotFoundHandler())
+	defer cdn.Close()
+
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/a.mp4","type":"mp4"}]}`),
+		"bonk": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/b.mp4","type":"mp4"}]}`),
+	}, nil)
+	defer srv.Close()
+
+	ctx := context.Background()
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	sv := saver{
+		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
+		px:       px,
+		hc:       http.DefaultClient,
+		cat:      twoProviderCatalog(),
+		title:    "Show",
+		category: miruro.Sub,
+		cfg:      config{Quality: "best", DownloadDir: t.TempDir()},
+	}
+	_, err = sv.save(ctx, 1, nil)
+	if err == nil {
+		t.Fatal("every provider was dead, the episode must fail")
+	}
+	if !strings.Contains(err.Error(), "bonk") {
+		t.Errorf("err = %v, want the last provider that failed to download", err)
 	}
 }

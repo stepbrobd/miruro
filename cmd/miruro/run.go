@@ -230,23 +230,10 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	// subtitles is shared state
 	var bare atomic.Int64
 
+	sv := saver{client: client, px: px, hc: hc, cat: cat, id: anilistID, title: title, category: category, pin: pin, cfg: cfg}
+
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
-		ep := eps[i]
-		res, served, err := autoResolve(dctx, client, cat, ep, category, pin.Code)
-		if err != nil {
-			return err
-		}
-		stream, err := client.Select(dctx, res, cfg.Quality)
-		if err != nil {
-			return err
-		}
-		subs := miruro.Order(res.Subtitles, cfg.SubLang)
-		if applied(pin, served) == Hard {
-			subs = nil
-		}
-		name := fmt.Sprintf("%s - E%s", title, num(ep))
-		cache := cacheDir(anilistID, ep, category, served, cfg.Quality)
-		missed, err := play.Download(dctx, hc, px.Stream(stream), px.Subtitles(subs, stream.Referer), cfg.DownloadDir, name, cache, report)
+		missed, err := sv.save(dctx, eps[i], report)
 		if err != nil {
 			return err
 		}
@@ -283,6 +270,65 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	}
 	log.Info("saved", "dir", cfg.DownloadDir, "episodes", len(eps))
 	return nil
+}
+
+// saver holds what every episode of one download run shares
+type saver struct {
+	client   *miruro.Client
+	px       *play.Proxy
+	hc       *http.Client
+	cat      *miruro.Catalog
+	id       int
+	title    string
+	category miruro.Category
+	pin      Pin
+	cfg      config
+}
+
+// save writes one episode, dropping to the next provider when a download fails
+// after its own retries
+// a provider that resolves and then dies mid-episode is common enough that
+// failing the episode over it would waste the rest of the run
+// it reports the sidecars that were lost, the way play.Download does
+func (s saver) save(ctx context.Context, ep float64, report play.Progress) (int, error) {
+	tried := map[string]bool{}
+	var last error
+	for {
+		res, served, err := autoResolve(ctx, s.client, s.cat, ep, s.category, s.pin.Code, tried)
+		if err != nil {
+			if last != nil {
+				return 0, last
+			}
+			return 0, err
+		}
+		tried[served] = true
+
+		missed, err := s.from(ctx, res, served, ep, report)
+		if err == nil {
+			return missed, nil
+		}
+		if ctx.Err() != nil {
+			return 0, err
+		}
+		// name the provider, since the next attempt reports its own failure
+		last = fmt.Errorf("%s: %w", served, err)
+		log.Warn("download failed, trying another provider", "episode", num(ep), "provider", served, "err", err)
+	}
+}
+
+// from downloads one episode from the provider that served it
+func (s saver) from(ctx context.Context, res *miruro.Result, served string, ep float64, report play.Progress) (int, error) {
+	stream, err := s.client.Select(ctx, res, s.cfg.Quality)
+	if err != nil {
+		return 0, err
+	}
+	subs := miruro.Order(res.Subtitles, s.cfg.SubLang)
+	if applied(s.pin, served) == Hard {
+		subs = nil
+	}
+	name := fmt.Sprintf("%s - E%s", s.title, num(ep))
+	cache := cacheDir(s.id, ep, s.category, served, s.cfg.Quality)
+	return play.Download(ctx, s.hc, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
 }
 
 func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pin Pin, cfg config, player play.Player) error {
@@ -495,7 +541,7 @@ func apply(action string, numbers []float64, ep float64) (step, bool) {
 // itself served and ships a subtitle file
 func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pin Pin) (*miruro.Result, string, Pin, error) {
 	if pin.Code != "" {
-		res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code)
+		res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code, nil)
 		if err != nil {
 			return nil, "", pin, err
 		}
@@ -511,7 +557,7 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 	if err != nil {
 		return nil, "", pin, err
 	}
-	res, served, err := autoResolve(ctx, client, cat, ep, category, picked.Code)
+	res, served, err := autoResolve(ctx, client, cat, ep, category, picked.Code, nil)
 	if err != nil {
 		return nil, "", pin, err
 	}
@@ -531,7 +577,9 @@ func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep
 }
 
 // autoResolve tries the pinned provider first then the rest, never prompting
-func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string) (*miruro.Result, string, error) {
+// skip names providers a caller has already used, so an episode being retried
+// moves on instead of resolving the same dead source again
+func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pinned string, skip map[string]bool) (*miruro.Result, string, error) {
 	avail := cat.Available(ep, category)
 	if len(avail) == 0 {
 		return nil, "", fmt.Errorf("no provider has episode %s", num(ep))
@@ -539,6 +587,9 @@ func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog
 
 	var last error
 	for _, p := range orderPinned(avail, pinned) {
+		if skip[p.Code] {
+			continue
+		}
 		e := find(p.Episodes(category), ep)
 		if e == nil {
 			continue

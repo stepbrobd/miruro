@@ -99,7 +99,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code)
+	res, served, err := autoResolve(ctx, client, cat, ep, category, pin.Code, nil)
 	if err != nil {
 		return err
 	}
