@@ -163,9 +163,6 @@ func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog 
 // any failure is surfaced through the returned error, which the TUI shows on
 // the task row
 func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string) error {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return errors.New("ffmpeg is required to download hls streams")
-	}
 	// name the muxer explicitly because ffmpeg infers the output format from the
 	// file extension, and the .part suffix hides the real one
 	part := dest + ".part"
