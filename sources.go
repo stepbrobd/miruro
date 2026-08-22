@@ -31,6 +31,11 @@ type Stream struct {
 	Kind    Kind
 	Quality string
 	Referer string
+	// Server is the provider's own name for the host behind this stream,
+	// "HD-1" or "VidPlay-1", empty when it names none
+	Server string
+	// Default marks the stream the provider itself picks
+	Default bool
 }
 
 type Subtitle struct {
@@ -78,6 +83,8 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 			Type    string `json:"type"`
 			Quality string `json:"quality"`
 			Referer string `json:"referer"`
+			Server  string `json:"server"`
+			Default bool   `json:"default"`
 		} `json:"streams"`
 		Subtitles []struct {
 			File     string `json:"file"`
@@ -98,6 +105,8 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 			Kind:    Kind(s.Type),
 			Quality: s.Quality,
 			Referer: s.Referer,
+			Server:  s.Server,
+			Default: s.Default,
 		})
 	}
 	for _, s := range raw.Subtitles {
@@ -194,6 +203,10 @@ func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 			mp4 = append(mp4, s)
 		}
 	}
+	// the provider's own default leads its kind, since the order the api happens
+	// to list streams in is not a promise
+	lead(hls)
+	lead(mp4)
 
 	out := make([]Stream, 0, 1+len(hls)+len(mp4))
 	seen := map[string]bool{}
@@ -214,6 +227,21 @@ func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 		add(s)
 	}
 	return out
+}
+
+// lead moves the streams the provider flags as default to the front, keeping
+// the api order among equals
+func lead(streams []Stream) {
+	slices.SortStableFunc(streams, func(a, b Stream) int {
+		switch {
+		case a.Default == b.Default:
+			return 0
+		case a.Default:
+			return -1
+		default:
+			return 1
+		}
+	})
 }
 
 // preferred applies the quality heuristic, an author-owned decision

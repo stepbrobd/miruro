@@ -276,4 +276,13 @@ func TestRank(t *testing.T) {
 	if err != nil || s.URL != "hd2" {
 		t.Errorf("Select = (%q, %v), want hd2", s.URL, err)
 	}
+
+	// the order the api lists streams in is not a promise, the flag is
+	flagged := &Result{Streams: []Stream{
+		{URL: "second", Kind: HLS, Server: "HD-2"},
+		{URL: "first", Kind: HLS, Server: "HD-1", Default: true},
+	}}
+	if got := c.Rank(ctx, flagged, "best"); len(got) != 2 || got[0].URL != "first" || got[1].URL != "second" {
+		t.Errorf("Rank ignored the provider's default flag: %+v", got)
+	}
 }
