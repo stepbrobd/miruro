@@ -13,7 +13,7 @@ type config struct {
 	Player      string `toml:"player"`
 	Quality     string `toml:"quality"`
 	Provider    string `toml:"provider"`
-	SubLang     string `toml:"sub_lang"`
+	Lang        string `toml:"lang"`
 	DownloadDir string `toml:"download_dir"`
 	Dub         bool   `toml:"dub"`
 }
@@ -38,7 +38,7 @@ func loadConfig() config {
 		{"MIRURO_PLAYER", &c.Player},
 		{"MIRURO_QUALITY", &c.Quality},
 		{"MIRURO_PROVIDER", &c.Provider},
-		{"MIRURO_SUB_LANG", &c.SubLang},
+		{"MIRURO_LANG", &c.Lang},
 		{"MIRURO_DOWNLOAD_DIR", &c.DownloadDir},
 	} {
 		if v := os.Getenv(o.env); v != "" {

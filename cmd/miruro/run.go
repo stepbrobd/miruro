@@ -29,8 +29,8 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagProvider != "" {
 		cfg.Provider = flagProvider
 	}
-	if flagSubLang != "" {
-		cfg.SubLang = flagSubLang
+	if flagLang != "" {
+		cfg.Lang = flagLang
 	}
 	if flagDub {
 		cfg.Dub = true
@@ -322,7 +322,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (int,
 
 // from downloads one episode from one stream of the provider that served it
 func (s saver) from(ctx context.Context, res *miruro.Result, served string, stream miruro.Stream, ep float64, report play.Progress) (int, error) {
-	subs := miruro.Order(res.Subtitles, s.cfg.SubLang)
+	subs := miruro.Order(res.Subtitles, s.cfg.Lang)
 	if applied(s.pin, served) == Hard {
 		subs = nil
 	}
@@ -360,7 +360,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			skips = episodeSkips(cat, ep)
 		}
 
-		subs := miruro.Order(res.Subtitles, cfg.SubLang)
+		subs := miruro.Order(res.Subtitles, cfg.Lang)
 		variant := applied(pin, served)
 		if variant == Hard {
 			subs = nil
