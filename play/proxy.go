@@ -223,7 +223,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), mirrored(err))
 		return
 	}
 	defer resp.Body.Close()
@@ -315,9 +315,22 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
-		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
+		return nil, status(resp.StatusCode)
 	}
 	return resp, nil
+}
+
+// mirrored is the status the proxy answers with for a failed fetch
+// an upstream status is passed through rather than flattened, because a caller
+// that retries has to tell a dead url from a hiccup, and every failure looking
+// like a 502 makes a 404 look worth retrying
+// anything else is a transport failure, which is what a 502 means
+func mirrored(err error) int {
+	var s status
+	if errors.As(err, &s) {
+		return int(s)
+	}
+	return http.StatusBadGateway
 }
 
 func relay(w http.ResponseWriter, resp *http.Response) {

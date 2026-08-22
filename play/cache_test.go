@@ -501,6 +501,10 @@ func TestFetchTextRefusesOversizedBody(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), u) {
 		t.Fatalf("want an over-cap error naming the URL, got %v", err)
 	}
+	// the cap guards against a hostile body, so refetching it only pays twice
+	if transient(err) {
+		t.Error("an over-cap body must not be retried")
+	}
 }
 
 // a playlist past the segment ceiling would mint that many cache files, so it

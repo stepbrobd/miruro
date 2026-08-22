@@ -326,3 +326,40 @@ func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
 		t.Error("proxying dropped the track metadata the caller still needs")
 	}
 }
+
+// the downloader retries on the status the proxy answers with, so flattening
+// every upstream failure to 502 would make a dead url look worth retrying
+func TestProxyMirrorsUpstreamStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gone.ts":
+			http.Error(w, "gone", http.StatusNotFound)
+		case "/denied.ts":
+			http.Error(w, "denied", http.StatusForbidden)
+		default:
+			http.Error(w, "upstream unreachable", http.StatusBadGateway)
+		}
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for path, want := range map[string]int{
+		"/gone.ts":   http.StatusNotFound,
+		"/denied.ts": http.StatusForbidden,
+		"/dead.ts":   http.StatusBadGateway,
+	} {
+		resp, err := http.Get(px.proxied(upstream.URL+path, "", segment))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%s answered %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+}

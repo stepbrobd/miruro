@@ -79,8 +79,22 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 // grab streams url to dest atomically
 // it writes a .part file and renames on success, so an interrupted or failed
 // fetch never leaves a truncated file that looks complete
+// a transient failure is retried, since a provider that 502s once usually
+// answers the next attempt
 // the proxy injects the referer upstream, so none is set here
 func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress) error {
+	part := dest + ".part"
+	err := retry(ctx, func() error { return fetchFile(ctx, hc, url, part, prog) })
+	if err != nil {
+		os.Remove(part)
+		return err
+	}
+	return os.Rename(part, dest)
+}
+
+// fetchFile writes one whole body to part, truncating whatever a failed earlier
+// attempt left behind
+func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Progress) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -91,10 +105,9 @@ func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: status %d", url, resp.StatusCode)
+		return fmt.Errorf("download %s: %w", url, status(resp.StatusCode))
 	}
 
-	part := dest + ".part"
 	f, err := os.Create(part)
 	if err != nil {
 		return err
@@ -108,11 +121,7 @@ func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		os.Remove(part)
-		return err
-	}
-	return os.Rename(part, dest)
+	return err
 }
 
 type reader struct {

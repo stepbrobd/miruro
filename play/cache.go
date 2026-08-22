@@ -154,7 +154,19 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 	return parsePlaylist(body, srcURL)
 }
 
+// fetchText reads a playlist or a key, retrying a transient failure so a flaky
+// provider does not kill the download before it starts
 func fetchText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, error) {
+	var body []byte
+	err := retry(ctx, func() error {
+		var err error
+		body, err = readText(ctx, hc, rawURL)
+		return err
+	})
+	return body, err
+}
+
+func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -165,14 +177,14 @@ func fetchText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("playlist %s: status %d", rawURL, resp.StatusCode)
+		return nil, fmt.Errorf("playlist %s: %w", rawURL, status(resp.StatusCode))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTextBody+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(body) > maxTextBody {
-		return nil, fmt.Errorf("playlist %s: body exceeds %d bytes", rawURL, maxTextBody)
+		return nil, fmt.Errorf("playlist %s: %w of %d bytes", rawURL, errTooLarge, maxTextBody)
 	}
 	return body, nil
 }
@@ -473,10 +485,27 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 // an already cached segment is left alone, which is what makes a rerun resume
 // a body is only renamed into place once it is whole and plausibly media, since
 // a cached error page would otherwise remux into a silently truncated episode
+// a short or implausible body is retried like a dead status, because both are
+// what a provider dropping a connection mid-segment looks like
 func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain bool) (int64, error) {
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		return 0, nil
 	}
+	part := dest + ".part"
+	var n int64
+	err := retry(ctx, func() error {
+		var err error
+		n, err = fetchPart(ctx, hc, src, part, plain)
+		return err
+	})
+	if err != nil {
+		os.Remove(part)
+		return 0, err
+	}
+	return n, os.Rename(part, dest)
+}
+
+func fetchPart(ctx context.Context, hc *http.Client, src, part string, plain bool) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
 		return 0, err
@@ -487,10 +516,9 @@ func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("status %d", resp.StatusCode)
+		return 0, status(resp.StatusCode)
 	}
 
-	part := dest + ".part"
 	f, err := os.Create(part)
 	if err != nil {
 		return 0, err
@@ -503,11 +531,7 @@ func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain 
 	if err == nil {
 		err = plausibleSegment(head.Bytes(), n, resp.ContentLength, plain)
 	}
-	if err != nil {
-		os.Remove(part)
-		return 0, err
-	}
-	return n, os.Rename(part, dest)
+	return n, err
 }
 
 // plausibleSegment rejects a body that cannot be a whole segment
