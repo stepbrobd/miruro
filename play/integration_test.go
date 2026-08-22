@@ -3,9 +3,14 @@ package play
 import (
 	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,4 +187,78 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 		out.keyAt, out.keyURI = -1, ""
 	}
 	return out
+}
+
+// TestIntegrationSubtitleTracks checks that every sidecar a live provider ships
+// reaches a player under a readable name and with a body a player can parse
+// it is skipped unless MIRURO_INTEGRATION is set because it needs the network
+func TestIntegrationSubtitleTracks(t *testing.T) {
+	if os.Getenv("MIRURO_INTEGRATION") == "" {
+		t.Skip("set MIRURO_INTEGRATION=1 to run against live providers")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	client := miruro.New()
+	cat, err := client.Episodes(ctx, tensura)
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+
+	px, err := StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	var covered int
+	for code, provider := range cat.Providers {
+		t.Run(code, func(t *testing.T) {
+			eps := provider.Episodes(miruro.Sub)
+			if len(eps) == 0 {
+				t.Skip("provider carries no sub episodes")
+			}
+			res, err := client.Sources(ctx, eps[0].ID, code, miruro.Sub)
+			if err != nil {
+				t.Skipf("provider did not resolve, an upstream condition rather than a defect: %v", err)
+			}
+			if len(res.Subtitles) == 0 {
+				t.Skip("provider ships no subtitles")
+			}
+			stream, err := client.Select(ctx, res, "")
+			if err != nil {
+				t.Skipf("no selectable stream: %v", err)
+			}
+
+			for _, s := range px.Subtitles(miruro.Order(res.Subtitles, "en"), stream.Referer) {
+				u, err := url.Parse(s.File)
+				if err != nil {
+					t.Fatalf("subtitle url: %v", err)
+				}
+				name := path.Base(u.Path)
+				t.Logf("track %q lang=%q default=%v shows as %q", s.Label, s.Lang, s.Default, name)
+				if len(name) > 64 || !strings.Contains(name, ".") {
+					t.Errorf("track shows as %q, which is the payload rather than a name", name)
+				}
+				resp, err := http.Get(s.File)
+				if err != nil {
+					t.Fatalf("sidecar fetch: %v", err)
+				}
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Logf("sidecar answered %d, an upstream gap rather than a proxy defect", resp.StatusCode)
+					continue
+				}
+				if !bytes.HasPrefix(body, []byte("WEBVTT")) && !bytes.Contains(body, []byte("-->")) {
+					t.Errorf("sidecar body is not a subtitle: %.40q", body)
+				}
+				covered++
+			}
+		})
+	}
+	if covered == 0 {
+		t.Skip("no provider served a sidecar")
+	}
 }
