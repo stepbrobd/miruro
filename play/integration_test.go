@@ -159,7 +159,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err := os.WriteFile(local, []byte(pl.localise(cache, key)), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := remux(ctx, local, dest, nil); err != nil {
+			if err := remux(ctx, local, dest); err != nil {
 				t.Fatalf("remux: %v", err)
 			}
 			if out, err := exec.Command("ffmpeg", "-v", "error", "-i", dest, "-f", "null", "-").CombinedOutput(); err != nil {

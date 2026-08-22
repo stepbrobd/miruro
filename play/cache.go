@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/charmbracelet/log"
 )
@@ -67,7 +66,6 @@ type mediaPlaylist struct {
 type manifest struct {
 	Count     int       `json:"count"`
 	Durations []float64 `json:"durations"`
-	Updated   time.Time `json:"updated"`
 }
 
 // cachedHLS downloads each segment into dir and then remuxes from disk
@@ -99,7 +97,7 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	}
 	// the remux reports its own output size, which would send the bar backwards
 	// after the fetch already counted every segment
-	if err := remux(ctx, local, dest, nil); err != nil {
+	if err := remux(ctx, local, dest); err != nil {
 		// a failed remux with a live context means the cached bytes are bad
 		// a cancelled one keeps the cache for resume
 		if ctx.Err() == nil {
@@ -332,7 +330,7 @@ func (p *mediaPlaylist) localise(dir, key string) string {
 // the caller keys the directory by title, episode, provider and quality, so a
 // mismatch here means the provider re-encoded rather than that the URL rotated
 func reconcile(dir string, pl *mediaPlaylist) error {
-	want := manifest{Count: len(pl.segAt), Durations: pl.durations, Updated: time.Now()}
+	want := manifest{Count: len(pl.segAt), Durations: pl.durations}
 	path := filepath.Join(dir, "manifest.json")
 
 	data, err := os.ReadFile(path)
@@ -595,8 +593,8 @@ func (c *capped) Write(p []byte) (int, error) {
 // remux concatenates the cached segments into dest
 // the protocol whitelist is named because ffmpeg refuses file and crypto access
 // from a playlist unless asked, and both are exactly what a local cache needs
-func remux(ctx context.Context, local, dest string, prog Progress) error {
-	return runFFmpeg(ctx, dest, prog,
+func remux(ctx context.Context, local, dest string) error {
+	return runFFmpeg(ctx, dest, nil,
 		"-protocol_whitelist", "file,crypto,data",
 		"-allowed_extensions", "ALL",
 		"-i", local)
