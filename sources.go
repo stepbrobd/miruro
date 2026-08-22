@@ -39,12 +39,12 @@ type Stream struct {
 }
 
 type Subtitle struct {
-	File  string `json:"file"`
-	Label string `json:"label"`
+	File  string
+	Label string
 	// Lang is the api's language tag, "en" or "pt-BR", empty when it names none
-	Lang string `json:"lang,omitempty"`
+	Lang string
 	// Default marks the track the provider itself flags as the one to show
-	Default bool `json:"default,omitempty"`
+	Default bool
 }
 
 type Result struct {
@@ -332,14 +332,12 @@ func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 	base := resp.Request.URL
 	var variants []Stream
 	var height string
-	master := false
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		switch {
 		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
-			master = true
 			if m := resolution.FindStringSubmatch(line); m != nil {
 				height = m[1] + "p"
 			}
@@ -362,7 +360,7 @@ func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if !master || len(variants) == 0 {
+	if len(variants) == 0 {
 		return nil, fmt.Errorf("not a master playlist: %s", s.URL)
 	}
 	return variants, nil
