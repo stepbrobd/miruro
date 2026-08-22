@@ -54,7 +54,7 @@ type Result struct {
 
 func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
 
-// Playable reports whether Select can return a stream
+// Playable reports whether Rank can return a stream
 // an embed-only result carries no hls or mp4, so a caller must skip it rather
 // than accept it and fail later outside the fallback loop
 func (r *Result) Playable() bool {
@@ -177,15 +177,6 @@ func primary(tag string) string {
 		return tag[:i]
 	}
 	return tag
-}
-
-// Select is the stream to play, the head of Rank
-func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream, error) {
-	ranked := c.Rank(ctx, r, quality)
-	if len(ranked) == 0 {
-		return Stream{}, ErrNoStream
-	}
-	return ranked[0], nil
 }
 
 // Rank orders the streams worth trying, best first, and skips embeds since

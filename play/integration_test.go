@@ -90,10 +90,11 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err != nil {
 				t.Skipf("provider did not resolve, an upstream condition rather than a defect: %v", err)
 			}
-			stream, err := client.Select(ctx, res, "")
-			if err != nil {
-				t.Skipf("no selectable stream: %v", err)
+			ranked := client.Rank(ctx, res, "")
+			if len(ranked) == 0 {
+				t.Skip("no selectable stream")
 			}
+			stream := ranked[0]
 			if stream.Kind != miruro.HLS {
 				t.Skipf("kind %s does not exercise the segment cache", stream.Kind)
 			}
@@ -248,10 +249,11 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 			if len(res.Subtitles) == 0 {
 				t.Skip("provider ships no subtitles")
 			}
-			stream, err := client.Select(ctx, res, "")
-			if err != nil {
-				t.Skipf("no selectable stream: %v", err)
+			ranked := client.Rank(ctx, res, "")
+			if len(ranked) == 0 {
+				t.Skip("no selectable stream")
 			}
+			stream := ranked[0]
 
 			for _, s := range px.Subtitles(miruro.Order(res.Subtitles, "en"), stream.Referer) {
 				u, err := url.Parse(s.File)

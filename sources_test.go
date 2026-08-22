@@ -59,7 +59,17 @@ func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return nil, errors.New("network use forbidden")
 }
 
-func TestSelect(t *testing.T) {
+// top is the stream a caller plays, the head of Rank
+func top(t *testing.T, c *Client, r *Result, quality string) Stream {
+	t.Helper()
+	ranked := c.Rank(context.Background(), r, quality)
+	if len(ranked) == 0 {
+		t.Fatal("Rank returned nothing playable")
+	}
+	return ranked[0]
+}
+
+func TestRankHead(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("labelled hls match needs no network", func(t *testing.T) {
@@ -68,10 +78,7 @@ func TestSelect(t *testing.T) {
 			{URL: "u1080", Kind: HLS, Quality: "1080p"},
 			{URL: "u720", Kind: HLS, Quality: "720p"},
 		}}
-		s, err := c.Select(ctx, r, "720p")
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := top(t, c, r, "720p")
 		if s.URL != "u720" {
 			t.Errorf("selected %q, want u720", s.URL)
 		}
@@ -87,10 +94,7 @@ func TestSelect(t *testing.T) {
 
 		c := &Client{HTTP: srv.Client()}
 		r := &Result{Streams: []Stream{{URL: srv.URL + "/master.m3u8", Kind: HLS}}}
-		s, err := c.Select(ctx, r, "720p")
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := top(t, c, r, "720p")
 		if want := srv.URL + "/index-720.m3u8"; s.URL != want {
 			t.Errorf("selected %q, want %q", s.URL, want)
 		}
@@ -106,10 +110,7 @@ func TestSelect(t *testing.T) {
 		c := &Client{HTTP: srv.Client()}
 		first := Stream{URL: srv.URL + "/master.m3u8", Kind: HLS}
 		r := &Result{Streams: []Stream{first, {URL: srv.URL + "/other.m3u8", Kind: HLS}}}
-		s, err := c.Select(ctx, r, "720p")
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := top(t, c, r, "720p")
 		if s.URL != first.URL {
 			t.Errorf("selected %q, want the first hls %q", s.URL, first.URL)
 		}
@@ -121,26 +122,20 @@ func TestSelect(t *testing.T) {
 			{URL: "m480", Kind: MP4, Quality: "480p"},
 			{URL: "m720", Kind: MP4, Quality: "720p"},
 		}}
-		s, err := c.Select(ctx, r, "720p")
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := top(t, c, r, "720p")
 		if s.URL != "m720" {
 			t.Errorf("selected %q, want m720", s.URL)
 		}
-		s, err = c.Select(ctx, r, "2160p")
-		if err != nil {
-			t.Fatal(err)
-		}
+		s = top(t, c, r, "2160p")
 		if s.URL != "m480" {
 			t.Errorf("selected %q, want the first mp4 m480", s.URL)
 		}
 	})
 
-	t.Run("empty result is ErrNoStream", func(t *testing.T) {
+	t.Run("empty result ranks nothing", func(t *testing.T) {
 		c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
-		if _, err := c.Select(ctx, &Result{}, "best"); !errors.Is(err, ErrNoStream) {
-			t.Errorf("err = %v, want ErrNoStream", err)
+		if got := c.Rank(ctx, &Result{}, "best"); len(got) != 0 {
+			t.Errorf("Rank over an empty result = %v, want nothing playable", got)
 		}
 	})
 }
@@ -269,12 +264,6 @@ func TestRank(t *testing.T) {
 	}
 	if got := c.Rank(ctx, &Result{Streams: []Stream{{URL: "embed", Kind: Embed}}}, "best"); len(got) != 0 {
 		t.Errorf("Rank over an embed-only result = %v, want nothing playable", got)
-	}
-
-	// Select stays the head of Rank
-	s, err := c.Select(ctx, r, "720p")
-	if err != nil || s.URL != "hd2" {
-		t.Errorf("Select = (%q, %v), want hd2", s.URL, err)
 	}
 
 	// the order the api lists streams in is not a promise, the flag is
