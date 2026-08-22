@@ -422,7 +422,7 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 	var (
 		mu    sync.Mutex
 		done  int64
-		errs  []error
+		first error
 		sem   = make(chan struct{}, segWorkers)
 		wg    sync.WaitGroup
 		fatal = make(chan struct{})
@@ -439,52 +439,48 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 		prog(done, 0)
 	}
 
+spawn:
 	for n, at := range pl.segAt {
 		select {
 		case <-fatal:
+			break spawn
 		case <-ctx.Done():
+			break spawn
 		default:
-			sem <- struct{}{}
-			wg.Add(1)
-			go func(n int, src string) {
-				defer wg.Done()
-				defer func() { <-sem }()
-
-				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), !pl.encrypted)
-				mu.Lock()
-				if err != nil {
-					errs = append(errs, fmt.Errorf("segment %d: %w", n, err))
-					// one dead segment makes the remux incomplete, so stop early
-					// rather than fetch the rest
-					select {
-					case <-fatal:
-					default:
-						close(fatal)
-					}
-					mu.Unlock()
-					return
-				}
-				done += written
-				d := done
-				mu.Unlock()
-				// prog can block on ui delivery, so it never runs under mu
-				if prog != nil {
-					prog(d, 0)
-				}
-			}(n, pl.lines[at])
-			continue
 		}
-		break
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(n int, src string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), !pl.encrypted)
+			mu.Lock()
+			if err != nil {
+				// one dead segment makes the remux incomplete, so the first to
+				// fail records the reason and stops the rest
+				if first == nil {
+					first = fmt.Errorf("segment %d: %w", n, err)
+					close(fatal)
+				}
+				mu.Unlock()
+				return
+			}
+			done += written
+			d := done
+			mu.Unlock()
+			// prog can block on ui delivery, so it never runs under mu
+			if prog != nil {
+				prog(d, 0)
+			}
+		}(n, pl.lines[at])
 	}
 	wg.Wait()
 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if len(errs) > 0 {
-		return errs[0]
-	}
-	return nil
+	return first
 }
 
 // fetchSegment writes one segment atomically and reports the bytes it added
