@@ -5,25 +5,6 @@ import (
 	"testing"
 )
 
-func TestHumanBytes(t *testing.T) {
-	cases := []struct {
-		n    int64
-		want string
-	}{
-		{0, "0 B"},
-		{512, "512 B"},
-		{1536, "1.5 KB"},
-		{5 << 20, "5.0 MB"},
-		{3 << 30, "3.0 GB"},
-		{2 << 40, "2.0 TB"},
-	}
-	for _, c := range cases {
-		if got := humanBytes(c.n); got != c.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", c.n, got, c.want)
-		}
-	}
-}
-
 func TestClearHistory(t *testing.T) {
 	st := &store{path: filepath.Join(t.TempDir(), "history.json")}
 

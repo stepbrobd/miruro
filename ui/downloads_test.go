@@ -206,3 +206,26 @@ func TestCutFitsWidth(t *testing.T) {
 		})
 	}
 }
+
+// a provider Content-Length is untrusted, so the unit list must bound the
+// exponent rather than be indexed past its end
+func TestBytes(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1536, "1.5 KB"},
+		{5 << 20, "5.0 MB"},
+		{3 << 30, "3.0 GB"},
+		{2 << 40, "2.0 TB"},
+		{1 << 50, "1024.0 TB"},
+		{1 << 62, "4194304.0 TB"},
+	}
+	for _, c := range cases {
+		if got := Bytes(c.n); got != c.want {
+			t.Errorf("Bytes(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}

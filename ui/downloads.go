@@ -88,7 +88,7 @@ func (m downloads) View() string {
 		case m.total[i] > 0:
 			b.WriteString(fmt.Sprintf("  %s %s  %s\n", name, m.bars[i].ViewAs(float64(m.done[i])/float64(m.total[i])), size(m.done[i], m.total[i])))
 		default:
-			b.WriteString(fmt.Sprintf("  %s %s\n", name, human(m.done[i])))
+			b.WriteString(fmt.Sprintf("  %s %s\n", name, Bytes(m.done[i])))
 		}
 	}
 	return b.String()
@@ -258,17 +258,21 @@ func ok(good bool) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(nord11)).Render("x")
 }
 
-func size(done, total int64) string { return human(done) + " / " + human(total) }
+func size(done, total int64) string { return Bytes(done) + " / " + Bytes(total) }
 
-func human(n int64) string {
+// Bytes renders a byte count for a progress row or a report
+// the exponent is bounded because a provider Content-Length reaches here
+// unvalidated, and a petabyte would otherwise index past the unit list
+func Bytes(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
+	const units = "KMGT"
 	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
+	for x := n / unit; x >= unit && exp < len(units)-1; x /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), units[exp])
 }

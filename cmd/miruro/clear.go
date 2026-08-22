@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"ysun.co/miruro/ui"
 )
 
 var historyCmd = &cobra.Command{
@@ -91,20 +93,6 @@ func runCacheClear(*cobra.Command, []string) error {
 		fmt.Println("cache already empty")
 		return nil
 	}
-	fmt.Printf("removed %s of cached segments\n", humanBytes(total))
+	fmt.Printf("removed %s of cached segments\n", ui.Bytes(total))
 	return nil
-}
-
-// humanBytes matches ui's progress formatting
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
