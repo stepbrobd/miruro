@@ -536,3 +536,42 @@ func TestResolvePlaylistRejectsGrowingPlaylist(t *testing.T) {
 		t.Errorf("want errNoCache, got %v", err)
 	}
 }
+
+// a variant that lives in its own directory has its children resolved against
+// the variant url, not the master's
+func TestResolvePlaylistUsesTheVariantBase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/master.m3u8":
+			io.WriteString(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv/media.m3u8\n")
+		case "/v/media.m3u8":
+			io.WriteString(w, "#EXTM3U\n#EXTINF:1.0,\nseg0.ts\n#EXT-X-ENDLIST\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pl, err := resolvePlaylist(context.Background(), http.DefaultClient, srv.URL+"/master.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := pl.lines[pl.segAt[0]], srv.URL+"/v/seg0.ts"; got != want {
+		t.Errorf("segment = %q, want %q", got, want)
+	}
+}
+
+// a cache path is a file name, so a '$' in it must survive into the playlist
+// rather than read as a capture group reference
+func TestLocaliseKeepsADollarInTheKeyPath(t *testing.T) {
+	pl := &mediaPlaylist{
+		lines:  []string{"#EXTM3U", `#EXT-X-KEY:METHOD=AES-128,URI="https://cdn/key"`, "seg0.ts"},
+		segAt:  []int{2},
+		keyAt:  1,
+		keyURI: "https://cdn/key",
+	}
+	key := filepath.Join("/tmp/a$name", "key.bin")
+	if got := pl.localise("/tmp/a$name", key); !strings.Contains(got, `URI="`+key+`"`) {
+		t.Errorf("localise dropped part of the key path:\n%s", got)
+	}
+}

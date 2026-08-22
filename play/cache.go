@@ -124,6 +124,9 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 	if err != nil {
 		return nil, err
 	}
+	// base is the playlist the segments belong to, which is the variant once one
+	// is followed, since its children resolve against its own directory
+	base := srcURL
 	if bytes.Contains(body, []byte("#EXT-X-STREAM-INF")) {
 		// a rendition group carries audio or subtitles in their own playlists, and
 		// following only the video variant would silently drop them
@@ -137,6 +140,7 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 		if body, err = fetchText(ctx, hc, variant); err != nil {
 			return nil, err
 		}
+		base = variant
 	}
 	// a byterange playlist addresses slices of one resource, and an init segment
 	// is a separate resource every segment depends on
@@ -151,7 +155,7 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 	if !bytes.Contains(body, []byte("#EXT-X-ENDLIST")) {
 		return nil, errNoCache
 	}
-	return parsePlaylist(body, srcURL)
+	return parsePlaylist(body, base)
 }
 
 // fetchText reads a playlist or a key, retrying a transient failure so a flaky
@@ -317,7 +321,9 @@ func (p *mediaPlaylist) localise(dir, key string) string {
 		lines[at] = filepath.Join(dir, segName(n))
 	}
 	if key != "" && p.keyAt >= 0 {
-		lines[p.keyAt] = uriAttr.ReplaceAllString(lines[p.keyAt], `URI="`+key+`"`)
+		// literal, since a '$' in the cache path is a path character and not a
+		// capture group reference
+		lines[p.keyAt] = uriAttr.ReplaceAllLiteralString(lines[p.keyAt], `URI="`+key+`"`)
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
