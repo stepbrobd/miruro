@@ -69,9 +69,12 @@ func run(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		anilistID, title, category, startEp = e.AnilistID, e.Title, e.Category, e.Episode
-		// an explicit --provider overrides the resumed pin
-		// so a saved bonk:soft can be corrected with --provider bonk:hard
+		anilistID, title, startEp = e.AnilistID, e.Title, e.Episode
+		// an explicit flag overrides what the entry saved, so a sub run can be
+		// corrected with --dub and a saved bonk:soft with --provider bonk:hard
+		if !flagDub {
+			category = e.Category
+		}
 		if e.Provider != "" && flagProvider == "" {
 			pinned = e.Provider
 		}
