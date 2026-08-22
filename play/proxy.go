@@ -247,6 +247,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	var relayed int64
 	switch t.Kind {
 	case playlist:
 		body, ok := buffered(w, resp, maxPlaylistBody)
@@ -266,13 +267,14 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 			body = normalizeSegment(body)
 		}
 		w.Header().Set("Content-Type", "video/mp2t")
-		w.Write(body)
-		p.served.Add(1)
+		n, _ := w.Write(body)
+		relayed = int64(n)
 	default:
-		relay(w, resp)
-		if t.Kind.picture() {
-			p.served.Add(1)
-		}
+		relayed = relay(w, resp)
+	}
+	// a body that carried nothing is not picture the player can start on
+	if t.Kind.picture() && relayed > 0 {
+		p.served.Add(1)
 	}
 }
 
@@ -356,14 +358,16 @@ func mirrored(err error) int {
 	return http.StatusBadGateway
 }
 
-func relay(w http.ResponseWriter, resp *http.Response) {
+// relay forwards a body untouched and reports the bytes it copied
+func relay(w http.ResponseWriter, resp *http.Response) int64 {
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	n, _ := io.Copy(w, resp.Body)
+	return n
 }
 
 // normalizeSegment drops the decoy image some providers place before the

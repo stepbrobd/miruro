@@ -407,3 +407,21 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 		t.Errorf("an mp4 body left Served at %d, want 2", px.Served())
 	}
 }
+
+// a host that answers 200 with nothing is a dead stream, and counting it would
+// tell the caller the player started
+func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	httpGetBytes(t, px.URL(miruro.Stream{URL: upstream.URL + "/video.mp4", Kind: miruro.MP4}))
+	if px.Served() != 0 {
+		t.Errorf("an empty body left Served at %d, want 0", px.Served())
+	}
+}
