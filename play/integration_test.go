@@ -17,9 +17,39 @@ import (
 	"ysun.co/miruro"
 )
 
-// tensura is a season with every provider carrying episode 1, so one title
-// exercises the whole provider matrix
-const tensura = 108511
+// titles are the anime the integration run pulls its provider list from
+// provider codes are never written down here, they come from whatever the live
+// catalog carries, but no single title carries all of them, so the run covers
+// the union across a couple of fixed titles
+// tensura was the original and is the only one of the two carrying ANIMEDUNYA
+// shingeki is what reaches pewe
+var titles = []int{
+	108511, // Tensei shitara Slime Datta Ken 2nd Season
+	16498,  // Shingeki no Kyojin
+}
+
+// providerMatrix is every provider the live catalogs carry, each mapped to the
+// first title that has it
+func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) map[string]miruro.Provider {
+	t.Helper()
+	out := map[string]miruro.Provider{}
+	for _, id := range titles {
+		cat, err := client.Episodes(ctx, id)
+		if err != nil {
+			t.Fatalf("catalog %d: %v", id, err)
+		}
+		for code, p := range cat.Providers {
+			if _, seen := out[code]; !seen {
+				out[code] = p
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no provider in any catalog")
+	}
+	t.Logf("provider matrix: %d providers across %d titles", len(out), len(titles))
+	return out
+}
 
 // segmentSample bounds how much of an episode the integration run fetches
 // the cache logic is per segment, so a handful proves the path without pulling
@@ -42,10 +72,6 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	defer cancel()
 
 	client := miruro.New()
-	cat, err := client.Episodes(ctx, tensura)
-	if err != nil {
-		t.Fatalf("catalog: %v", err)
-	}
 
 	px, err := StartProxy(ctx)
 	if err != nil {
@@ -54,7 +80,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	defer px.Close()
 
 	var covered int
-	for code, provider := range cat.Providers {
+	for code, provider := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
 			eps := provider.Episodes(miruro.Sub)
 			if len(eps) == 0 {
@@ -201,10 +227,6 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	defer cancel()
 
 	client := miruro.New()
-	cat, err := client.Episodes(ctx, tensura)
-	if err != nil {
-		t.Fatalf("catalog: %v", err)
-	}
 
 	px, err := StartProxy(ctx)
 	if err != nil {
@@ -213,7 +235,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	defer px.Close()
 
 	var covered int
-	for code, provider := range cat.Providers {
+	for code, provider := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
 			eps := provider.Episodes(miruro.Sub)
 			if len(eps) == 0 {
