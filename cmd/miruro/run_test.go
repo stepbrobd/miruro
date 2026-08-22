@@ -86,6 +86,50 @@ func twoProviderCatalog() *miruro.Catalog {
 	}
 }
 
+// deadCDN serves an episode body except under prefix, which 404s, so a test can
+// spell one dead host among live ones
+func deadCDN(t *testing.T, prefix string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, "episode bytes")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newSaver wires a saver against srv with a proxy and a download directory, and
+// returns that directory
+func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, string) {
+	t.Helper()
+	px, err := play.StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { px.Close() })
+	dir := t.TempDir()
+	return saver{
+		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
+		px:       px,
+		hc:       http.DefaultClient,
+		cat:      cat,
+		title:    "Show",
+		category: miruro.Sub,
+		cfg:      config{Quality: "best", DownloadDir: dir},
+	}, dir
+}
+
+// savedEpisode asserts the episode landed whole under dir
+func savedEpisode(t *testing.T, dir string) {
+	t.Helper()
+	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != "episode bytes" {
+		t.Errorf("saved %q (%v), want the whole episode", body, err)
+	}
+}
+
 func TestAutoResolve(t *testing.T) {
 	ctx := context.Background()
 
@@ -398,45 +442,18 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 
 // a provider that resolves and then dies mid-download used to lose the episode
 func TestSaveFallsBackToAnotherProvider(t *testing.T) {
-	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/dead") {
-			http.NotFound(w, r)
-			return
-		}
-		io.WriteString(w, "episode bytes")
-	}))
-	defer cdn.Close()
-
+	cdn := deadCDN(t, "/dead")
 	srv := sourcesServer(t, map[string]http.HandlerFunc{
 		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/dead.mp4","type":"mp4"}]}`),
 		"bonk": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.mp4","type":"mp4"}]}`),
 	}, nil)
 	defer srv.Close()
 
-	ctx := context.Background()
-	px, err := play.StartProxy(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer px.Close()
-
-	dir := t.TempDir()
-	sv := saver{
-		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
-		px:       px,
-		hc:       http.DefaultClient,
-		cat:      twoProviderCatalog(),
-		title:    "Show",
-		category: miruro.Sub,
-		cfg:      config{Quality: "best", DownloadDir: dir},
-	}
-	if _, err := sv.save(ctx, 1, nil); err != nil {
+	sv, dir := newSaver(t, srv, twoProviderCatalog())
+	if _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the fallback provider did not save the episode: %v", err)
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4"))
-	if err != nil || string(body) != "episode bytes" {
-		t.Errorf("saved %q (%v), want the live provider's body", body, err)
-	}
+	savedEpisode(t, dir)
 }
 
 // with every provider dead the episode fails, and the report has to name the
@@ -451,23 +468,8 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	ctx := context.Background()
-	px, err := play.StartProxy(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer px.Close()
-
-	sv := saver{
-		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
-		px:       px,
-		hc:       http.DefaultClient,
-		cat:      twoProviderCatalog(),
-		title:    "Show",
-		category: miruro.Sub,
-		cfg:      config{Quality: "best", DownloadDir: t.TempDir()},
-	}
-	_, err = sv.save(ctx, 1, nil)
+	sv, _ := newSaver(t, srv, twoProviderCatalog())
+	_, err := sv.save(context.Background(), 1, nil)
 	if err == nil {
 		t.Fatal("every provider was dead, the episode must fail")
 	}
@@ -479,14 +481,7 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 // a provider that serves an episode from several hosts is not dead when the
 // first of them is, so the download walks its streams before the next provider
 func TestSaveFallsBackToAnotherStream(t *testing.T) {
-	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/hd1") {
-			http.NotFound(w, r)
-			return
-		}
-		io.WriteString(w, "episode bytes")
-	}))
-	defer cdn.Close()
+	cdn := deadCDN(t, "/hd1")
 
 	// ally leads alphabetically, so the pin is what puts bonk in front
 	srv := sourcesServer(t, map[string]http.HandlerFunc{
@@ -496,29 +491,14 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	ctx := context.Background()
-	px, err := play.StartProxy(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer px.Close()
-
-	dir := t.TempDir()
-	sv := saver{
-		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
-		px:       px,
-		hc:       http.DefaultClient,
-		cat:      &miruro.Catalog{Providers: map[string]miruro.Provider{"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}}}},
-		title:    "Show",
-		category: miruro.Sub,
-		cfg:      config{Quality: "best", DownloadDir: dir},
-	}
-	if _, err := sv.save(ctx, 1, nil); err != nil {
+	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
+		"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
+	}}
+	sv, dir := newSaver(t, srv, cat)
+	if _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the second stream did not save the episode: %v", err)
 	}
-	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != "episode bytes" {
-		t.Errorf("saved %q (%v), want the live stream's body", body, err)
-	}
+	savedEpisode(t, dir)
 }
 
 // fakePlay stands in for the player, fetching what it was handed the way a real
