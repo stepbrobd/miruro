@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -199,4 +200,64 @@ func TestClientBoundsAStalledBody(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the body read was never bounded")
 	}
+}
+
+// the search resource answers 200 with an error object when it fails, and 200
+// with manga when the type filter does not hold, so neither may reach the picker
+func TestSearch(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("keeps anime and drops everything else", func(t *testing.T) {
+		var got map[string]string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = envelopeQuery(t, r)
+			io.WriteString(w, `[
+				{"id":1,"type":"ANIME","title":{"romaji":"Shingeki","english":"Attack on Titan"},"episodes":25,"format":"TV"},
+				{"id":2,"type":"MANGA","title":{"romaji":"Berserk"},"format":"MANGA"},
+				{"id":3,"type":"ANIME","title":{"romaji":"Only Romaji"},"format":"OVA"}]`)
+		}))
+		defer srv.Close()
+
+		media, err := (&Client{Base: srv.URL, HTTP: srv.Client()}).Search(ctx, "titan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(media) != 2 {
+			t.Fatalf("got %d results, want the 2 anime", len(media))
+		}
+		if media[0].Title() != "Attack on Titan" || media[1].Title() != "Only Romaji" {
+			t.Errorf("titles = %q and %q", media[0].Title(), media[1].Title())
+		}
+		if got["q"] != "titan" || got["type"] != "ANIME" {
+			t.Errorf("query = %v, want the term and the anime filter", got)
+		}
+	})
+
+	t.Run("an error object is reported rather than a json type error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"error":"Secure pipe failed"}`)
+		}))
+		defer srv.Close()
+
+		_, err := (&Client{Base: srv.URL, HTTP: srv.Client()}).Search(ctx, "titan")
+		if !errors.Is(err, ErrUpstream) || !strings.Contains(err.Error(), "Secure pipe failed") {
+			t.Errorf("err = %v, want the upstream reason", err)
+		}
+	})
+}
+
+// envelopeQuery decodes the query the client packed into the pipe envelope
+func envelopeQuery(t *testing.T, r *http.Request) map[string]string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("e"))
+	if err != nil {
+		t.Fatalf("undecodable envelope: %v", err)
+	}
+	var env struct {
+		Query map[string]string `json:"query"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope is not json: %v", err)
+	}
+	return env.Query
 }
