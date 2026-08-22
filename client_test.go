@@ -97,6 +97,13 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			want:   plain,
 		},
 		{
+			name:    "an error object with an ok status is recoverable",
+			status:  http.StatusOK,
+			obf:     "1",
+			body:    obfuscate(t, []byte(`{"error":"Secure pipe failed"}`), "1"),
+			wantErr: ErrUpstream,
+		},
+		{
 			name:    "a cancelled context surfaces as such",
 			status:  http.StatusOK,
 			cancel:  true,

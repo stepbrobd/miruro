@@ -3,7 +3,6 @@ package miruro
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
 )
 
@@ -52,7 +51,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 		Format   string `json:"format"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, searchFailure(body, err)
+		return nil, err
 	}
 
 	media := make([]Media, 0, len(raw))
@@ -71,17 +70,4 @@ func (c *Client) Search(ctx context.Context, query string) ([]Media, error) {
 		})
 	}
 	return media, nil
-}
-
-// searchFailure names what the pipe said when the body is not a result list
-// a resource that fails answers 200 with an error object, so a bare json type
-// error would otherwise hide the reason
-func searchFailure(body []byte, err error) error {
-	var fail struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return fmt.Errorf("%w: search: %s", ErrUpstream, fail.Error)
-	}
-	return err
 }

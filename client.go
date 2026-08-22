@@ -121,11 +121,21 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 		return nil, ErrUpstream
 	}
 
-	obf := resp.Header.Get("x-obfuscated")
-	if obf == "" {
-		return body, nil
+	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
+		if body, err = decode(body, obf); err != nil {
+			return nil, err
+		}
 	}
-	return decode(body, obf)
+
+	// a resource that fails answers 200 with an error object rather than a status
+	// every resource does this, so the check belongs here rather than per caller
+	var fail struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
+		return nil, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
+	}
+	return body, nil
 }
 
 // decode reverses base64url, then the optional xor, then gzip
