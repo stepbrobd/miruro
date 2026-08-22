@@ -271,34 +271,30 @@ func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality strin
 // it reports false when no stream carries a usable height, so the caller can
 // expand a master or fall back to best
 func pickQuality(streams []Stream, quality string) (Stream, bool) {
-	best, worst := -1, -1
-	var bs, ws Stream
-	want := parseHeight(quality)
+	if quality != "" && quality != "best" && quality != "worst" {
+		want := parseHeight(quality)
+		for _, s := range streams {
+			if h := parseHeight(s.Quality); h != 0 && h == want {
+				return s, true
+			}
+		}
+		return Stream{}, false
+	}
+
+	tallest := quality != "worst"
+	var pick Stream
+	height := 0
 	for _, s := range streams {
 		h := parseHeight(s.Quality)
 		if h == 0 {
 			continue
 		}
-		if quality != "" && quality != "best" && quality != "worst" {
-			if h == want {
-				return s, true
-			}
-			continue
-		}
-		if h > best {
-			best, bs = h, s
-		}
-		if worst < 0 || h < worst {
-			worst, ws = h, s
+		// the comparison is strict, so equal heights keep the first
+		if height == 0 || (tallest && h > height) || (!tallest && h < height) {
+			pick, height = s, h
 		}
 	}
-	switch {
-	case quality == "worst" && worst >= 0:
-		return ws, true
-	case (quality == "" || quality == "best") && best >= 0:
-		return bs, true
-	}
-	return Stream{}, false
+	return pick, height > 0
 }
 
 func parseHeight(q string) int {
