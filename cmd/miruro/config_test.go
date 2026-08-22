@@ -17,7 +17,7 @@ func TestLoadConfig(t *testing.T) {
 	t.Cleanup(xdg.Reload)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	xdg.Reload()
-	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_DOWNLOAD_DIR", "MIRURO_DUB"} {
+	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD_DIR", "MIRURO_DUB"} {
 		t.Setenv(v, "")
 	}
 
@@ -35,14 +35,15 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	t.Run("file values with env overrides", func(t *testing.T) {
-		body := "quality = \"720p\"\nprovider = \"bonk:hard\"\ndub = true\n"
+		body := "quality = \"720p\"\nprovider = \"bonk:hard\"\nlang = \"ja\"\ndub = true\n"
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("MIRURO_QUALITY", "480p")
+		t.Setenv("MIRURO_LANG", "en")
 		t.Setenv("MIRURO_DUB", "false")
 		c := loadConfig()
-		want := config{Quality: "480p", Provider: "bonk:hard", DownloadDir: "."}
+		want := config{Quality: "480p", Provider: "bonk:hard", Lang: "en", DownloadDir: "."}
 		if c != want {
 			t.Errorf("loadConfig() = %+v, want %+v", c, want)
 		}

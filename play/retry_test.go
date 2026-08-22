@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// realPause is the production backoff, captured before TestMain replaces it
+var realPause = pause
+
 // the suite drives the retry paths on purpose, so it must not sleep through the
 // real backoff
 // TestRetrySchedule covers the durations that are skipped here
@@ -22,9 +25,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestRetrySchedule(t *testing.T) {
-	real := func(n int) time.Duration { return time.Duration(1<<(n-1)) * time.Second }
 	for n, want := range map[int]time.Duration{1: time.Second, 2: 2 * time.Second} {
-		if got := real(n); got != want {
+		if got := realPause(n); got != want {
 			t.Errorf("pause(%d) = %v, want %v", n, got, want)
 		}
 	}
