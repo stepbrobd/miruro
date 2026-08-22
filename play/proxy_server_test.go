@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -281,4 +282,47 @@ func firstProxiedLine(t *testing.T, body, base string) string {
 	}
 	t.Fatalf("no proxied URL in playlist:\n%s", body)
 	return ""
+}
+
+// mpv titles an external subtitle track from the last path component of its url,
+// so the proxy has to carry a readable name past the base64 payload without
+// losing the target
+func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Referer") == "" {
+			http.Error(w, "referer required", http.StatusForbidden)
+			return
+		}
+		io.WriteString(w, "WEBVTT\n")
+	}))
+	defer upstream.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	subs := px.Subtitles([]miruro.Subtitle{
+		{File: upstream.URL + "/track.srt", Label: "Portugues (Brasil)", Lang: "pt-BR"},
+		{File: upstream.URL + "/track", Lang: "en"},
+		{File: upstream.URL + "/../track.vtt", Label: "../../escape"},
+	}, upstream.URL+"/")
+
+	want := []string{"Portugues (Brasil).srt", "en.vtt", "-..-escape.vtt"}
+	for i, s := range subs {
+		u, err := url.Parse(s.File)
+		if err != nil {
+			t.Fatalf("subtitle %d is not a url: %v", i, err)
+		}
+		if got := path.Base(u.Path); got != want[i] {
+			t.Errorf("subtitle %d shows as %q, want %q", i, got, want[i])
+		}
+		if body := httpGetString(t, s.File); body != "WEBVTT\n" {
+			t.Errorf("subtitle %d relayed %q", i, body)
+		}
+	}
+	if subs[0].Label != "Portugues (Brasil)" || subs[0].Lang != "pt-BR" {
+		t.Error("proxying dropped the track metadata the caller still needs")
+	}
 }

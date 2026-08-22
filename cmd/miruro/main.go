@@ -22,6 +22,7 @@ var (
 	flagDub      bool
 	flagContinue bool
 	flagProvider string
+	flagSubLang  string
 	flagAll      bool
 	flagParallel int
 	flagSkip     bool
@@ -45,6 +46,7 @@ func init() {
 	f.BoolVar(&flagDub, "dub", false, "Use dub instead of sub")
 	f.BoolVarP(&flagContinue, "continue", "c", false, "Resume from history")
 	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
+	f.StringVar(&flagSubLang, "sub-lang", "", "Preferred subtitle language, a tag such as en or a label such as English")
 	f.BoolVar(&flagAll, "all", false, "Select every episode, to binge or to download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")
 	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as mpv chapters via aniskip")

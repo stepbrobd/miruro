@@ -116,8 +116,8 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 
 	dir, name := t.TempDir(), "Show - E1"
 	subs := []miruro.Subtitle{
-		{File: srv.URL + "/good.vtt", Label: "English"},
-		{File: srv.URL + "/gone.vtt", Label: "Spanish"},
+		{File: srv.URL + "/good.vtt", Label: "English", Lang: "en"},
+		{File: srv.URL + "/gone.vtt", Label: "Spanish", Lang: "es"},
 	}
 	missed, err := Download(context.Background(), http.DefaultClient,
 		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4},
@@ -131,7 +131,7 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, name+".mp4")); err != nil {
 		t.Errorf("video did not survive the sidecar failure: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, name+".0.English.vtt")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, name+".en.vtt")); err != nil {
 		t.Errorf("the sidecar that resolved was not written: %v", err)
 	}
 }
@@ -168,5 +168,26 @@ func TestDownloadSkipsExistingEpisode(t *testing.T) {
 	want := int64(len(body))
 	if done != want || total != want {
 		t.Errorf("progress reported %d of %d, want %d of %d", done, total, want, want)
+	}
+}
+
+// a sidecar named for its language is what a player auto-loads next to the
+// video, and two tracks naming one language must not overwrite each other
+func TestSidecarNames(t *testing.T) {
+	seen := map[string]int{}
+	cases := []struct {
+		sub  miruro.Subtitle
+		want string
+	}{
+		{miruro.Subtitle{File: "http://x/a.vtt", Label: "English", Lang: "en"}, ".en.vtt"},
+		{miruro.Subtitle{File: "http://x/b.srt", Label: "English", Lang: "en"}, ".en.1.srt"},
+		{miruro.Subtitle{File: "http://x/c.ass?token=1", Label: "Signs"}, ".Signs.ass"},
+		{miruro.Subtitle{File: "http://x/d"}, ".sub.vtt"},
+		{miruro.Subtitle{File: "http://x/e.exe", Lang: "../../etc"}, ".-..-etc.vtt"},
+	}
+	for _, c := range cases {
+		if got := sidecar(c.sub, seen); got != c.want {
+			t.Errorf("sidecar(%+v) = %q, want %q", c.sub, got, c.want)
+		}
 	}
 }

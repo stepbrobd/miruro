@@ -14,6 +14,7 @@ import (
 
 var (
 	resProvider string
+	resSubLang  string
 	resDub      bool
 	resQuality  string
 	resJSON     bool
@@ -36,6 +37,7 @@ so a script consumer knows which title served.`,
 func init() {
 	f := resolveCmd.Flags()
 	f.StringVar(&resProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
+	f.StringVar(&resSubLang, "sub-lang", "", "Preferred subtitle language, a tag such as en or a label such as English")
 	f.BoolVar(&resDub, "dub", false, "Use dub instead of sub")
 	f.StringVarP(&resQuality, "quality", "q", "", "Video quality, e.g. best or 1080p")
 	f.BoolVar(&resJSON, "json", false, "Emit JSON with referer and subtitles")
@@ -51,6 +53,9 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	}
 	if resProvider != "" {
 		cfg.Provider = resProvider
+	}
+	if resSubLang != "" {
+		cfg.SubLang = resSubLang
 	}
 	if resDub {
 		cfg.Dub = true
@@ -102,6 +107,7 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	res.Subtitles = miruro.Order(res.Subtitles, cfg.SubLang)
 	return emit(stream, res, served)
 }
 

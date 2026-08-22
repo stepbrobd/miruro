@@ -59,8 +59,9 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	}
 
 	var missed int
-	for i, sub := range subs {
-		side := filepath.Join(dir, fmt.Sprintf("%s.%d.%s.vtt", name, i, safeName(subLabel(sub))))
+	seen := map[string]int{}
+	for _, sub := range subs {
+		side := filepath.Join(dir, name+sidecar(sub, seen))
 		err := grab(ctx, hc, sub.File, side, nil)
 		if err == nil {
 			continue
@@ -198,6 +199,27 @@ func subLabel(s miruro.Subtitle) string {
 		return s.Label
 	}
 	return "sub"
+}
+
+// sidecar is the tail a subtitle takes next to the video, ".en.vtt" for an
+// english track, which is the shape a player auto-loads
+// seen counts the tags already used, because two tracks can name one language
+// and the second must not overwrite the first
+func sidecar(s miruro.Subtitle, seen map[string]int) string {
+	tag := s.Lang
+	if tag == "" {
+		tag = s.Label
+	}
+	if tag == "" {
+		tag = "sub"
+	}
+	tag = safeName(tag)
+	n := seen[tag]
+	seen[tag]++
+	if n > 0 {
+		tag = fmt.Sprintf("%s.%d", tag, n)
+	}
+	return "." + tag + subExt(s.File)
 }
 
 // safeName reduces an API-supplied title or subtitle label to a single path

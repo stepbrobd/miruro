@@ -11,6 +11,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -137,6 +139,54 @@ func (p *Proxy) Opaque(rawURL, referer string) string {
 	return p.proxied(rawURL, referer, opaque)
 }
 
+// Subtitles addresses each sidecar through the proxy under a file name a player
+// can show
+// subtitles carry no referer of their own, so they inherit the video stream's
+func (p *Proxy) Subtitles(subs []miruro.Subtitle, referer string) []miruro.Subtitle {
+	out := make([]miruro.Subtitle, len(subs))
+	for i, s := range subs {
+		out[i] = s
+		out[i].File = p.named(s.File, referer, subName(s))
+	}
+	return out
+}
+
+// named is an opaque relay carrying a readable trailing component
+// mpv titles an external track from the last path component of its url, so
+// without one every subtitle reads as the base64 payload
+func (p *Proxy) named(rawURL, referer, name string) string {
+	return p.Opaque(rawURL, referer) + "/" + url.PathEscape(name)
+}
+
+// subName is the file name a player shows for an external subtitle track
+// the label names the track and the language tag is the fallback, and the
+// extension is carried over so a player picks the right parser
+func subName(s miruro.Subtitle) string {
+	name := s.Label
+	if name == "" {
+		name = s.Lang
+	}
+	if name == "" {
+		name = "subtitle"
+	}
+	return safeName(name) + subExt(s.File)
+}
+
+// subExt is the upstream subtitle extension
+// the result becomes a file name a player parses, so an extension outside the
+// known subtitle formats is replaced rather than passed on
+func subExt(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ".vtt"
+	}
+	switch ext := strings.ToLower(path.Ext(u.Path)); ext {
+	case ".vtt", ".srt", ".ass", ".ssa", ".sub":
+		return ext
+	}
+	return ".vtt"
+}
+
 // Stream addresses s through the proxy
 // the referer is cleared because the proxy sends it upstream itself
 func (p *Proxy) Stream(s miruro.Stream) miruro.Stream {
@@ -218,9 +268,12 @@ func buffered(w http.ResponseWriter, resp *http.Response, limit int64) ([]byte, 
 	return body, true
 }
 
-func (p *Proxy) decode(path string) (target, error) {
-	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
-	if len(parts) != 2 || parts[0] != p.token {
+// decode reads the target out of a request path
+// anything past the payload is the readable name a player shows and carries no
+// meaning here
+func (p *Proxy) decode(reqPath string) (target, error) {
+	parts := strings.Split(strings.TrimPrefix(reqPath, "/"), "/")
+	if len(parts) < 2 || parts[0] != p.token {
 		return target{}, errToken
 	}
 	payload := parts[1]

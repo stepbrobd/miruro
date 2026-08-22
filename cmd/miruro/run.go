@@ -29,6 +29,9 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagProvider != "" {
 		cfg.Provider = flagProvider
 	}
+	if flagSubLang != "" {
+		cfg.SubLang = flagSubLang
+	}
 	if flagDub {
 		cfg.Dub = true
 	}
@@ -237,13 +240,13 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 		if err != nil {
 			return err
 		}
-		subs := res.Subtitles
+		subs := miruro.Order(res.Subtitles, cfg.SubLang)
 		if applied(pin, served) == Hard {
 			subs = nil
 		}
 		name := fmt.Sprintf("%s - E%s", title, num(ep))
 		cache := cacheDir(anilistID, ep, category, served, cfg.Quality)
-		missed, err := play.Download(dctx, hc, px.Stream(stream), proxySubs(px, subs, stream.Referer), cfg.DownloadDir, name, cache, report)
+		missed, err := play.Download(dctx, hc, px.Stream(stream), px.Subtitles(subs, stream.Referer), cfg.DownloadDir, name, cache, report)
 		if err != nil {
 			return err
 		}
@@ -311,7 +314,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			skips = episodeSkips(cat, ep)
 		}
 
-		subs := res.Subtitles
+		subs := miruro.Order(res.Subtitles, cfg.SubLang)
 		variant := applied(pin, served)
 		if variant == Hard {
 			subs = nil
@@ -325,7 +328,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			controls(numbers, ep),
 			len(queue) > 0,
 			func(pctx context.Context) error {
-				return player.Play(pctx, px.Stream(stream), proxySubs(px, subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
+				return player.Play(pctx, px.Stream(stream), px.Subtitles(subs, stream.Referer), skips, fmt.Sprintf("%s Episode %s", title, num(ep)))
 			},
 			func() error { return st.save(e) },
 		)
@@ -572,17 +575,6 @@ func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
 		if s.Episode == ep {
 			out = append(out, s)
 		}
-	}
-	return out
-}
-
-// proxySubs routes sidecar subtitle fetches through the proxy so CDN gating is
-// handled the same way it is for video. Subtitles carry no referer of their own,
-// so they inherit the video stream's.
-func proxySubs(px *play.Proxy, subs []miruro.Subtitle, referer string) []miruro.Subtitle {
-	out := make([]miruro.Subtitle, len(subs))
-	for i, s := range subs {
-		out[i] = miruro.Subtitle{File: px.Opaque(s.File, referer), Label: s.Label}
 	}
 	return out
 }
