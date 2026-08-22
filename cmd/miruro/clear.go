@@ -16,12 +16,10 @@ var historyCmd = &cobra.Command{
 }
 
 var historyClearCmd = &cobra.Command{
-	Use:           "clear",
-	Short:         "Clear watch history",
-	Args:          cobra.NoArgs,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	RunE:          runHistoryClear,
+	Use:   "clear",
+	Short: "Clear watch history",
+	Args:  cobra.NoArgs,
+	RunE:  runHistoryClear,
 }
 
 var cacheCmd = &cobra.Command{
@@ -30,12 +28,10 @@ var cacheCmd = &cobra.Command{
 }
 
 var cacheClearCmd = &cobra.Command{
-	Use:           "clear",
-	Short:         "Clear cached download segments",
-	Args:          cobra.NoArgs,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	RunE:          runCacheClear,
+	Use:   "clear",
+	Short: "Clear cached download segments",
+	Args:  cobra.NoArgs,
+	RunE:  runCacheClear,
 }
 
 func init() {

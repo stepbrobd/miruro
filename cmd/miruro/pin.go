@@ -19,8 +19,8 @@ type Pin struct {
 // ParsePin reads a "code" or "code:variant" pin
 // a bare code or an unrecognised variant means Soft
 func ParsePin(s string) Pin {
-	code, variant, found := strings.Cut(s, ":")
-	if found && Variant(variant) == Hard {
+	code, variant, _ := strings.Cut(s, ":")
+	if Variant(variant) == Hard {
 		return Pin{Code: code, Variant: Hard}
 	}
 	return Pin{Code: code, Variant: Soft}
