@@ -68,6 +68,44 @@ type manifest struct {
 	Durations []float64 `json:"durations"`
 }
 
+// Cache is what one segment cache directory holds
+// Want is 0 when the manifest is missing or unreadable, which is what a run
+// interrupted before it wrote one looks like
+type Cache struct {
+	Have  int
+	Want  int
+	Bytes int64
+}
+
+// Cached reports what dir holds, so a caller can show a cache before clearing it
+// only a whole segment counts toward Have, since a .part is a fetch in flight,
+// while every file counts toward Bytes because every file occupies the disk
+func Cached(dir string) (Cache, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Cache{}, err
+	}
+	var c Cache
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if fi, err := e.Info(); err == nil {
+			c.Bytes += fi.Size()
+		}
+		if filepath.Ext(e.Name()) == ".ts" {
+			c.Have++
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
+		var m manifest
+		if json.Unmarshal(data, &m) == nil {
+			c.Want = m.Count
+		}
+	}
+	return c, nil
+}
+
 // cachedHLS downloads each segment into dir and then remuxes from disk
 // a segment is renamed into place only once it is whole, so an interrupted run
 // resumes with just the segments it still lacks
