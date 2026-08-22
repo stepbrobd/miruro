@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -170,5 +171,69 @@ func TestExpandMasterRedirect(t *testing.T) {
 	}
 	if variants[0].Quality != "1080p" {
 		t.Errorf("variant quality = %q, want %q", variants[0].Quality, "1080p")
+	}
+}
+
+// the api mirrors the html5 track kinds, so a thumbnails sprite index arrives on
+// the same list as dialogue and must never reach a player as subtitles
+func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"streams":[{"url":"u","type":"hls"}],"subtitles":[
+			{"file":"thumbs.vtt","label":"thumbnails","kind":"thumbnails"},
+			{"file":"en.vtt","label":"English","kind":"captions","language":"en","default":true},
+			{"file":"pt.vtt","label":"Portugues","kind":"subtitles","language":"pt-BR"},
+			{"file":"bare.vtt","label":"Bare"}]}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{Base: srv.URL, HTTP: srv.Client()}
+	res, err := c.Sources(context.Background(), "ep", "bonk", Sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Subtitle{
+		{File: "en.vtt", Label: "English", Lang: "en", Default: true},
+		{File: "pt.vtt", Label: "Portugues", Lang: "pt-BR"},
+		{File: "bare.vtt", Label: "Bare"},
+	}
+	if !reflect.DeepEqual(res.Subtitles, want) {
+		t.Errorf("subtitles = %+v, want %+v", res.Subtitles, want)
+	}
+}
+
+func TestOrder(t *testing.T) {
+	en := Subtitle{Label: "English", Lang: "en"}
+	es := Subtitle{Label: "Spanish", Lang: "es", Default: true}
+	pt := Subtitle{Label: "Portugues", Lang: "pt-BR"}
+	subs := []Subtitle{pt, en, es}
+
+	first := func(lang string) string {
+		t.Helper()
+		out := Order(subs, lang)
+		if len(out) != len(subs) {
+			t.Fatalf("Order(%q) returned %d tracks, want %d", lang, len(out), len(subs))
+		}
+		return out[0].Label
+	}
+
+	if got := first(""); got != "Spanish" {
+		t.Errorf("with no preference the provider default leads, got %q", got)
+	}
+	if got := first("en"); got != "English" {
+		t.Errorf("Order by tag = %q, want English", got)
+	}
+	if got := first("English"); got != "English" {
+		t.Errorf("Order by label = %q, want English", got)
+	}
+	if got := first("pt"); got != "Portugues" {
+		t.Errorf("a primary subtag must select its regional track, got %q", got)
+	}
+	if got := first("de"); got != "Spanish" {
+		t.Errorf("an absent language falls back to the default track, got %q", got)
+	}
+
+	// the input must survive, since the caller still holds it
+	if subs[0].Label != "Portugues" {
+		t.Error("Order reordered the slice it was given")
 	}
 }

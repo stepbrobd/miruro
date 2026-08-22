@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -33,8 +34,12 @@ type Stream struct {
 }
 
 type Subtitle struct {
-	File  string
-	Label string
+	File  string `json:"file"`
+	Label string `json:"label"`
+	// Lang is the api's language tag, "en" or "pt-BR", empty when it names none
+	Lang string `json:"lang,omitempty"`
+	// Default marks the track the provider itself flags as the one to show
+	Default bool `json:"default,omitempty"`
 }
 
 type Result struct {
@@ -75,8 +80,11 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 			Referer string `json:"referer"`
 		} `json:"streams"`
 		Subtitles []struct {
-			File  string `json:"file"`
-			Label string `json:"label"`
+			File     string `json:"file"`
+			Label    string `json:"label"`
+			Kind     string `json:"kind"`
+			Language string `json:"language"`
+			Default  bool   `json:"default"`
 		} `json:"subtitles"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -93,9 +101,73 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 		})
 	}
 	for _, s := range raw.Subtitles {
-		res.Subtitles = append(res.Subtitles, Subtitle{File: s.File, Label: s.Label})
+		if !attachable(s.Kind) {
+			continue
+		}
+		res.Subtitles = append(res.Subtitles, Subtitle{
+			File:    s.File,
+			Label:   s.Label,
+			Lang:    s.Language,
+			Default: s.Default,
+		})
 	}
 	return res, nil
+}
+
+// attachable reports whether a subtitle entry carries dialogue
+// the api mirrors the html5 track kinds, where "thumbnails" is a sprite index a
+// player must never load as subtitles, so an unrecognised kind is refused rather
+// than attached
+func attachable(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "", "captions", "subtitles":
+		return true
+	}
+	return false
+}
+
+// Order returns subs with the track a player should show first at the front
+// mpv selects the first external subtitle file it is handed, so this is what
+// decides the default track
+// the requested language wins, then the provider's own default flag, then the
+// order the api returned, and the sort is stable so equal ranks keep that order
+func Order(subs []Subtitle, lang string) []Subtitle {
+	out := slices.Clone(subs)
+	slices.SortStableFunc(out, func(a, b Subtitle) int { return rank(a, lang) - rank(b, lang) })
+	return out
+}
+
+func rank(s Subtitle, lang string) int {
+	switch {
+	case s.speaks(lang):
+		return 0
+	case s.Default:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// speaks reports whether s is the language that was asked for
+// a provider names a track by tag, by label, or by both, and the user may have
+// typed either, so "en" and "English" both select an English track
+// a tag matches on its primary subtag, so "pt" selects "pt-BR"
+func (s Subtitle) speaks(lang string) bool {
+	if lang == "" {
+		return false
+	}
+	if strings.EqualFold(s.Label, lang) {
+		return true
+	}
+	return s.Lang != "" && strings.EqualFold(primary(s.Lang), primary(lang))
+}
+
+// primary is the language subtag before any region or script
+func primary(tag string) string {
+	if i := strings.IndexAny(tag, "-_"); i >= 0 {
+		return tag[:i]
+	}
+	return tag
 }
 
 // Select applies the default quality heuristic, an author-owned decision
