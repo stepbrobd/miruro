@@ -3,6 +3,7 @@ package play
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -124,6 +125,12 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 				t.Fatal("an encrypted playlist cached no key")
 			}
 			if err := fetchSegments(ctx, px.hc, pl, cache, nil); err != nil {
+				// a CDN that refuses a segment is the same upstream condition the
+				// checks above skip on, and bonk's ad-CDN does it routinely
+				var code status
+				if errors.As(err, &code) {
+					t.Skipf("segments not reachable, an upstream condition: %v", err)
+				}
 				t.Fatalf("segments: %v", err)
 			}
 
@@ -145,6 +152,10 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := fetchSegments(ctx, px.hc, pl, cache, nil); err != nil {
+				var code status
+				if errors.As(err, &code) {
+					t.Skipf("resume not reachable, an upstream condition: %v", err)
+				}
 				t.Fatalf("resume: %v", err)
 			}
 			after, err := os.Stat(gone)
