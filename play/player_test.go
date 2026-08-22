@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -116,5 +117,63 @@ func TestPlayCleanExit(t *testing.T) {
 	p := fakePlayer(t, 0)
 	if err := p.Play(context.Background(), miruro.Stream{URL: "http://localhost/x"}, nil, nil, "t"); err != nil {
 		t.Errorf("clean exit returned %v", err)
+	}
+}
+
+// the proxy injects the referer upstream, so the only difference between the
+// two players is iina's prefix and its own two flags
+func TestArgsPerPlayer(t *testing.T) {
+	s := miruro.Stream{URL: "http://127.0.0.1:1/tok/pay.m3u8"}
+	subs := []miruro.Subtitle{{File: "http://127.0.0.1:1/tok/en.vtt"}}
+
+	for _, tc := range []struct {
+		kind Kind
+		want []string
+	}{
+		{MPV, []string{
+			"--force-media-title=Show E1",
+			"--sub-file=http://127.0.0.1:1/tok/en.vtt",
+			s.URL,
+		}},
+		{IINA, []string{
+			"--no-stdin", "--keep-running",
+			"--mpv-force-media-title=Show E1",
+			"--mpv-sub-file=http://127.0.0.1:1/tok/en.vtt",
+			s.URL,
+		}},
+	} {
+		got, cleanup := Player{Kind: tc.kind}.args(s, subs, nil, "Show E1")
+		if cleanup != nil {
+			t.Errorf("%s: no skips named a chapters file", tc.kind)
+			cleanup()
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s args =\n %q, want\n %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// a skip range adds the chapters flag under the same prefix, and the cleanup
+// removes the file it names
+func TestArgsChaptersFile(t *testing.T) {
+	skips := []miruro.SkipRange{{Kind: miruro.Intro, Start: 80, End: 170}}
+	args, cleanup := Player{Kind: MPV}.args(miruro.Stream{URL: "u"}, nil, skips, "Show")
+	if cleanup == nil {
+		t.Fatal("a skip range named no chapters file")
+	}
+	name, ok := strings.CutPrefix(args[len(args)-2], "--chapters-file=")
+	if !ok {
+		t.Fatalf("args = %q, want a chapters flag before the url", args)
+	}
+	body, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=80000\nEND=170000\ntitle=Intro\n"; !strings.HasPrefix(string(body), want) {
+		t.Errorf("chapters =\n%q, want it to open with\n%q", body, want)
+	}
+	cleanup()
+	if _, err := os.Stat(name); !os.IsNotExist(err) {
+		t.Errorf("cleanup left the chapters file behind: %v", err)
 	}
 }

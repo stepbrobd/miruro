@@ -129,24 +129,23 @@ func (t *tail) last() string {
 // args carries no referer flag because the proxy injects the referer upstream
 // so every URL a player sees is localhost
 func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) ([]string, func()) {
+	// iina takes mpv's options under a prefix, and needs two of its own
+	var args []string
+	pre := "--"
 	if p.Kind == IINA {
-		args := []string{"--no-stdin", "--keep-running", "--mpv-force-media-title=" + title}
-		for _, sub := range subs {
-			args = append(args, "--mpv-sub-file="+sub.File)
-		}
-		if f, cleanup := chaptersFile(skips); f != "" {
-			return append(args, "--mpv-chapters-file="+f, s.URL), cleanup
-		}
-		return append(args, s.URL), nil
+		args = []string{"--no-stdin", "--keep-running"}
+		pre = "--mpv-"
 	}
-	args := []string{"--force-media-title=" + title}
+	args = append(args, pre+"force-media-title="+title)
 	for _, sub := range subs {
-		args = append(args, "--sub-file="+sub.File)
+		args = append(args, pre+"sub-file="+sub.File)
 	}
-	if f, cleanup := chaptersFile(skips); f != "" {
-		return append(args, "--chapters-file="+f, s.URL), cleanup
+	// chaptersFile returns a nil cleanup exactly when it names no file
+	f, cleanup := chaptersFile(skips)
+	if f != "" {
+		args = append(args, pre+"chapters-file="+f)
 	}
-	return append(args, s.URL), nil
+	return append(args, s.URL), cleanup
 }
 
 // chaptersFile writes an ffmetadata chapters file marking intro and outro so the
@@ -172,28 +171,24 @@ func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 	}
 	sort.Slice(marks, func(i, j int) bool { return marks[i].at < marks[j].at })
 
+	var b strings.Builder
+	b.WriteString(";FFMETADATA1\n")
+	for i, m := range marks {
+		end := m.at + 1
+		if i+1 < len(marks) {
+			end = marks[i+1].at
+		}
+		fmt.Fprintf(&b, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n",
+			int64(m.at*1000), int64(end*1000), m.title)
+	}
+
 	f, err := os.CreateTemp("", "miruro-*.ffmeta")
 	if err != nil {
 		log.Warn("skip disabled, cannot create chapters file", "err", err)
 		return "", nil
 	}
 	name := f.Name()
-
-	var werr error
-	write := func(format string, a ...any) {
-		if werr == nil {
-			_, werr = fmt.Fprintf(f, format, a...)
-		}
-	}
-	write(";FFMETADATA1\n")
-	for i, m := range marks {
-		end := m.at + 1
-		if i+1 < len(marks) {
-			end = marks[i+1].at
-		}
-		write("[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n",
-			int64(m.at*1000), int64(end*1000), m.title)
-	}
+	_, werr := f.WriteString(b.String())
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
