@@ -303,25 +303,25 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (int,
 		}
 		tried[served] = true
 
-		missed, err := s.from(ctx, res, served, ep, report)
-		if err == nil {
-			return missed, nil
+		// one provider serves an episode from several hosts, so a dead default
+		// stream is not a dead provider
+		for _, stream := range s.client.Rank(ctx, res, s.cfg.Quality) {
+			missed, err := s.from(ctx, res, served, stream, ep, report)
+			if err == nil {
+				return missed, nil
+			}
+			if ctx.Err() != nil {
+				return 0, err
+			}
+			// name the provider, since the next attempt reports its own failure
+			last = fmt.Errorf("%s: %w", served, err)
+			log.Warn("download failed, trying the next stream", "episode", num(ep), "provider", served, "err", err)
 		}
-		if ctx.Err() != nil {
-			return 0, err
-		}
-		// name the provider, since the next attempt reports its own failure
-		last = fmt.Errorf("%s: %w", served, err)
-		log.Warn("download failed, trying another provider", "episode", num(ep), "provider", served, "err", err)
 	}
 }
 
-// from downloads one episode from the provider that served it
-func (s saver) from(ctx context.Context, res *miruro.Result, served string, ep float64, report play.Progress) (int, error) {
-	stream, err := s.client.Select(ctx, res, s.cfg.Quality)
-	if err != nil {
-		return 0, err
-	}
+// from downloads one episode from one stream of the provider that served it
+func (s saver) from(ctx context.Context, res *miruro.Result, served string, stream miruro.Stream, ep float64, report play.Progress) (int, error) {
 	subs := miruro.Order(res.Subtitles, s.cfg.SubLang)
 	if applied(s.pin, served) == Hard {
 		subs = nil

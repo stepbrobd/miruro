@@ -474,3 +474,48 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 		t.Errorf("err = %v, want the last provider that failed to download", err)
 	}
 }
+
+// a provider that serves an episode from several hosts is not dead when the
+// first of them is, so the download walks its streams before the next provider
+func TestSaveFallsBackToAnotherStream(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/hd1") {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, "episode bytes")
+	}))
+	defer cdn.Close()
+
+	// ally leads alphabetically, so the pin is what puts bonk in front
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"bonk": serveJSON(`{"streams":[
+			{"url":"` + cdn.URL + `/hd1.mp4","type":"mp4"},
+			{"url":"` + cdn.URL + `/hd2.mp4","type":"mp4"}]}`),
+	}, nil)
+	defer srv.Close()
+
+	ctx := context.Background()
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	dir := t.TempDir()
+	sv := saver{
+		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
+		px:       px,
+		hc:       http.DefaultClient,
+		cat:      &miruro.Catalog{Providers: map[string]miruro.Provider{"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}}}},
+		title:    "Show",
+		category: miruro.Sub,
+		cfg:      config{Quality: "best", DownloadDir: dir},
+	}
+	if _, err := sv.save(ctx, 1, nil); err != nil {
+		t.Fatalf("the second stream did not save the episode: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != "episode bytes" {
+		t.Errorf("saved %q (%v), want the live stream's body", body, err)
+	}
+}

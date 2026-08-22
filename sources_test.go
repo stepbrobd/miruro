@@ -237,3 +237,43 @@ func TestOrder(t *testing.T) {
 		t.Error("Order reordered the slice it was given")
 	}
 }
+
+// one provider serves an episode from several hosts, and the one it lists first
+// can be the dead one, so the rest have to stay reachable behind it
+func TestRank(t *testing.T) {
+	ctx := context.Background()
+	c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
+
+	r := &Result{Streams: []Stream{
+		{URL: "hd1", Kind: HLS, Quality: "1080p"},
+		{URL: "embed", Kind: Embed},
+		{URL: "hd2", Kind: HLS, Quality: "720p"},
+		{URL: "direct", Kind: MP4, Quality: "480p"},
+	}}
+
+	urls := func(quality string) []string {
+		t.Helper()
+		var out []string
+		for _, s := range c.Rank(ctx, r, quality) {
+			out = append(out, s.URL)
+		}
+		return out
+	}
+
+	if got, want := urls("best"), []string{"hd1", "hd2", "direct"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Rank(best) = %v, want %v", got, want)
+	}
+	// the quality pick leads and is not repeated further down
+	if got, want := urls("720p"), []string{"hd2", "hd1", "direct"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Rank(720p) = %v, want %v", got, want)
+	}
+	if got := c.Rank(ctx, &Result{Streams: []Stream{{URL: "embed", Kind: Embed}}}, "best"); len(got) != 0 {
+		t.Errorf("Rank over an embed-only result = %v, want nothing playable", got)
+	}
+
+	// Select stays the head of Rank
+	s, err := c.Select(ctx, r, "720p")
+	if err != nil || s.URL != "hd2" {
+		t.Errorf("Select = (%q, %v), want hd2", s.URL, err)
+	}
+}

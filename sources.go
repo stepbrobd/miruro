@@ -170,12 +170,21 @@ func primary(tag string) string {
 	return tag
 }
 
-// Select applies the default quality heuristic, an author-owned decision
-// "best" hands mpv the hls master to negotiate
-// "worst" and an explicit height pick from the API quality labels, or from an
-// expanded master when the streams carry none
-// it prefers hls, then a direct mp4, and skips embeds
+// Select is the stream to play, the head of Rank
 func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream, error) {
+	ranked := c.Rank(ctx, r, quality)
+	if len(ranked) == 0 {
+		return Stream{}, ErrNoStream
+	}
+	return ranked[0], nil
+}
+
+// Rank orders the streams worth trying, best first, and skips embeds since
+// nothing here can play one
+// one provider often serves an episode from several hosts, and the one it flags
+// as default can be the dead one, so a caller that can retry walks past the head
+// rather than giving up on the provider
+func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
 		switch s.Kind {
@@ -186,27 +195,55 @@ func (c *Client) Select(ctx context.Context, r *Result, quality string) (Stream,
 		}
 	}
 
+	out := make([]Stream, 0, 1+len(hls)+len(mp4))
+	seen := map[string]bool{}
+	add := func(s Stream) {
+		if s.URL == "" || seen[s.URL] {
+			return
+		}
+		seen[s.URL] = true
+		out = append(out, s)
+	}
+	if s, ok := c.preferred(ctx, hls, mp4, quality); ok {
+		add(s)
+	}
+	for _, s := range hls {
+		add(s)
+	}
+	for _, s := range mp4 {
+		add(s)
+	}
+	return out
+}
+
+// preferred applies the quality heuristic, an author-owned decision
+// "best" hands mpv the hls master to negotiate
+// "worst" and an explicit height pick from the API quality labels, or from an
+// expanded master when the streams carry none
+// it prefers hls over a direct mp4, and reports false only when there is
+// nothing playable at all
+func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality string) (Stream, bool) {
 	if len(hls) > 0 {
 		if quality == "" || quality == "best" {
-			return hls[0], nil
+			return hls[0], true
 		}
 		if s, ok := pickQuality(hls, quality); ok {
-			return s, nil
+			return s, true
 		}
 		if variants, err := c.expandMaster(ctx, hls[0]); err == nil {
 			if s, ok := pickQuality(variants, quality); ok {
-				return s, nil
+				return s, true
 			}
 		}
-		return hls[0], nil
+		return hls[0], true
 	}
 	if len(mp4) > 0 {
 		if s, ok := pickQuality(mp4, quality); ok {
-			return s, nil
+			return s, true
 		}
-		return mp4[0], nil
+		return mp4[0], true
 	}
-	return Stream{}, ErrNoStream
+	return Stream{}, false
 }
 
 // pickQuality selects a stream by request
