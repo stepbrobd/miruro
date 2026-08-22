@@ -376,6 +376,8 @@ func TestFetchSegmentRejectsBodyThatIsNotMedia(t *testing.T) {
 	}{
 		{name: "error page", body: []byte("<html>Access Denied</html>"), plain: true},
 		{name: "empty body", body: nil, plain: true},
+		// "Gateway Timeout" opens on 0x47, and is too short to carry a packet
+		{name: "short body opening on a sync byte", body: []byte("Gateway Timeout"), plain: true},
 		{name: "truncated transport stream", body: tsBlob(4), short: true, plain: true},
 		{name: "truncated ciphertext", body: []byte("encrypted bytes"), short: true},
 	} {

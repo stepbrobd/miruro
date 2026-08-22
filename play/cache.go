@@ -558,11 +558,13 @@ func plausibleSegment(head []byte, n, announced int64, plain bool) error {
 
 // looksTS reports whether data carries aligned transport stream sync bytes
 // the proxy strips any decoy prefix, so a real segment starts on a sync byte
+// a transport stream is whole packets, so anything shorter than one is an error
+// body that happened to open with 0x47 rather than a short segment
 func looksTS(data []byte) bool {
-	if len(data) == 0 || data[0] != 0x47 {
+	if len(data) < tsPacket {
 		return false
 	}
-	for i := tsPacket; i < len(data) && i < tsPacket*syncRun; i += tsPacket {
+	for i := 0; i < len(data) && i < tsPacket*syncRun; i += tsPacket {
 		if data[i] != 0x47 {
 			return false
 		}
