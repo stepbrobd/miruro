@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -174,6 +176,15 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 	}
 	setHeaders(req.Header, base)
 
+	// a host that handed over a connection is reachable, so anything that goes
+	// wrong after that is the backend's and the other mirrors will reproduce it
+	// without this a backend that accepts and then goes quiet costs the whole
+	// response header timeout once per mirror instead of once
+	var connected atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}))
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// keep a cancelled context as a context error so callers can match it
@@ -181,7 +192,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, unreachable, fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 
@@ -190,7 +201,8 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, unreachable, err
+		// the headers already arrived, so this host answered
+		return nil, refused, err
 	}
 	if len(body) > maxPipeRaw {
 		return nil, refused, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
@@ -221,6 +233,14 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		return nil, refused, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
 	}
 	return body, served, nil
+}
+
+// reached maps whether a connection was obtained to who owns the failure
+func reached(connected bool) verdict {
+	if connected {
+		return refused
+	}
+	return unreachable
 }
 
 func (c *Client) current() int {

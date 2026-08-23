@@ -395,6 +395,24 @@ func TestPipeRotation(t *testing.T) {
 		}
 	})
 
+	// a backend that accepts the connection and then goes quiet reproduces on
+	// every mirror, so walking them multiplies one header timeout by four
+	t.Run("a host that answered nothing is still the host that answered", func(t *testing.T) {
+		stall := make(chan struct{})
+		quiet := mirror(t, func(w http.ResponseWriter, r *http.Request) { <-stall })
+		defer close(stall)
+		other := mirror(t, serves(`{"ok":true}`))
+
+		hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 200 * time.Millisecond}}
+		c := &Client{Bases: []string{quiet.URL, other.URL}, HTTP: hc}
+		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
+			t.Fatalf("err = %v, want ErrUpstream", err)
+		}
+		if got := other.hits.Load(); got != 0 {
+			t.Errorf("the second mirror served %d requests, want none for a backend that went quiet", got)
+		}
+	})
+
 	t.Run("no mirror configured is recoverable", func(t *testing.T) {
 		if _, err := (&Client{HTTP: http.DefaultClient}).pipe(ctx, "config", nil); !errors.Is(err, ErrUpstream) {
 			t.Fatalf("err = %v, want ErrUpstream", err)
