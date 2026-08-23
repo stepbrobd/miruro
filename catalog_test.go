@@ -16,6 +16,17 @@ func testCatalog() *Catalog {
 			Code: "ally",
 			Sub:  []Episode{{ID: "a2", Number: 2}, {ID: "a3", Number: 2.5}},
 		},
+		// alphabetically first and ranked last, so a code sort and a preference
+		// sort disagree
+		"bee": {
+			Code: "bee",
+			Sub:  []Episode{{ID: "e2", Number: 2}},
+		},
+		// unnamed by the preference list, so it sorts after everything named
+		"ANIMEDUNYA": {
+			Code: "ANIMEDUNYA",
+			Sub:  []Episode{{ID: "d2", Number: 2}},
+		},
 	}}
 }
 
@@ -29,13 +40,13 @@ func TestNumbersUnion(t *testing.T) {
 	}
 }
 
-func TestAvailableOrdersByCode(t *testing.T) {
+func TestAvailableOrdersByPreference(t *testing.T) {
 	cat := testCatalog()
 	var got []string
 	for _, p := range cat.Available(2, Sub) {
 		got = append(got, p.Code)
 	}
-	if want := []string{"ally", "bonk"}; !slices.Equal(got, want) {
+	if want := []string{"ally", "bonk", "bee", "ANIMEDUNYA"}; !slices.Equal(got, want) {
 		t.Errorf("Available(2, Sub) = %v, want %v", got, want)
 	}
 	if avail := cat.Available(2, Dub); len(avail) != 0 {

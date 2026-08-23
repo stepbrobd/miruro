@@ -3,6 +3,7 @@ package miruro
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 )
@@ -170,8 +171,27 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	return out
 }
 
-// Available lists providers carrying the episode in the category, ordered by
-// code so runs are reproducible
+// order is the provider preference, an author-owned default.
+// It leads with the providers this project has watched carry a whole episode,
+// then the ones whose failure it has recorded: bonk stops serving segments
+// partway through a run, bee and hop depend on a subtitle CDN that has answered
+// with something other than HTTP, and moo is the lowest quality.
+// miruro publishes its own order in the config resource and rewrites it between
+// deploys. Following that would move the default provider under a resumed
+// history entry and a filled segment cache, so this list stays here instead.
+var order = []string{"kiwi", "pewe", "ally", "bonk", "hop", "bee", "moo"}
+
+// preference places a provider in order, with an unnamed code after every named
+// one rather than interleaved, since nothing is known about it
+func preference(code string) int {
+	if i := slices.Index(order, code); i >= 0 {
+		return i
+	}
+	return len(order)
+}
+
+// Available lists providers carrying the episode in the category, in preference
+// order, with equal ranks by code so runs are reproducible
 func (c *Catalog) Available(number float64, cat Category) []Provider {
 	var out []Provider
 	for _, p := range c.Providers {
@@ -182,6 +202,11 @@ func (c *Catalog) Available(number float64, cat Category) []Provider {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	sort.Slice(out, func(i, j int) bool {
+		if a, b := preference(out[i].Code), preference(out[j].Code); a != b {
+			return a < b
+		}
+		return out[i].Code < out[j].Code
+	})
 	return out
 }
