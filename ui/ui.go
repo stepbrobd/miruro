@@ -37,7 +37,13 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 	return items[idx], nil
 }
 
+// menuRows bounds how tall a list grows before it scrolls instead
+const menuRows = 16
+
 // menu is the one select form, so every list prompt shares keymap and theme
+// the height follows the list, since a fixed one leaves a short list sitting
+// above a block of blank rows and the legend stranded under them
+// one row goes to the filter line above the options
 func menu[T any](title string, items []T, label func(T) string, idx *int) *huh.Form {
 	opts := make([]huh.Option[int], len(items))
 	for i, it := range items {
@@ -48,7 +54,7 @@ func menu[T any](title string, items []T, label func(T) string, idx *int) *huh.F
 			Title(title).
 			Options(opts...).
 			Value(idx).
-			Height(16).
+			Height(min(len(items)+1, menuRows)).
 			Filtering(true),
 	)).WithTheme(theme())
 	// only Run wires these, an embedded form must quit the host program itself
