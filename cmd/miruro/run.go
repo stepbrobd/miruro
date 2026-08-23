@@ -390,29 +390,22 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		// a transient fallback serves another provider but must not overwrite the pin
 		pin = carry
 
-		ranked := client.Rank(ctx, res, cfg.Quality)
-		if len(ranked) == 0 {
-			return miruro.ErrNoStream
-		}
-
 		var skips []miruro.SkipRange
 		if flagSkip {
 			skips = episodeSkips(cat, ep)
 		}
 
-		subs := miruro.Order(res.Subtitles, cfg.Lang)
-		if !src.Attach {
-			subs = nil
-		}
-
-		log.Info("playing", "title", title, "ep", num(ep), "provider", src.Code, "server", ranked[0].Server, "rendition", src.Category, "player", player.Kind, "subs", len(subs) > 0)
-
 		mediaTitle := fmt.Sprintf("%s Episode %s", title, num(ep))
 		if d := details[ep]; d.Title != "" {
 			mediaTitle += " - " + d.Title
 		}
-		launch := func(pctx context.Context, s miruro.Stream) error {
-			return player.Play(pctx, px.Stream(s), px.Subtitles(subs, s.Referer), skips, mediaTitle)
+
+		stage := playback{
+			client: client, px: px, cat: cat, category: category, caps: caps,
+			cfg: cfg, pin: pin, title: title, ep: ep, kind: player.Kind,
+			launch: func(pctx context.Context, s miruro.Stream, subs []miruro.Subtitle) error {
+				return player.Play(pctx, px.Stream(s), px.Subtitles(subs, s.Referer), skips, mediaTitle)
+			},
 		}
 
 		e := entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}
@@ -420,7 +413,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			fmt.Sprintf("Episode %s of %s", num(ep), title),
 			controls(numbers, ep),
 			len(queue) > 0,
-			func(pctx context.Context) error { return playStreams(pctx, px, ranked, launch) },
+			func(pctx context.Context) error { return stage.run(pctx, res, src) },
 			func() error { return st.save(e) },
 		)
 		if err != nil {
@@ -453,6 +446,69 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 	}
 }
 
+// playback is one episode's attempt, the ambient state the stream and provider
+// walk needs
+type playback struct {
+	client   *miruro.Client
+	px       *play.Proxy
+	cat      *miruro.Catalog
+	category miruro.Category
+	caps     miruro.Capabilities
+	cfg      config
+	pin      Pin
+	title    string
+	ep       float64
+	kind     play.Kind
+	// launch runs the player on one stream with the subtitles chosen for the
+	// provider that served it, a field so a test needs no player binary
+	launch func(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle) error
+}
+
+// run plays the episode, walking the streams of a provider and then the
+// providers, and reports the last failure when none of them produced picture
+// a provider that relayed no media body at all is dead for this episode however
+// many streams it listed, and the download path has always moved off one
+func (p playback) run(pctx context.Context, res *miruro.Result, src source) error {
+	tried := map[string]bool{}
+	var last error
+	for {
+		subs := miruro.Order(res.Subtitles, p.cfg.Lang)
+		if !src.Attach {
+			subs = nil
+		}
+
+		if ranked := p.client.Rank(pctx, res, p.cfg.Quality); len(ranked) > 0 {
+			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
+				"server", ranked[0].Server, "rendition", src.Category,
+				"player", p.kind, "subs", len(subs) > 0)
+
+			before := p.px.Served()
+			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s miruro.Stream) error {
+				return p.launch(ctx, s, subs)
+			})
+			if last == nil || pctx.Err() != nil || p.px.Served() != before {
+				return last
+			}
+		} else {
+			last = fmt.Errorf("%s: %w", src.Code, miruro.ErrNoStream)
+		}
+
+		tried[src.Code] = true
+		log.Warn("no stream played, trying the next provider", "provider", src.Code, "err", last)
+
+		next, nsrc, err := autoResolve(pctx, p.client, p.cat, p.ep, p.category, p.pin, tried, p.caps)
+		switch {
+		case errors.Is(err, miruro.ErrBlocked):
+			// the session is over, and saying the player exited would hide that
+			return err
+		case err != nil:
+			// report what failed to play rather than what failed to resolve after
+			return last
+		}
+		res, src = next, nsrc
+	}
+}
+
 // playStreams hands each stream in turn to play until one of them plays
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
@@ -461,13 +517,75 @@ func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, pl
 	var err error
 	for _, s := range ranked {
 		before := px.Served()
-		err = play(ctx, s)
+		pctx, stop := context.WithCancel(ctx)
+		settled := abandonStalled(pctx, px, s.Server, stop)
+		err = play(pctx, s)
+		stop()
+		<-settled
 		if !deadStream(err, before, px.Served()) || ctx.Err() != nil {
 			return err
 		}
 		log.Warn("stream did not play, trying the next", "server", s.Server, "err", err)
 	}
 	return err
+}
+
+// startGrace is how long a stream has to relay its first media body
+// pewe and bee reached theirs in 1.0s and 2.3s through the proxy on 2026-08-23,
+// so this is an order of magnitude of headroom rather than a tuned value
+// it is a variable so a test can shorten it rather than wait it out
+var startGrace = 20 * time.Second
+
+// refusalBudget is how many media bodies a stream may be refused before it has
+// relayed one
+// bee played after two refusals, while bonk and hop reached 25 and 538 in forty
+// seconds without ever relaying one, so this separates them with room to spare
+var refusalBudget = 8
+
+// refusalCheck is how often a running player is asked whether its stream is
+// getting anything
+// a second is far below the wait it replaces and far above the cost of reading
+// two counters
+var refusalCheck = time.Second
+
+// abandonStalled stops a player whose stream has shown nothing
+// ffmpeg's hls demuxer skips a segment it cannot fetch and asks for the next,
+// so a stream whose CDN refuses every one runs forever without a frame and the
+// player never exits for playStreams to move on
+// once any media body is relayed the user is watching, and a later gap is theirs
+// to deal with rather than grounds for restarting the episode elsewhere
+func abandonStalled(ctx context.Context, px *play.Proxy, server string, stop context.CancelFunc) <-chan struct{} {
+	served, refused := px.Served(), px.Refused()
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		grace := time.NewTimer(startGrace)
+		defer grace.Stop()
+		tick := time.NewTicker(refusalCheck)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-grace.C:
+				if px.Served() == served {
+					log.Warn("stream showed nothing in time, abandoning it", "server", server, "after", startGrace)
+					stop()
+				}
+				return
+			case <-tick.C:
+				if px.Served() > served {
+					return
+				}
+				if n := px.Refused() - refused; n >= refusalBudget {
+					log.Warn("stream refused before it played, abandoning it", "server", server, "refused", n)
+					stop()
+					return
+				}
+			}
+		}
+	}()
+	return settled
 }
 
 // deadStream reports whether a finished playback is worth retrying on another

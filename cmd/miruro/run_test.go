@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ysun.co/miruro"
 	"ysun.co/miruro/play"
@@ -661,4 +662,224 @@ func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 			}
 		})
 	}
+}
+
+// a provider whose every stream is refused is dead for that episode however
+// many it listed, and the download path has always moved off one
+// ally on "Grow Up Show" is the live case, two mp4 hosts answering 401 and 403
+// beside three embeds, with a healthy pewe one step down the preference list
+func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
+	ctx := context.Background()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/refused") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"ally": serveJSON(`{"streams":[
+			{"url":"` + cdn.URL + `/refused-a.mp4","type":"mp4","server":"Yt-mp4"},
+			{"url":"` + cdn.URL + `/refused-b.mp4","type":"mp4","server":"Mp4"}]}`),
+		"pewe": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.m3u8","type":"mp4","server":"AniDBApp"}]}`),
+	}, nil)
+	defer srv.Close()
+
+	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
+		"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
+		"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
+	}}
+
+	var tried []string
+	stage := playback{
+		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
+		px:       px,
+		cat:      cat,
+		category: miruro.Sub,
+		cfg:      config{Quality: "best"},
+		pin:      Pin{Code: "ally", Variant: Hard},
+		title:    "Grow Up Show",
+		ep:       8,
+		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
+			tried = append(tried, s.Server)
+			return fakePlay(t, px, new([]string))(ctx, s)
+		},
+	}
+
+	// ally is the pin, so it is what resolve would have handed over
+	res, err := stage.client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); err != nil {
+		t.Fatalf("pewe should have played after ally refused everything: %v", err)
+	}
+	if want := []string{"Yt-mp4", "Mp4", "AniDBApp"}; !slices.Equal(tried, want) {
+		t.Errorf("tried %v, want both dead ally streams then pewe", tried)
+	}
+}
+
+// a stream that produced picture and then failed is the user's to deal with,
+// so the walk must not restart the episode somewhere else under them
+func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
+	ctx := context.Background()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+
+	px, err := play.StartProxy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	srv := sourcesServer(t, map[string]http.HandlerFunc{
+		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.mp4","type":"mp4","server":"Yt-mp4"}]}`),
+		"pewe": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/other.mp4","type":"mp4","server":"AniDBApp"}]}`),
+	}, nil)
+	defer srv.Close()
+
+	quit := errors.New("player exit 4")
+	var tried []string
+	stage := playback{
+		client: &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
+		px:     px,
+		cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
+			"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
+			// a second provider the walk could reach, so the guard has something
+			// to prevent rather than nothing to do
+			"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
+		}},
+		category: miruro.Sub,
+		cfg:      config{Quality: "best"},
+		pin:      Pin{Code: "ally", Variant: Hard},
+		ep:       8,
+		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
+			tried = append(tried, s.Server)
+			fakePlay(t, px, new([]string))(ctx, s)
+			return quit
+		},
+	}
+
+	res, err := stage.client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); !errors.Is(err, quit) {
+		t.Errorf("err = %v, want the player's own failure", err)
+	}
+	if !slices.Equal(tried, []string{"Yt-mp4"}) {
+		t.Errorf("tried %v, want only the stream that played", tried)
+	}
+}
+
+// ffmpeg's hls demuxer skips a segment it cannot fetch and asks for the next,
+// so a stream whose CDN refuses every one runs forever without a frame
+// bonk on Tensura S3 episode 19 did exactly that on 2026-08-23, its segments
+// served from an ad CDN answering 403, and mpv was still running four minutes
+// later having shown nothing
+func TestAbandonStalled(t *testing.T) {
+	restore := func(g time.Duration, b int, c time.Duration) func() {
+		return func() { startGrace, refusalBudget, refusalCheck = g, b, c }
+	}(startGrace, refusalBudget, refusalCheck)
+	defer restore()
+	startGrace, refusalBudget, refusalCheck = 5*time.Second, 3, 10*time.Millisecond
+
+	px, err := play.StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	// skipping mimics the demuxer, fetching forever and never giving up
+	skipping := func(ctx context.Context, s miruro.Stream) error {
+		for {
+			if ctx.Err() != nil {
+				return errors.New("signal: killed")
+			}
+			resp, err := http.Get(px.Stream(s).URL)
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+		}
+	}
+
+	t.Run("a stream that is only refused is abandoned", func(t *testing.T) {
+		cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer cdn.Close()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- playStreams(context.Background(), px,
+				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, skipping)
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("a stream that showed nothing must not report success")
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("the player was never stopped, which is the hang this guards")
+		}
+	})
+
+	// bee played after two refusals on 2026-08-23, so a refusal is not by itself
+	// a reason to give up on a stream
+	t.Run("a stream that plays survives its refusals", func(t *testing.T) {
+		var n atomic.Int64
+		cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if n.Add(1) <= int64(refusalBudget)+2 {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			io.WriteString(w, "picture")
+		}))
+		defer cdn.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		played := make(chan error, 1)
+		go func() {
+			played <- playStreams(ctx, px,
+				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}},
+				func(pctx context.Context, s miruro.Stream) error {
+					// fetch until one body lands, then sit there the way a player does
+					for pctx.Err() == nil {
+						resp, err := http.Get(px.Stream(s).URL)
+						if err != nil {
+							continue
+						}
+						body, _ := io.ReadAll(resp.Body)
+						resp.Body.Close()
+						if len(body) > 0 {
+							break
+						}
+					}
+					<-pctx.Done()
+					return errors.New("signal: killed")
+				})
+		}()
+
+		select {
+		case <-played:
+			t.Fatal("a stream that relayed picture was abandoned")
+		case <-time.After(2 * time.Second):
+			// still running past the budget it spent, which is the point
+		}
+		// the watcher reads the tunables this test rewrote, so it has to be done
+		// before the restore runs
+		cancel()
+		<-played
+	})
 }
