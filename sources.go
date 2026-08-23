@@ -308,6 +308,13 @@ func pickQuality(streams []Stream, quality string) (Stream, bool) {
 	return pick, height > 0
 }
 
+// ValidQuality reports whether a quality request is one Rank understands
+// the rule lives here so a caller checking a config cannot drift from the
+// heuristic that acts on it
+func ValidQuality(q string) bool {
+	return q == "" || q == "best" || q == "worst" || parseHeight(q) > 0
+}
+
 func parseHeight(q string) int {
 	q = strings.TrimSuffix(strings.TrimSpace(q), "p")
 	n, err := strconv.Atoi(q)
