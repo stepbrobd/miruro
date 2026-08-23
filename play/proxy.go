@@ -88,6 +88,9 @@ type Proxy struct {
 	// served counts the media bodies relayed, so a caller can tell a player that
 	// never got picture from one the user quit
 	served atomic.Int64
+	// refused counts the media bodies the upstream would not give up, so a
+	// caller can tell a stream that cannot play from one that is merely slow
+	refused atomic.Int64
 	// timeout bounds one buffered fetch, zero disables the bound
 	timeout time.Duration
 	done    chan struct{}
@@ -133,6 +136,12 @@ func StartProxy(ctx context.Context) (*Proxy, error) {
 	}()
 	return p, nil
 }
+
+// Refused counts the media bodies the proxy asked for and did not get
+// ffmpeg's hls demuxer skips a segment it cannot fetch and asks for the next
+// one, so a stream whose CDN refuses every segment never ends and never shows a
+// frame, and this is the only sign of it a caller can see
+func (p *Proxy) Refused() int { return int(p.refused.Load()) }
 
 // Served counts the media bodies the proxy has relayed
 // a player that exits with an error without raising this never started, which
@@ -242,6 +251,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
+		p.miss(t.Kind)
 		http.Error(w, err.Error(), mirrored(err))
 		return
 	}
@@ -261,6 +271,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
 		body, ok := buffered(w, resp, maxSegmentBody)
 		if !ok {
+			p.miss(t.Kind)
 			return
 		}
 		if t.Kind == segment {
@@ -273,8 +284,20 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		relayed = relay(w, resp)
 	}
 	// a body that carried nothing is not picture the player can start on
-	if t.Kind.picture() && relayed > 0 {
+	if !t.Kind.picture() {
+		return
+	}
+	if relayed > 0 {
 		p.served.Add(1)
+		return
+	}
+	p.refused.Add(1)
+}
+
+// miss records a media body the proxy could not deliver
+func (p *Proxy) miss(k kind) {
+	if k.picture() {
+		p.refused.Add(1)
 	}
 }
 
