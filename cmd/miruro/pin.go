@@ -101,7 +101,10 @@ type source struct {
 // whatever subtitle file comes back, unless the pin said hard
 func (o offer) source(category miruro.Category) source {
 	switch {
-	case category != miruro.Sub, !o.declared:
+	case category != miruro.Sub:
+		// the variant names a sub rendition, so it says nothing here
+		return source{Pin: o.Pin, Category: category, Attach: true}
+	case !o.declared:
 		return source{Pin: o.Pin, Category: category, Attach: o.Variant != Hard}
 	case o.Variant == Hard:
 		return source{Pin: o.Pin, Category: miruro.Sub, Attach: false}

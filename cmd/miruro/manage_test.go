@@ -152,6 +152,9 @@ func TestLoadNarrowsTheStoredCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []miruro.Category{miruro.Sub, miruro.Dub, miruro.Sub}
+	if len(entries) != len(want) {
+		t.Fatalf("load returned %d entries, want %d", len(entries), len(want))
+	}
 	for i, e := range entries {
 		if e.Category != want[i] {
 			t.Errorf("entry %d category = %q, want %q", i, e.Category, want[i])

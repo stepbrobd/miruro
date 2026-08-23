@@ -183,12 +183,13 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 }
 
 // order is the provider preference, an author-owned default
-// ally and pewe lead because they are the two the integration run has watched
-// carry a whole episode end to end, and kiwi follows on AnimeTV-Fork's note that
-// it is the best quality of the set
-// the tail is what the same run has seen fail, bonk refusing a segment partway
-// through, bee answering 502 on its playlist, hop unreachable across every
-// mirror and title on 2026-08-23, and moo annotated lowest quality
+// ally and pewe lead because they are the two the 2026-08-23 integration run
+// watched carry a whole episode end to end, and kiwi follows on AnimeTV-Fork's
+// note that it is the best quality of the set
+// the tail is what the same run saw fail, in the order it sits in below: bonk
+// refused a segment partway through, hop was unreachable across every mirror
+// and title, bee's playlist answered 502, and AnimeTV-Fork annotates moo lowest
+// quality
 // miruro publishes its own order in the config resource and rewrites it between
 // deploys, which would move the default provider under a resumed history entry
 // and a filled segment cache, so this list stays here instead

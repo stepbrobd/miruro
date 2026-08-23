@@ -117,7 +117,7 @@ func run(cmd *cobra.Command, args []string) error {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case err != nil:
-		log.Warn("provider capabilities unavailable, renditions and embeds are unfiltered", "err", err)
+		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "err", err)
 	}
 
 	pin := ParsePin(pinned)

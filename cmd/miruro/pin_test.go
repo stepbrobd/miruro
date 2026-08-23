@@ -170,6 +170,11 @@ func TestOfferSource(t *testing.T) {
 			source{Pin: Pin{"bonk", Soft}, Category: miruro.Dub, Attach: true},
 		},
 		{
+			"a hard row on dub keeps them too, since the variant is not about dub",
+			offer{Pin: Pin{"bonk", Hard}, declared: true}, miruro.Dub,
+			source{Pin: Pin{"bonk", Hard}, Category: miruro.Dub, Attach: true},
+		},
+		{
 			"an undeclared provider honours an explicit hard pin",
 			offer{Pin: Pin{"ANIMEDUNYA", Hard}}, miruro.Sub,
 			source{Pin: Pin{"ANIMEDUNYA", Hard}, Category: miruro.Sub},
