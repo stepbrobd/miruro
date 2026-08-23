@@ -95,15 +95,16 @@ func TestOffers(t *testing.T) {
 	}
 }
 
-// the table describes the two sub renditions and says nothing about dub
+// the table describes the two sub renditions and says nothing about dub, so a
+// variant chosen for a sub run must not reach one provider's dub and no other's
 func TestOffersForDub(t *testing.T) {
-	rows := offers(providers("kiwi", "bonk"), testCaps, miruro.Dub, Pin{})
+	rows := offers(providers("kiwi", "bonk"), testCaps, miruro.Dub, Pin{"bonk", Hard})
 	if len(rows) != 2 {
 		t.Fatalf("offers = %d rows, want one per provider", len(rows))
 	}
 	for _, o := range rows {
-		if o.declared {
-			t.Errorf("%q was labelled with a sub variant on a dub run", o.Code)
+		if o.declared || o.Variant != Soft {
+			t.Errorf("%q = %+v, want a bare row untouched by the sub pin", o.Code, o)
 		}
 		if got := o.source(miruro.Dub); got.Category != miruro.Dub || !got.Attach {
 			t.Errorf("%q source = %+v, want the dub category with its subtitles", o.Code, got)
@@ -164,9 +165,9 @@ func TestOfferSource(t *testing.T) {
 			source{Pin: Pin{"ANIMEDUNYA", Soft}, Category: miruro.Sub, Attach: true},
 		},
 		{
-			"dub never becomes ssub, and a hard pin still drops the file",
-			offer{Pin: Pin{"bonk", Hard}, declared: true}, miruro.Dub,
-			source{Pin: Pin{"bonk", Hard}, Category: miruro.Dub},
+			"dub never becomes ssub and keeps its tracks",
+			offer{Pin: Pin{"bonk", Soft}}, miruro.Dub,
+			source{Pin: Pin{"bonk", Soft}, Category: miruro.Dub, Attach: true},
 		},
 		{
 			"an undeclared provider honours an explicit hard pin",

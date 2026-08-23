@@ -596,7 +596,7 @@ func pipeQuery(t *testing.T, r *http.Request) map[string]string {
 // the two sub renditions are separate category values on the wire, and asking a
 // provider for the one it does not carry answers 444, so the variant has to
 // reach Sources rather than stay a client-side attach decision
-func TestResolveAsksForTheDeclaredRendition(t *testing.T) {
+func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 	caps := miruro.Capabilities{
 		"kiwi": {Hard: true},
 		"bee":  {Soft: true},
@@ -623,9 +623,10 @@ func TestResolveAsksForTheDeclaredRendition(t *testing.T) {
 		// the declared one wins over what was typed
 		{"a soft pin on a hardsub provider is corrected", Pin{"kiwi", Soft}, miruro.Sub, "sub", false},
 		{"a hard pin on a softsub provider is corrected", Pin{"bee", Hard}, miruro.Sub, "ssub", true},
-		// the table says nothing about dub, so the pin is all there is to go on
-		{"dub is never rewritten and a hard pin still drops the file", Pin{"bonk", Hard}, miruro.Dub, "dub", false},
-		{"dub with a soft pin keeps the file", Pin{"bonk", Soft}, miruro.Dub, "dub", true},
+		// the variant names a sub rendition, so a dub run ignores it rather than
+		// suppressing one provider's tracks and no other's
+		{"dub is never rewritten and keeps its tracks", Pin{"bonk", Hard}, miruro.Dub, "dub", true},
+		{"dub with a soft pin keeps them too", Pin{"bonk", Soft}, miruro.Dub, "dub", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked map[string]string

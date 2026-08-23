@@ -51,18 +51,20 @@ type offer struct {
 }
 
 // offers expands the available providers into the rows worth showing, one per
-// subtitle variant a provider declares
-// the table describes the two sub renditions and says nothing about dub, so a
-// dub run gets one bare row per provider
+// subtitle rendition a provider declares
+// the table describes the two sub renditions only, so a dub run gets one bare
+// row per provider and keeps every track the dub ships
 // an undeclared provider takes the pinned variant when the pin names it, which
 // is the only way an explicit code:hard survives a run that could not reach the
 // table
-func offers(avail []miruro.Provider, caps miruro.Capabilities, cat miruro.Category, pin Pin) []offer {
+func offers(avail []miruro.Provider, caps miruro.Capabilities, category miruro.Category, pin Pin) []offer {
 	out := make([]offer, 0, len(avail))
 	for _, p := range avail {
 		c, ok := caps[p.Code]
 		switch {
-		case cat != miruro.Sub, !ok, !c.Hard && !c.Soft:
+		case category != miruro.Sub:
+			out = append(out, offer{Pin: Pin{Code: p.Code, Variant: Soft}})
+		case !ok, !c.Hard && !c.Soft:
 			v := Soft
 			if pin.Code == p.Code {
 				v = pin.Variant
@@ -91,16 +93,16 @@ type source struct {
 	Attach bool
 }
 
-// source is what to ask for to serve one offer
+// source resolves one row to what the resolution should ask for
 // the burned-in rendition still ships a subtitle file on some providers, so
 // whether to attach it follows the rendition that was asked for rather than
 // whether one arrived
 // an undeclared provider keeps the pre-table behaviour, the sub rendition with
 // whatever subtitle file comes back, unless the pin said hard
-func (o offer) source(cat miruro.Category) source {
+func (o offer) source(category miruro.Category) source {
 	switch {
-	case cat != miruro.Sub, !o.declared:
-		return source{Pin: o.Pin, Category: cat, Attach: o.Variant != Hard}
+	case category != miruro.Sub, !o.declared:
+		return source{Pin: o.Pin, Category: category, Attach: o.Variant != Hard}
 	case o.Variant == Hard:
 		return source{Pin: o.Pin, Category: miruro.Sub, Attach: false}
 	default:
