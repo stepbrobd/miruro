@@ -251,13 +251,12 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
-		p.miss(t.Kind)
+		p.tally(t.Kind, false)
 		http.Error(w, err.Error(), mirrored(err))
 		return
 	}
 	defer resp.Body.Close()
 
-	var relayed int64
 	switch t.Kind {
 	case playlist:
 		body, ok := buffered(w, resp, maxPlaylistBody)
@@ -271,7 +270,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
 		body, ok := buffered(w, resp, maxSegmentBody)
 		if !ok {
-			p.miss(t.Kind)
+			p.tally(t.Kind, false)
 			return
 		}
 		if t.Kind == segment {
@@ -279,24 +278,46 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "video/mp2t")
 		n, _ := w.Write(body)
-		relayed = int64(n)
+		p.tally(t.Kind, n > 0)
 	default:
-		relayed = relay(w, resp)
+		// a relayed body runs for as long as the player reads it, which for an
+		// mp4 is the whole episode, so it counts as its first bytes arrive
+		// waiting for the copy to finish would report that nothing had played
+		// while the picture was on screen
+		opened := &opening{ResponseWriter: w, on: func() { p.tally(t.Kind, true) }}
+		relay(opened, resp)
+		if !opened.opened {
+			p.tally(t.Kind, false)
+		}
 	}
-	// a body that carried nothing is not picture the player can start on
-	if !t.Kind.picture() {
-		return
-	}
-	if relayed > 0 {
-		p.served.Add(1)
-		return
-	}
-	p.refused.Add(1)
 }
 
-// miss records a media body the proxy could not deliver
-func (p *Proxy) miss(k kind) {
-	if k.picture() {
+// opening calls on as the first bytes of a body reach the player
+// only the handler goroutine touches opened, before and after the copy it
+// guards, so it needs no lock
+type opening struct {
+	http.ResponseWriter
+	on     func()
+	opened bool
+}
+
+func (o *opening) Write(b []byte) (int, error) {
+	n, err := o.ResponseWriter.Write(b)
+	if n > 0 && !o.opened {
+		o.opened = true
+		o.on()
+	}
+	return n, err
+}
+
+// tally records whether a media body reached the player
+// a body that carried nothing is not picture the player can start on
+func (p *Proxy) tally(k kind, delivered bool) {
+	switch {
+	case !k.picture():
+	case delivered:
+		p.served.Add(1)
+	default:
 		p.refused.Add(1)
 	}
 }

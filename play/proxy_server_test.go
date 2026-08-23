@@ -425,3 +425,99 @@ func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
 		t.Errorf("an empty body left Served at %d, want 0", px.Served())
 	}
 }
+
+// an mp4 is one request that lasts the episode, so counting it when the copy
+// finishes would report that nothing had played while the picture was on screen
+// and hand the caller grounds to abandon a stream the user is watching
+func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
+	release := make(chan struct{})
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "first")
+		w.(http.Flusher).Flush()
+		<-release
+		io.WriteString(w, "rest")
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	body := make(chan struct{})
+	go func() {
+		defer close(body)
+		resp, err := http.Get(px.Stream(miruro.Stream{URL: cdn.URL + "/v.mp4", Kind: miruro.MP4}).URL)
+		if err != nil {
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for px.Served() == 0 {
+		select {
+		case <-deadline:
+			close(release)
+			<-body
+			t.Fatal("a body still streaming was never counted, which reads as nothing playing")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if got := px.Refused(); got != 0 {
+		t.Errorf("Refused = %d, want 0 for a body that is arriving", got)
+	}
+	close(release)
+	<-body
+}
+
+// a media body the upstream refuses is what tells a dead stream from a slow one
+func TestProxyRefused(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/gone"):
+			w.WriteHeader(http.StatusForbidden)
+		case strings.HasPrefix(r.URL.Path, "/empty"):
+		default:
+			io.WriteString(w, "#EXTM3U\n")
+		}
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	get := func(u string) { //nolint
+		resp, err := http.Get(u)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+
+	// a playlist the upstream refuses is not picture, so it counts as neither
+	get(px.Stream(miruro.Stream{URL: cdn.URL + "/gone.m3u8", Kind: miruro.HLS}).URL)
+	if px.Refused() != 0 || px.Served() != 0 {
+		t.Errorf("a refused playlist counted as %d served and %d refused, want neither",
+			px.Served(), px.Refused())
+	}
+
+	get(px.Stream(miruro.Stream{URL: cdn.URL + "/gone.mp4", Kind: miruro.MP4}).URL)
+	if px.Refused() != 1 {
+		t.Errorf("Refused = %d after one refused media body, want 1", px.Refused())
+	}
+
+	// an upstream that answers 200 with nothing gave the player no picture
+	get(px.Stream(miruro.Stream{URL: cdn.URL + "/empty.mp4", Kind: miruro.MP4}).URL)
+	if px.Refused() != 2 || px.Served() != 0 {
+		t.Errorf("an empty body counted as %d served and %d refused, want 0 and 2",
+			px.Served(), px.Refused())
+	}
+}
