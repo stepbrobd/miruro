@@ -107,15 +107,17 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// the capability table decides which rendition each provider is asked for
-	// a run without it asks every provider for sub and attaches whatever comes
-	// back, so the table is a correction rather than a requirement
+	// the capability table decides which rendition each provider is asked for and
+	// which providers play only in an iframe
+	// a run without it asks every provider for the plain category and offers the
+	// embeds it would otherwise drop, so the table is a correction rather than a
+	// requirement
 	caps, err := client.Config(ctx)
 	switch {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case err != nil:
-		log.Warn("provider capabilities unavailable, asking every provider for sub", "err", err)
+		log.Warn("provider capabilities unavailable, renditions and embeds are unfiltered", "err", err)
 	}
 
 	pin := ParsePin(pinned)
