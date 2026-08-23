@@ -275,3 +275,45 @@ func TestRank(t *testing.T) {
 		t.Errorf("Rank ignored the provider's default flag: %+v", got)
 	}
 }
+
+// the api marks some streams inactive, and offering one costs a playback
+// attempt that cannot work
+func TestDeadStreamsAreSkipped(t *testing.T) {
+	res := &Result{Streams: []Stream{
+		{URL: "dead", Kind: HLS, Dead: true, Default: true},
+		{URL: "live", Kind: HLS},
+	}}
+	got := (&Client{}).Rank(context.Background(), res, "best")
+	if len(got) != 1 || got[0].URL != "live" {
+		t.Errorf("Rank = %v, want the dead stream dropped", got)
+	}
+	if !res.Playable() {
+		t.Error("a result with one live stream must stay playable")
+	}
+
+	// Playable has to agree with Rank, or the caller accepts a provider and then
+	// fails on ErrNoStream outside the fallback loop
+	only := &Result{Streams: []Stream{{URL: "dead", Kind: HLS, Dead: true}}}
+	if only.Playable() {
+		t.Error("a result whose only stream is dead must not report playable")
+	}
+	if got := (&Client{}).Rank(context.Background(), only, "best"); len(got) != 0 {
+		t.Errorf("Rank = %v, want nothing", got)
+	}
+}
+
+// an absent flag is not a dead stream, and most streams carry no flag at all
+func TestAbsentActiveFlagStaysPlayable(t *testing.T) {
+	srv := mirror(t, serves(`{"streams":[{"url":"u","type":"hls"},{"url":"v","type":"hls","isActive":false}]}`))
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	res, err := c.Sources(context.Background(), "ep", "bonk", Sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Streams[0].Dead {
+		t.Error("a stream with no isActive was marked dead")
+	}
+	if !res.Streams[1].Dead {
+		t.Error("an explicit isActive false was not marked dead")
+	}
+}

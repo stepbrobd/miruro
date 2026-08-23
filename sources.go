@@ -36,6 +36,10 @@ type Stream struct {
 	Server string
 	// Default marks the stream the provider itself picks
 	Default bool
+	// Dead marks a stream the provider reports as inactive
+	// most streams carry no such flag, so only an explicit false sets this and
+	// an absent one stays worth trying
+	Dead bool
 }
 
 type Subtitle struct {
@@ -57,8 +61,12 @@ func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
 // Playable reports whether Rank can return a stream
 // an embed-only result carries no hls or mp4, so a caller must skip it rather
 // than accept it and fail later outside the fallback loop
+// the two agree on dead streams for the same reason
 func (r *Result) Playable() bool {
 	for _, s := range r.Streams {
+		if s.Dead {
+			continue
+		}
 		if s.Kind == HLS || s.Kind == MP4 {
 			return true
 		}
@@ -79,12 +87,13 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 
 	var raw struct {
 		Streams []struct {
-			URL     string `json:"url"`
-			Type    string `json:"type"`
-			Quality string `json:"quality"`
-			Referer string `json:"referer"`
-			Server  string `json:"server"`
-			Default bool   `json:"default"`
+			URL      string `json:"url"`
+			Type     string `json:"type"`
+			Quality  string `json:"quality"`
+			Referer  string `json:"referer"`
+			Server   string `json:"server"`
+			Default  bool   `json:"default"`
+			IsActive *bool  `json:"isActive"`
 		} `json:"streams"`
 		Subtitles []struct {
 			File     string `json:"file"`
@@ -107,6 +116,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat Ca
 			Referer: s.Referer,
 			Server:  s.Server,
 			Default: s.Default,
+			Dead:    s.IsActive != nil && !*s.IsActive,
 		})
 	}
 	for _, s := range raw.Subtitles {
@@ -180,13 +190,16 @@ func primary(tag string) string {
 }
 
 // Rank orders the streams worth trying, best first, and skips embeds since
-// nothing here can play one
+// nothing here can play one, along with any the provider reports as dead
 // one provider often serves an episode from several hosts, and the one it flags
 // as default can be the dead one, so a caller that can retry walks past the head
 // rather than giving up on the provider
 func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
+		if s.Dead {
+			continue
+		}
 		switch s.Kind {
 		case HLS:
 			hls = append(hls, s)
