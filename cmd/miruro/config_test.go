@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/adrg/xdg"
@@ -17,14 +18,14 @@ func TestLoadConfig(t *testing.T) {
 	t.Cleanup(xdg.Reload)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	xdg.Reload()
-	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD_DIR", "MIRURO_DUB"} {
+	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD_DIR", "MIRURO_DUB", "MIRURO_MIRRORS"} {
 		t.Setenv(v, "")
 	}
 
 	t.Run("defaults without a config file", func(t *testing.T) {
 		c := loadConfig()
 		want := config{Quality: "best", DownloadDir: "."}
-		if c != want {
+		if !reflect.DeepEqual(c, want) {
 			t.Errorf("loadConfig() = %+v, want %+v", c, want)
 		}
 	})
@@ -44,8 +45,25 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("MIRURO_DUB", "false")
 		c := loadConfig()
 		want := config{Quality: "480p", Provider: "bonk:hard", Lang: "en", DownloadDir: "."}
-		if c != want {
+		if !reflect.DeepEqual(c, want) {
 			t.Errorf("loadConfig() = %+v, want %+v", c, want)
+		}
+	})
+
+	t.Run("mirrors come from the file and the environment, bad origins dropped", func(t *testing.T) {
+		body := "mirrors = [\"https://www.miruro.bz/\", \"miruro.tv\"]\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c := loadConfig()
+		if want := []string{"https://www.miruro.bz"}; !reflect.DeepEqual(c.Mirrors, want) {
+			t.Errorf("Mirrors = %v, want %v with the schemeless entry dropped", c.Mirrors, want)
+		}
+
+		t.Setenv("MIRURO_MIRRORS", "https://a.example, https://b.example/")
+		c = loadConfig()
+		if want := []string{"https://a.example", "https://b.example"}; !reflect.DeepEqual(c.Mirrors, want) {
+			t.Errorf("Mirrors = %v, want %v", c.Mirrors, want)
 		}
 	})
 
@@ -55,7 +73,7 @@ func TestLoadConfig(t *testing.T) {
 		}
 		c := loadConfig()
 		want := config{Quality: "best", DownloadDir: "."}
-		if c != want {
+		if !reflect.DeepEqual(c, want) {
 			t.Errorf("loadConfig() = %+v, want %+v", c, want)
 		}
 	})

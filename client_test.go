@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -131,7 +132,7 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 				cancel()
 			}
 
-			c := &Client{Base: srv.URL, HTTP: srv.Client()}
+			c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 			got, err := c.pipe(ctx, "sources", nil)
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
@@ -161,7 +162,7 @@ func TestPipeRefusesOversizedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{Base: srv.URL, HTTP: srv.Client()}
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 	_, err := c.pipe(context.Background(), "/x", nil)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("want an over-cap error, got %v", err)
@@ -225,7 +226,7 @@ func TestSearch(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		media, err := (&Client{Base: srv.URL, HTTP: srv.Client()}).Search(ctx, "titan")
+		media, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +247,7 @@ func TestSearch(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := (&Client{Base: srv.URL, HTTP: srv.Client()}).Search(ctx, "titan")
+		_, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
 		if !errors.Is(err, ErrUpstream) || !strings.Contains(err.Error(), "Secure pipe failed") {
 			t.Errorf("err = %v, want the upstream reason", err)
 		}
@@ -267,4 +268,132 @@ func envelopeQuery(t *testing.T, r *http.Request) map[string]string {
 		t.Fatalf("envelope is not json: %v", err)
 	}
 	return env.Query
+}
+
+// counter is a mirror that records how often it was asked
+type counter struct {
+	*httptest.Server
+	hits atomic.Int64
+}
+
+// mirror serves handler and counts every request, so a test can prove which
+// mirror answered and which was never reached
+func mirror(t *testing.T, handler http.HandlerFunc) *counter {
+	t.Helper()
+	c := &counter{}
+	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.hits.Add(1)
+		handler(w, r)
+	}))
+	t.Cleanup(c.Close)
+	return c
+}
+
+func blocks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusForbidden)
+	io.WriteString(w, "<html>blocked</html>")
+}
+
+func serves(body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }
+}
+
+// every mirror fronts one backend, so the walk exists for the failures a
+// different host can answer and for nothing else
+func TestPipeRotation(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a blocked mirror hands over and stays handed over", func(t *testing.T) {
+		bad := mirror(t, blocks)
+		good := mirror(t, serves(`{"ok":true}`))
+		c := &Client{Bases: []string{bad.URL, good.URL}, HTTP: good.Client()}
+
+		for range 3 {
+			if _, err := c.pipe(ctx, "config", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// the first call walks past the block, the rest start where it landed
+		if got := bad.hits.Load(); got != 1 {
+			t.Errorf("blocked mirror served %d requests, want the one that found the block", got)
+		}
+		if got := good.hits.Load(); got != 3 {
+			t.Errorf("working mirror served %d requests, want all 3", got)
+		}
+	})
+
+	t.Run("an unreachable mirror hands over", func(t *testing.T) {
+		dead := httptest.NewServer(http.HandlerFunc(blocks))
+		dead.Close()
+		good := mirror(t, serves(`{"ok":true}`))
+
+		c := &Client{Bases: []string{dead.URL, good.URL}, HTTP: good.Client()}
+		if _, err := c.pipe(ctx, "config", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := good.hits.Load(); got != 1 {
+			t.Errorf("working mirror served %d requests, want 1", got)
+		}
+	})
+
+	t.Run("an upstream status does not multiply the requests", func(t *testing.T) {
+		down := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		other := mirror(t, serves(`{"ok":true}`))
+
+		c := &Client{Bases: []string{down.URL, other.URL}, HTTP: other.Client()}
+		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
+			t.Fatalf("err = %v, want ErrUpstream", err)
+		}
+		if got := other.hits.Load(); got != 0 {
+			t.Errorf("the second mirror served %d requests, want none for a backend status", got)
+		}
+	})
+
+	t.Run("blocked everywhere is fatal", func(t *testing.T) {
+		a, b := mirror(t, blocks), mirror(t, blocks)
+		c := &Client{Bases: []string{a.URL, b.URL}, HTTP: a.Client()}
+		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, ErrBlocked) {
+			t.Fatalf("err = %v, want ErrBlocked", err)
+		}
+	})
+
+	// reporting this as recoverable would send the fallback loop back into the
+	// block for every remaining provider
+	t.Run("a block outranks a later unreachable mirror", func(t *testing.T) {
+		blocked := mirror(t, blocks)
+		dead := httptest.NewServer(http.HandlerFunc(blocks))
+		dead.Close()
+
+		c := &Client{Bases: []string{blocked.URL, dead.URL}, HTTP: blocked.Client()}
+		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, ErrBlocked) {
+			t.Fatalf("err = %v, want ErrBlocked", err)
+		}
+	})
+
+	t.Run("no mirror configured is recoverable", func(t *testing.T) {
+		if _, err := (&Client{HTTP: http.DefaultClient}).pipe(ctx, "config", nil); !errors.Is(err, ErrUpstream) {
+			t.Fatalf("err = %v, want ErrUpstream", err)
+		}
+	})
+}
+
+// a rule comparing Origin against Host would reject a header set pinned to one
+// domain the moment the walk moved off it
+func TestPipeOriginFollowsTheMirror(t *testing.T) {
+	var origin, referer string
+	srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+		origin, referer = r.Header.Get("Origin"), r.Header.Get("Referer")
+		io.WriteString(w, `{"ok":true}`)
+	})
+
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	if _, err := c.pipe(context.Background(), "config", nil); err != nil {
+		t.Fatal(err)
+	}
+	if origin != srv.URL || referer != srv.URL+"/" {
+		t.Errorf("origin = %q referer = %q, want them on %q", origin, referer, srv.URL)
+	}
 }

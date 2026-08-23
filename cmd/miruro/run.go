@@ -50,6 +50,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	client := miruro.New()
+	if len(cfg.Mirrors) > 0 {
+		client.Bases = cfg.Mirrors
+	}
 
 	category := miruro.Sub
 	if cfg.Dub {

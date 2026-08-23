@@ -112,7 +112,7 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 	t.Cleanup(func() { px.Close() })
 	dir := t.TempDir()
 	return saver{
-		client:   &miruro.Client{Base: srv.URL, HTTP: srv.Client()},
+		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
 		px:       px,
 		hc:       http.DefaultClient,
 		cat:      cat,
@@ -140,7 +140,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -161,7 +161,7 @@ func TestAutoResolve(t *testing.T) {
 		}, &hits)
 		defer srv.Close()
 
-		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
 		if !errors.Is(err, miruro.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
@@ -178,7 +178,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +193,7 @@ func TestAutoResolve(t *testing.T) {
 		srv := sourcesServer(t, map[string]http.HandlerFunc{}, &hits)
 		defer srv.Close()
 
-		client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "", nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
@@ -425,7 +425,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	client := &miruro.Client{Base: srv.URL, HTTP: srv.Client()}
+	client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 	_, served, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true})
 	if err != nil {
 		t.Fatal(err)

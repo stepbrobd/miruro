@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/adrg/xdg"
@@ -16,6 +18,10 @@ type config struct {
 	Lang        string `toml:"lang"`
 	DownloadDir string `toml:"download_dir"`
 	Dub         bool   `toml:"dub"`
+	// Mirrors replaces the built-in pipe origins, in the order they are tried
+	// a domain blocked at the resolver costs a timeout per run, so reordering
+	// belongs to whoever is behind that resolver
+	Mirrors []string `toml:"mirrors"`
 }
 
 func loadConfig() config {
@@ -50,5 +56,26 @@ func loadConfig() config {
 			c.Dub = b
 		}
 	}
+	if v := os.Getenv("MIRURO_MIRRORS"); v != "" {
+		c.Mirrors = strings.Split(v, ",")
+	}
+	c.Mirrors = origins(c.Mirrors)
 	return c
+}
+
+// origins keeps the mirrors that name an http or https host
+// a typo would otherwise fail every request against it with a scheme error,
+// which reads like the pipe is down rather than like the config is wrong
+func origins(mirrors []string) []string {
+	var out []string
+	for _, m := range mirrors {
+		m = strings.TrimRight(strings.TrimSpace(m), "/")
+		u, err := url.Parse(m)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			log.Warn("ignoring mirror that is not an http origin", "mirror", m)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }

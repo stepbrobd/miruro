@@ -13,12 +13,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	endpoint = "https://www.miruro.tv"
 	// UserAgent is the one browser identity shared by the pipe, the quality
 	// probe, and the stream proxy, so a CDN sees a single client across a
 	// playlist and its segments
@@ -40,6 +41,18 @@ var (
 	ErrUpstream = errors.New("miruro upstream unreachable")
 )
 
+// mirrors are the domains that front one miruro backend, which answers every
+// one of them with the same bytes
+// www.miruro.com publishes this list and is not itself a pipe host
+// the order leads with .ru on MiruroAPI's report that it is the least
+// aggressively filtered, which is unverified here
+var mirrors = []string{
+	"https://www.miruro.ru",
+	"https://www.miruro.to",
+	"https://www.miruro.bz",
+	"https://www.miruro.tv",
+}
+
 // obfKey is VITE_PIPE_OBF_KEY, applied only when x-obfuscated is 2
 var obfKey = []byte{
 	0x71, 0x95, 0x10, 0x34, 0xf8, 0xfb, 0xcf, 0x53,
@@ -47,8 +60,14 @@ var obfKey = []byte{
 }
 
 type Client struct {
-	Base string
-	HTTP *http.Client
+	// Bases are the mirror origins tried in order
+	Bases []string
+	HTTP  *http.Client
+
+	mu sync.Mutex
+	// base indexes the mirror that answered last, so one failure does not cost
+	// every later request the same walk
+	base int
 }
 
 func New() *Client {
@@ -60,8 +79,8 @@ func New() *Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Client{
-		Base: endpoint,
-		HTTP: &http.Client{Transport: tr, Timeout: 2 * time.Minute},
+		Bases: slices.Clone(mirrors),
+		HTTP:  &http.Client{Transport: tr, Timeout: 2 * time.Minute},
 	}
 }
 
@@ -73,6 +92,8 @@ type envelope struct {
 }
 
 // pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body.
+// It walks the mirrors from the one that answered last, and only a failure a
+// different mirror could answer moves it along.
 func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
 	if query == nil {
 		query = map[string]string{}
@@ -83,47 +104,84 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	}
 	e := base64.RawURLEncoding.EncodeToString(env)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Base+"/api/secure/pipe?e="+e, nil)
-	if err != nil {
-		return nil, err
+	if len(c.Bases) == 0 {
+		return nil, fmt.Errorf("%w: no mirror configured", ErrUpstream)
 	}
-	setHeaders(req.Header)
+
+	start := c.mirror()
+	blocked := false
+	var last error
+	for i := range c.Bases {
+		idx := (start + i) % len(c.Bases)
+		body, again, err := c.attempt(ctx, c.Bases[idx], path, e)
+		if err == nil {
+			c.prefer(idx)
+			return body, nil
+		}
+		if !again {
+			return nil, err
+		}
+		if errors.Is(err, ErrBlocked) {
+			blocked = true
+		}
+		last = err
+	}
+	// one mirror answering with a WAF rejection is enough to call the session
+	// blocked, even when a later mirror failed to connect at all, since reporting
+	// that as recoverable sends the fallback loop back into the block
+	if blocked {
+		return nil, ErrBlocked
+	}
+	return nil, last
+}
+
+// attempt runs the pipe against one mirror.
+// again reports whether another mirror could answer, which covers a transport
+// failure and a WAF rejection. An upstream status is not one of them: every
+// mirror fronts the same backend, so walking them all would multiply the
+// requests a provider outage already costs.
+func (c *Client) attempt(ctx context.Context, base, path, e string) (out []byte, again bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/secure/pipe?e="+e, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	setHeaders(req.Header, base)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// keep a cancelled context as a context error so callers can match it
 		// otherwise the fallback loop treats Ctrl-C as a recoverable failure
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
-		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, true, fmt.Errorf("%w: %v", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPipeRaw+1))
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
-		return nil, err
+		return nil, true, err
 	}
 	if len(body) > maxPipeRaw {
-		return nil, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
+		return nil, false, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
 	}
 
 	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
 	switch {
 	case resp.StatusCode == http.StatusForbidden && isHTML:
-		return nil, ErrBlocked
+		return nil, true, ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
+		return nil, false, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
 	case isHTML:
-		return nil, ErrUpstream
+		return nil, false, ErrUpstream
 	}
 
 	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
 		if body, err = decode(body, obf); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -133,9 +191,24 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
+		return nil, false, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
 	}
-	return body, nil
+	return body, false, nil
+}
+
+func (c *Client) mirror() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.base >= len(c.Bases) {
+		return 0
+	}
+	return c.base
+}
+
+func (c *Client) prefer(i int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.base = i
 }
 
 // decode reverses base64url, then the optional xor, then gzip
@@ -176,12 +249,15 @@ func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
 	return req, nil
 }
 
-func setHeaders(h http.Header) {
+// setHeaders writes the browser header set the WAF expects
+// the origin follows the mirror in use, so a rule comparing it against the host
+// sees what a browser on that domain would send
+func setHeaders(h http.Header, base string) {
 	h.Set("User-Agent", UserAgent)
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("Accept-Language", "en-US,en;q=0.5")
-	h.Set("Referer", "https://www.miruro.tv/")
-	h.Set("Origin", "https://www.miruro.tv")
+	h.Set("Referer", base+"/")
+	h.Set("Origin", base)
 	h.Set("Sec-Fetch-Dest", "empty")
 	h.Set("Sec-Fetch-Mode", "cors")
 	h.Set("Sec-Fetch-Site", "same-origin")

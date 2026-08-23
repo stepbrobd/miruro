@@ -181,7 +181,7 @@ func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{Base: srv.URL, HTTP: srv.Client()}
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 	res, err := c.Sources(context.Background(), "ep", "bonk", Sub)
 	if err != nil {
 		t.Fatal(err)
