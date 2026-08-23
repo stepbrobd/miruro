@@ -31,7 +31,7 @@ var (
 
 var root = &cobra.Command{
 	Use:           "miruro [query]",
-	Short:         "Watch anime from miruro.tv",
+	Short:         "Watch anime from the command line",
 	Args:          cobra.ArbitraryArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
