@@ -107,3 +107,37 @@ func TestBestSkipsEmpty(t *testing.T) {
 		t.Errorf("off-enum rows should yield nothing, got %+v", got)
 	}
 }
+
+// the picker shows one row per number while the records come from whichever
+// provider carries them, so the merge has to be deterministic
+func TestDetails(t *testing.T) {
+	cat := &Catalog{Providers: map[string]Provider{
+		// ranked last, so its title only survives where nothing above it has one
+		"moo": {Code: "moo", Sub: []Episode{
+			{ID: "m1", Number: 1, Title: "Moo One"},
+			{ID: "m2", Number: 2, Title: "Moo Two", Filler: true},
+		}},
+		// ranked first, and untitled on episode 2
+		"kiwi": {Code: "kiwi", Sub: []Episode{
+			{ID: "k1", Number: 1, Title: "Kiwi One"},
+			{ID: "k2", Number: 2},
+		}},
+	}}
+
+	got := cat.Details(Sub)
+	if got[1].Title != "Kiwi One" {
+		t.Errorf("episode 1 title = %q, want the preferred provider's", got[1].Title)
+	}
+	if got[2].Title != "Moo Two" {
+		t.Errorf("episode 2 title = %q, want the fill-in from a later provider", got[2].Title)
+	}
+	if !got[2].Filler {
+		t.Error("episode 2 lost the filler mark that came with its title")
+	}
+	if len(got) != 2 {
+		t.Errorf("Details = %d entries, want one per number", len(got))
+	}
+	if len(cat.Details(Dub)) != 0 {
+		t.Error("Details(Dub) invented entries for a category with no episodes")
+	}
+}

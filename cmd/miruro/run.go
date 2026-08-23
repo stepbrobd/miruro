@@ -102,7 +102,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no %s episodes available", category)
 	}
 
-	eps, err := chooseEpisodes(numbers, startEp)
+	eps, err := chooseEpisodes(numbers, startEp, episodeLabel(cat.Details(category)))
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,25 @@ func resume(st *store) (entry, error) {
 	})
 }
 
-func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
+// episodeLabel renders one picker row, the number plus what the catalog knows
+// that tells episodes apart
+// a number the catalog does not detail reads as the bare number, which is what
+// every row was before the parser kept the rest
+func episodeLabel(details map[float64]miruro.Episode) func(float64) string {
+	return func(n float64) string {
+		d := details[n]
+		out := num(n)
+		if d.Title != "" {
+			out += "  " + d.Title
+		}
+		if d.Filler {
+			out += "  (filler)"
+		}
+		return out
+	}
+}
+
+func chooseEpisodes(numbers []float64, start float64, label func(float64) string) ([]float64, error) {
 	if flagAll {
 		if flagEpisode != "" {
 			log.Warn("--all overrides --episode")
@@ -218,7 +236,7 @@ func chooseEpisodes(numbers []float64, start float64) ([]float64, error) {
 	if start >= 0 && slices.Contains(numbers, start) {
 		return []float64{start}, nil
 	}
-	ep, err := ui.Select("Select episode", numbers, num)
+	ep, err := ui.Select("Select episode", numbers, label)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +371,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 	}
 	defer px.Close()
 
+	details := cat.Details(category)
 	ep := queue[0]
 	queue = queue[1:]
 
@@ -384,6 +403,9 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 		log.Info("playing", "title", title, "ep", num(ep), "provider", served, "server", ranked[0].Server, "variant", variant, "player", player.Kind, "subs", len(subs) > 0)
 
 		mediaTitle := fmt.Sprintf("%s Episode %s", title, num(ep))
+		if d := details[ep]; d.Title != "" {
+			mediaTitle += " - " + d.Title
+		}
 		launch := func(pctx context.Context, s miruro.Stream) error {
 			return player.Play(pctx, px.Stream(s), px.Subtitles(subs, s.Referer), skips, mediaTitle)
 		}
@@ -415,7 +437,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			pin = Pin{}
 		}
 		if next.reselect {
-			ep, err = ui.Select("Select episode", numbers, num)
+			ep, err = ui.Select("Select episode", numbers, episodeLabel(details))
 			if err != nil {
 				return err
 			}

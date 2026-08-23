@@ -29,6 +29,10 @@ const (
 type Episode struct {
 	ID     string  `json:"id"`
 	Number float64 `json:"number"`
+	// Title is the episode name, empty when the provider carries none
+	Title string `json:"title"`
+	// Filler marks an episode outside the source material
+	Filler bool `json:"filler"`
 }
 
 type SkipRange struct {
@@ -188,6 +192,33 @@ func preference(code string) int {
 		return i
 	}
 	return len(order)
+}
+
+// Details maps every episode number in a category to the record worth showing
+// the first provider in preference order that carries an episode supplies its
+// record, and a later one only fills in a title the first left empty
+func (c *Catalog) Details(cat Category) map[float64]Episode {
+	codes := make([]string, 0, len(c.Providers))
+	for code := range c.Providers {
+		codes = append(codes, code)
+	}
+	sort.Slice(codes, func(i, j int) bool {
+		if a, b := preference(codes[i]), preference(codes[j]); a != b {
+			return a < b
+		}
+		return codes[i] < codes[j]
+	})
+
+	out := make(map[float64]Episode)
+	for _, code := range codes {
+		for _, e := range c.Providers[code].Episodes(cat) {
+			cur, seen := out[e.Number]
+			if !seen || (cur.Title == "" && e.Title != "") {
+				out[e.Number] = e
+			}
+		}
+	}
+	return out
 }
 
 // Available lists providers carrying the episode in the category, in preference

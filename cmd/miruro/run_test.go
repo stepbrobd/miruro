@@ -606,3 +606,28 @@ func TestDeadStream(t *testing.T) {
 		}
 	}
 }
+
+// the picker used to show bare numbers, and a catalog that names nothing has to
+// keep looking like that
+func TestEpisodeLabel(t *testing.T) {
+	label := episodeLabel(map[float64]miruro.Episode{
+		1:   {Number: 1, Title: "Rebirth"},
+		2:   {Number: 2, Title: "Confrontation", Filler: true},
+		3:   {Number: 3},
+		4.5: {Number: 4.5, Filler: true},
+	})
+	for _, tc := range []struct {
+		ep   float64
+		want string
+	}{
+		{1, "1  Rebirth"},
+		{2, "2  Confrontation  (filler)"},
+		{3, "3"},
+		{4.5, "4.5  (filler)"},
+		{9, "9"},
+	} {
+		if got := label(tc.ep); got != tc.want {
+			t.Errorf("label(%v) = %q, want %q", tc.ep, got, tc.want)
+		}
+	}
+}
