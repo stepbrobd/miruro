@@ -109,30 +109,31 @@ func TestBestSkipsEmpty(t *testing.T) {
 }
 
 // the picker shows one row per number while the records come from whichever
-// provider carries them, so the merge has to be deterministic
+// provider carries them, so the merge has to be deterministic and has to keep
+// the preferred provider's flags when a later one only supplies the title
 func TestDetails(t *testing.T) {
 	cat := &Catalog{Providers: map[string]Provider{
-		// ranked last, so its title only survives where nothing above it has one
+		// ranked last, titles everything, and disagrees about filler
 		"moo": {Code: "moo", Sub: []Episode{
 			{ID: "m1", Number: 1, Title: "Moo One"},
-			{ID: "m2", Number: 2, Title: "Moo Two", Filler: true},
+			{ID: "m2", Number: 2, Title: "Moo Two"},
 		}},
 		// ranked first, and untitled on episode 2
-		"kiwi": {Code: "kiwi", Sub: []Episode{
-			{ID: "k1", Number: 1, Title: "Kiwi One"},
-			{ID: "k2", Number: 2},
+		"ally": {Code: "ally", Sub: []Episode{
+			{ID: "a1", Number: 1, Title: "Ally One"},
+			{ID: "a2", Number: 2, Filler: true},
 		}},
 	}}
 
 	got := cat.Details(Sub)
-	if got[1].Title != "Kiwi One" {
-		t.Errorf("episode 1 title = %q, want the preferred provider's", got[1].Title)
+	if got[1].Title != "Ally One" || got[1].ID != "a1" {
+		t.Errorf("episode 1 = %+v, want the preferred provider's whole record", got[1])
 	}
 	if got[2].Title != "Moo Two" {
 		t.Errorf("episode 2 title = %q, want the fill-in from a later provider", got[2].Title)
 	}
-	if !got[2].Filler {
-		t.Error("episode 2 lost the filler mark that came with its title")
+	if !got[2].Filler || got[2].ID != "a2" {
+		t.Errorf("episode 2 = %+v, want the preferred provider's record with only its title filled in", got[2])
 	}
 	if len(got) != 2 {
 		t.Errorf("Details = %d entries, want one per number", len(got))

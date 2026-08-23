@@ -56,8 +56,6 @@ type Result struct {
 	Subtitles []Subtitle
 }
 
-func (r *Result) Softsub() bool { return len(r.Subtitles) > 0 }
-
 // Playable reports whether Rank can return a stream
 // an embed-only result carries no hls or mp4, so a caller must skip it rather
 // than accept it and fail later outside the fallback loop

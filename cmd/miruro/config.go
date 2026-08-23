@@ -59,7 +59,13 @@ func loadConfig() config {
 	if v := os.Getenv("MIRURO_MIRRORS"); v != "" {
 		c.Mirrors = strings.Split(v, ",")
 	}
-	c.Mirrors = origins(c.Mirrors)
+	// a configured list that loses every entry would otherwise revert to the
+	// built-in origins with nothing said about it
+	if named := len(c.Mirrors); named > 0 {
+		if c.Mirrors = origins(c.Mirrors); len(c.Mirrors) == 0 {
+			log.Warn("no usable mirror configured, using the built-in origins", "dropped", named)
+		}
+	}
 	return c
 }
 

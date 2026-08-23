@@ -72,7 +72,7 @@ type Client struct {
 	// the capability table is fetched at most once per client
 	// cfgMu is only ever taken before mu
 	cfgMu   sync.Mutex
-	cfg     Config
+	cfg     Capabilities
 	cfgErr  error
 	cfgDone bool
 }

@@ -52,6 +52,28 @@ func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) ma
 	return out
 }
 
+// rendition is the sub category a provider carries, from its declared
+// capabilities
+// asking for the one it does not carry answers 444, which would skip half the
+// matrix on a condition the run itself created
+func rendition(caps miruro.Capabilities, code string) miruro.Category {
+	if c, ok := caps[code]; ok && c.Soft && !c.Hard {
+		return miruro.Ssub
+	}
+	return miruro.Sub
+}
+
+// capabilities fetches the provider table, empty when the resource is down so
+// the run falls back to asking every provider for sub
+func capabilities(ctx context.Context, t *testing.T, client *miruro.Client) miruro.Capabilities {
+	t.Helper()
+	caps, err := client.Config(ctx)
+	if err != nil {
+		t.Logf("capability table unavailable, every provider will be asked for sub: %v", err)
+	}
+	return caps
+}
+
 // segmentSample bounds how much of an episode the integration run fetches
 // the cache logic is per segment, so a handful proves the path without pulling
 // a whole episode
@@ -81,15 +103,17 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	defer px.Close()
 
 	var covered int
+	caps := capabilities(ctx, t, client)
 	for code, provider := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
-			eps := provider.Episodes(miruro.Sub)
+			cat := rendition(caps, code)
+			eps := provider.Episodes(cat)
 			if len(eps) == 0 {
 				t.Skip("provider carries no sub episodes")
 			}
-			res, err := client.Sources(ctx, eps[0].ID, code, miruro.Sub)
+			res, err := client.Sources(ctx, eps[0].ID, code, cat)
 			if err != nil {
-				t.Skipf("provider did not resolve, an upstream condition rather than a defect: %v", err)
+				t.Skipf("provider did not resolve %s, an upstream condition rather than a defect: %v", cat, err)
 			}
 			ranked := client.Rank(ctx, res, "")
 			if len(ranked) == 0 {
@@ -246,16 +270,18 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	}
 	defer px.Close()
 
+	caps := capabilities(ctx, t, client)
 	var covered int
 	for code, provider := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
-			eps := provider.Episodes(miruro.Sub)
+			cat := rendition(caps, code)
+			eps := provider.Episodes(cat)
 			if len(eps) == 0 {
 				t.Skip("provider carries no sub episodes")
 			}
-			res, err := client.Sources(ctx, eps[0].ID, code, miruro.Sub)
+			res, err := client.Sources(ctx, eps[0].ID, code, cat)
 			if err != nil {
-				t.Skipf("provider did not resolve, an upstream condition rather than a defect: %v", err)
+				t.Skipf("provider did not resolve %s, an upstream condition rather than a defect: %v", cat, err)
 			}
 			if len(res.Subtitles) == 0 {
 				t.Skip("provider ships no subtitles")

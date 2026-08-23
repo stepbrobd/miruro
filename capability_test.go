@@ -25,7 +25,7 @@ func TestConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Config{
+		want := Capabilities{
 			"bee":  {Soft: true},
 			"kiwi": {Hard: true},
 			"bonk": {Hard: true, Soft: true},

@@ -75,8 +75,8 @@ func serveBlocked(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "<html>blocked</html>")
 }
 
-// Available orders providers by code, so ally probes before bonk when no pin
-// reorders them
+// Available orders providers by preference, where ally leads bonk, so ally
+// probes first when no pin reorders them
 func twoProviderCatalog() *miruro.Catalog {
 	return &miruro.Catalog{
 		Providers: map[string]miruro.Provider{
@@ -141,12 +141,12 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil, nil)
+		res, src, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{Code: "bonk"}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if served != "ally" {
-			t.Errorf("served = %q, want ally", served)
+		if src.Code != "ally" {
+			t.Errorf("served = %q, want ally", src.Code)
 		}
 		if !res.Playable() {
 			t.Error("resolved result is not playable")
@@ -162,7 +162,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil, nil)
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{Code: "bonk"}, nil, nil)
 		if !errors.Is(err, miruro.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
@@ -179,12 +179,12 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "", nil, nil)
+		_, src, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if served != "bonk" {
-			t.Errorf("served = %q, want bonk", served)
+		if src.Code != "bonk" {
+			t.Errorf("served = %q, want bonk", src.Code)
 		}
 	})
 
@@ -194,7 +194,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "", nil, nil)
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, Pin{}, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
@@ -219,60 +219,6 @@ func TestMediaLabel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mediaLabel(tc.m); got != tc.want {
 				t.Errorf("mediaLabel = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestOrderPinned(t *testing.T) {
-	providers := []miruro.Provider{{Code: "ally"}, {Code: "bonk"}, {Code: "cost"}}
-	for _, tc := range []struct {
-		name string
-		pin  string
-		want []string
-	}{
-		{"pinned code moves to the front", "bonk", []string{"bonk", "ally", "cost"}},
-		{"absent code keeps the order", "zzz", []string{"ally", "bonk", "cost"}},
-		{"empty pin keeps the order", "", []string{"ally", "bonk", "cost"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []string
-			for _, p := range orderPinned(providers, tc.pin) {
-				got = append(got, p.Code)
-			}
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("orderPinned(%q) = %v, want %v", tc.pin, got, tc.want)
-			}
-		})
-	}
-}
-
-// the pin's variant describes the pinned provider only, so a fallback takes
-// what it declares rather than inheriting hard and losing its subtitles
-func TestApplied(t *testing.T) {
-	caps := miruro.Config{
-		"bonk": {Hard: true, Soft: true},
-		"ally": {Hard: true},
-		"bee":  {Soft: true},
-	}
-	for _, tc := range []struct {
-		name   string
-		pin    Pin
-		served string
-		caps   miruro.Config
-		want   Variant
-	}{
-		{"pinned hard applies", Pin{"bonk", Hard}, "bonk", caps, Hard},
-		{"pinned soft stays soft", Pin{"bonk", Soft}, "bonk", caps, Soft},
-		{"a hardsub fallback keeps its picture", Pin{"bonk", Hard}, "ally", caps, Hard},
-		{"a softsub fallback attaches the file", Pin{"bonk", Hard}, "bee", caps, Soft},
-		{"an undeclared fallback is soft", Pin{"bonk", Hard}, "ANIMEDUNYA", caps, Soft},
-		{"without the table a fallback is soft", Pin{"bonk", Hard}, "ally", nil, Soft},
-		{"empty pin is soft", Pin{}, "bee", caps, Soft},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := applied(tc.pin, tc.served, tc.caps); got != tc.want {
-				t.Errorf("applied(%+v, %q) = %q, want %q", tc.pin, tc.served, got, tc.want)
 			}
 		})
 	}
@@ -435,15 +381,15 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	defer srv.Close()
 
 	client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	_, served, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true}, nil)
+	_, src, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, map[string]bool{"ally": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if served != "bonk" {
-		t.Errorf("served = %q, want bonk", served)
+	if src.Code != "bonk" {
+		t.Errorf("served = %q, want bonk", src.Code)
 	}
 
-	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true, "bonk": true}, nil)
+	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, map[string]bool{"ally": true, "bonk": true}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no source resolved") {
 		t.Fatalf("err = %v, want the no-source error once every provider is spent", err)
 	}
@@ -607,8 +553,7 @@ func TestDeadStream(t *testing.T) {
 	}
 }
 
-// the picker used to show bare numbers, and a catalog that names nothing has to
-// keep looking like that
+// a catalog that names nothing must still render a bare number
 func TestEpisodeLabel(t *testing.T) {
 	label := episodeLabel(map[float64]miruro.Episode{
 		1:   {Number: 1, Title: "Rebirth"},
@@ -629,5 +574,90 @@ func TestEpisodeLabel(t *testing.T) {
 		if got := label(tc.ep); got != tc.want {
 			t.Errorf("label(%v) = %q, want %q", tc.ep, got, tc.want)
 		}
+	}
+}
+
+// pipeQuery decodes the query the client packed into the pipe envelope
+func pipeQuery(t *testing.T, r *http.Request) map[string]string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("e"))
+	if err != nil {
+		t.Fatalf("undecodable envelope: %v", err)
+	}
+	var env struct {
+		Query map[string]string `json:"query"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope is not json: %v", err)
+	}
+	return env.Query
+}
+
+// the two sub renditions are separate category values on the wire, and asking a
+// provider for the one it does not carry answers 444, so the variant has to
+// reach Sources rather than stay a client-side attach decision
+func TestResolveAsksForTheDeclaredRendition(t *testing.T) {
+	caps := miruro.Capabilities{
+		"kiwi": {Hard: true},
+		"bee":  {Soft: true},
+		"bonk": {Hard: true, Soft: true},
+	}
+	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
+		"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "kiwi-1", Number: 1}}},
+		"bee":  {Code: "bee", Sub: []miruro.Episode{{ID: "bee-1", Number: 1}}},
+		"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
+	}}
+
+	for _, tc := range []struct {
+		name     string
+		pin      Pin
+		category miruro.Category
+		wantCat  string
+		attach   bool
+	}{
+		{"a hardsub provider is asked for sub", Pin{"kiwi", Hard}, miruro.Sub, "sub", false},
+		{"a softsub provider is asked for ssub", Pin{"bee", Soft}, miruro.Sub, "ssub", true},
+		{"bonk soft is asked for ssub", Pin{"bonk", Soft}, miruro.Sub, "ssub", true},
+		{"bonk hard is asked for sub", Pin{"bonk", Hard}, miruro.Sub, "sub", false},
+		// a pin contradicting the table would ask for a rendition that 444s, so
+		// the declared one wins over what was typed
+		{"a soft pin on a hardsub provider is corrected", Pin{"kiwi", Soft}, miruro.Sub, "sub", false},
+		{"a hard pin on a softsub provider is corrected", Pin{"bee", Hard}, miruro.Sub, "ssub", true},
+		// the table says nothing about dub, so the pin is all there is to go on
+		{"dub is never rewritten and a hard pin still drops the file", Pin{"bonk", Hard}, miruro.Dub, "dub", false},
+		{"dub with a soft pin keeps the file", Pin{"bonk", Soft}, miruro.Dub, "dub", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked map[string]string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked = pipeQuery(t, r)
+				serveJSON(hlsPayload)(w, r)
+			}))
+			defer srv.Close()
+
+			catalog := cat
+			if tc.category == miruro.Dub {
+				catalog = &miruro.Catalog{Providers: map[string]miruro.Provider{
+					"bonk": {Code: "bonk", Dub: []miruro.Episode{{ID: "bonk-d1", Number: 1}}},
+				}}
+			}
+			client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+			_, src, err := autoResolve(context.Background(), client, catalog, 1, tc.category, tc.pin, nil, caps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if asked["category"] != tc.wantCat {
+				t.Errorf("sources category = %q, want %q", asked["category"], tc.wantCat)
+			}
+			if string(src.Category) != tc.wantCat {
+				t.Errorf("source category = %q, want %q", src.Category, tc.wantCat)
+			}
+			if src.Attach != tc.attach {
+				t.Errorf("attach = %v, want %v", src.Attach, tc.attach)
+			}
+			if src.Code != tc.pin.Code {
+				t.Errorf("served = %q, want %q", src.Code, tc.pin.Code)
+			}
+		})
 	}
 }

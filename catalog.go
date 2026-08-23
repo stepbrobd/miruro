@@ -10,11 +10,15 @@ import (
 
 // Category is a closed set
 // an illegal value cannot flow downstream
+// the api serves two subtitled renditions of one episode, the burned-in one
+// under sub and the one with a detachable subtitle file under ssub, and a
+// provider answers 444 for the rendition it does not carry
 type Category string
 
 const (
-	Sub Category = "sub"
-	Dub Category = "dub"
+	Sub  Category = "sub"
+	Ssub Category = "ssub"
+	Dub  Category = "dub"
 )
 
 // SkipKind marks an aniskip interval
@@ -77,6 +81,9 @@ type Provider struct {
 	Dub  []Episode
 }
 
+// Episodes lists the episodes a provider carries in a category
+// the api lists episodes under sub and dub only, and the ssub rendition is
+// addressed with the ids from the sub list
 func (p Provider) Episodes(cat Category) []Episode {
 	if cat == Dub {
 		return p.Dub
@@ -175,15 +182,15 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	return out
 }
 
-// order is the provider preference, an author-owned default.
-// It leads with the providers this project has watched carry a whole episode,
-// then the ones whose failure it has recorded: bonk stops serving segments
-// partway through a run, bee and hop depend on a subtitle CDN that has answered
-// with something other than HTTP, and moo is the lowest quality.
+// order is the provider preference, an author-owned default
+// it leads with the two this project has watched carry a whole episode end to
+// end in the integration run, then the rest, with the ones it has seen fail
+// last: bonk stops serving segments partway through a run, bee's playlist has
+// answered 502, and moo is the lowest quality
 // miruro publishes its own order in the config resource and rewrites it between
-// deploys. Following that would move the default provider under a resumed
-// history entry and a filled segment cache, so this list stays here instead.
-var order = []string{"kiwi", "pewe", "ally", "bonk", "hop", "bee", "moo"}
+// deploys, which would move the default provider under a resumed history entry
+// and a filled segment cache, so this list stays here instead
+var order = []string{"ally", "pewe", "kiwi", "bonk", "hop", "bee", "moo"}
 
 // preference places a provider in order, with an unnamed code after every named
 // one rather than interleaved, since nothing is known about it
@@ -194,9 +201,11 @@ func preference(code string) int {
 	return len(order)
 }
 
-// Details maps every episode number in a category to the record worth showing
+// Details maps every episode number in a category to one record for the picker
 // the first provider in preference order that carries an episode supplies its
-// record, and a later one only fills in a title the first left empty
+// record
+// a later provider only fills in a title the first left empty, and fills in
+// nothing else, so the preferred provider keeps its filler mark
 func (c *Catalog) Details(cat Category) map[float64]Episode {
 	codes := make([]string, 0, len(c.Providers))
 	for code := range c.Providers {
@@ -213,8 +222,12 @@ func (c *Catalog) Details(cat Category) map[float64]Episode {
 	for _, code := range codes {
 		for _, e := range c.Providers[code].Episodes(cat) {
 			cur, seen := out[e.Number]
-			if !seen || (cur.Title == "" && e.Title != "") {
+			switch {
+			case !seen:
 				out[e.Number] = e
+			case cur.Title == "" && e.Title != "":
+				cur.Title = e.Title
+				out[e.Number] = cur
 			}
 		}
 	}

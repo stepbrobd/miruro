@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 )
 
-// Caps is what a provider declares it can serve.
-// The api names hardsub "sub" and softsub "ssub", which reads backwards here,
-// so the two are renamed at the parse boundary and nowhere else.
+// Caps is the set of renditions a provider declares it can serve
+// the api names the burned-in one "sub" and the detachable one "ssub", which
+// reads backwards here, so both are renamed at the parse boundary and nowhere
+// else
 type Caps struct {
-	// Hard means subtitles arrive burned into the picture
+	// Hard means the subtitles arrive burned into the picture
 	Hard bool
 	// Soft means the provider ships a subtitle file alongside the stream
 	Soft bool
@@ -17,17 +18,17 @@ type Caps struct {
 	Embed bool
 }
 
-// Config is the provider capability table, keyed by provider code.
-// A code the table does not name has undeclared capabilities, which is not the
-// same as a code with none: the episodes resource serves providers the config
-// resource omits.
-type Config map[string]Caps
+// Capabilities is the provider capability table, keyed by provider code.
+// A code the table does not name is undeclared rather than incapable, since the
+// episodes resource serves providers the config resource omits
+type Capabilities map[string]Caps
 
 // Config fetches the capability table, once per client.
-// A failure is remembered so a run that cannot reach the resource treats every
-// provider as undeclared instead of refetching per episode. A cancelled run is
-// not remembered, since the next one would inherit a verdict about nothing.
-func (c *Client) Config(ctx context.Context) (Config, error) {
+// A failure is remembered, so a run that cannot reach the resource treats every
+// provider as undeclared instead of refetching per episode
+// a cancelled run is not remembered, since the next one would inherit a verdict
+// about nothing that was ever attempted
+func (c *Client) Config(ctx context.Context) (Capabilities, error) {
 	c.cfgMu.Lock()
 	defer c.cfgMu.Unlock()
 	if c.cfgDone {
@@ -41,7 +42,7 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	return cfg, err
 }
 
-func (c *Client) config(ctx context.Context) (Config, error) {
+func (c *Client) config(ctx context.Context) (Capabilities, error) {
 	body, err := c.pipe(ctx, "config", nil)
 	if err != nil {
 		return nil, err
@@ -61,7 +62,7 @@ func (c *Client) config(ctx context.Context) (Config, error) {
 		return nil, err
 	}
 
-	cfg := make(Config, len(raw.Streaming))
+	cfg := make(Capabilities, len(raw.Streaming))
 	for code, p := range raw.Streaming {
 		cfg[code] = Caps{
 			Hard:  p.Capabilities.Sub,
