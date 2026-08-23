@@ -67,6 +67,18 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	// a list that loses every entry must not revert to the built-in origins with
+	// nothing said about it
+	t.Run("a list with no usable origin ends up empty", func(t *testing.T) {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MIRURO_MIRRORS", "miruro.tv,ftp://miruro.tv, ")
+		if c := loadConfig(); len(c.Mirrors) != 0 {
+			t.Errorf("Mirrors = %v, want none kept", c.Mirrors)
+		}
+	})
+
 	t.Run("malformed file keeps defaults", func(t *testing.T) {
 		if err := os.WriteFile(path, []byte("not toml ["), 0o644); err != nil {
 			t.Fatal(err)
