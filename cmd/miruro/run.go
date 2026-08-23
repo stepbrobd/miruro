@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -478,9 +479,8 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 		}
 
 		if ranked := p.client.Rank(pctx, res, p.cfg.Quality); len(ranked) > 0 {
-			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
-				"server", ranked[0].Server, "rendition", src.Category,
-				"player", p.kind, "subs", len(subs) > 0)
+			note(ui.Note{Good: true, Subject: src.Code, Reason: fmt.Sprintf(
+				"playing %s %s%s", server(ranked[0]), src.Category, withSubs(subs))})
 
 			before := p.px.Served()
 			last = playStreams(pctx, p.px, ranked, note, func(ctx context.Context, s miruro.Stream) error {
@@ -494,17 +494,17 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 		}
 
 		tried[src.Code] = true
-		note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, trying the next provider", last)})
-
 		next, nsrc, err := autoResolve(pctx, p.client, p.cat, p.ep, p.category, p.pin, tried, p.caps)
 		switch {
 		case errors.Is(err, miruro.ErrBlocked):
 			// the session is over, and saying the player exited would hide that
 			return err
 		case err != nil:
+			note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, and no provider is left", last)})
 			// report what failed to play rather than what failed to resolve after
 			return last
 		}
+		note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, trying %s", last, nsrc.Code)})
 		res, src = next, nsrc
 	}
 }
@@ -515,19 +515,35 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 // inside the playback goroutine
 func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, note func(ui.Note), play func(context.Context, miruro.Stream) error) error {
 	var err error
-	for _, s := range ranked {
+	for i, s := range ranked {
 		before := px.Served()
 		pctx, stop := context.WithCancel(ctx)
-		settled := abandonStalled(pctx, px, s.Server, note, stop)
+		settled := abandonStalled(pctx, px, server(s), note, stop)
 		err = play(pctx, s)
 		stop()
-		<-settled
+		abandoned := <-settled
 		if !deadStream(err, before, px.Served()) || ctx.Err() != nil {
 			return err
 		}
-		note(ui.Note{Subject: server(s), Reason: fmt.Sprintf("%v, trying the next stream", err)})
+		// the watcher already said why it stopped this one
+		if !abandoned && i+1 < len(ranked) {
+			note(ui.Note{Subject: server(s), Reason: fmt.Sprintf("%v, trying the next stream", err)})
+		}
 	}
 	return err
+}
+
+// withSubs names the subtitle track count for a playing note, empty when the
+// rendition carries none
+func withSubs(subs []miruro.Subtitle) string {
+	switch len(subs) {
+	case 0:
+		return ""
+	case 1:
+		return " with 1 subtitle track"
+	default:
+		return fmt.Sprintf(" with %d subtitle tracks", len(subs))
+	}
 }
 
 // server names a stream for a note, since a provider does not always name its
@@ -563,11 +579,15 @@ var refusalCheck = time.Second
 // player never exits for playStreams to move on
 // once any media body is relayed the user is watching, and a later gap is theirs
 // to deal with rather than grounds for restarting the episode elsewhere
-func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(ui.Note), stop context.CancelFunc) <-chan struct{} {
+// the returned channel yields whether the player was stopped and closes when the
+// watcher is done, and a caller must receive from it before it returns, since
+// nothing else joins the goroutine that reports through note
+func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(ui.Note), stop context.CancelFunc) <-chan bool {
 	served, refused := px.Served(), px.Refused()
-	settled := make(chan struct{})
+	settled := make(chan bool, 1)
 	go func() {
-		defer close(settled)
+		abandoned := false
+		defer func() { settled <- abandoned; close(settled) }()
 		grace := time.NewTimer(startGrace)
 		defer grace.Stop()
 		tick := time.NewTicker(refusalCheck)
@@ -579,6 +599,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(
 			case <-grace.C:
 				if px.Served() == served {
 					note(ui.Note{Subject: name, Reason: "showed nothing in " + startGrace.String() + ", abandoning it"})
+					abandoned = true
 					stop()
 				}
 				return
@@ -588,6 +609,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(
 				}
 				if n := px.Refused() - refused; n >= refusalBudget {
 					note(ui.Note{Subject: name, Reason: fmt.Sprintf("refused %d bodies before it played, abandoning it", n)})
+					abandoned = true
 					stop()
 					return
 				}
@@ -616,9 +638,18 @@ func playAndControl(ctx context.Context, title string, actions []string, batch b
 	// the menu owns the terminal while playback runs, so what playback has to
 	// say goes to the menu rather than to the log
 	notes := make(chan ui.Note, 32)
+	// the menu shows the last few and drops the rest, so the record kept here is
+	// what a piped run and the scrollback have to go on
+	// two goroutines report, the playback and the stream watcher, so the slice
+	// needs the lock even though both finish before it is read
+	var mu sync.Mutex
+	var said []ui.Note
 	note := func(n ui.Note) {
+		mu.Lock()
+		said = append(said, n)
+		mu.Unlock()
 		// a menu that is not reading yet must not wedge playback for a status
-		// line, and the last few notes are the ones worth keeping anyway
+		// line
 		select {
 		case notes <- n:
 		default:
@@ -646,6 +677,14 @@ func playAndControl(ctx context.Context, title string, actions []string, batch b
 	// run has returned, so nothing can send again and the listener can be
 	// released
 	close(notes)
+	// the menu has the terminal back, so what it showed can go to the log
+	for _, n := range said {
+		if n.Good {
+			log.Info(n.Reason, "provider", n.Subject)
+			continue
+		}
+		log.Warn(n.Reason, "source", n.Subject)
+	}
 	if err != nil {
 		return "", err
 	}

@@ -728,13 +728,28 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	if want := []string{"Yt-mp4", "Mp4", "AniDBApp"}; !slices.Equal(tried, want) {
 		t.Errorf("tried %v, want both dead ally streams then pewe", tried)
 	}
-	// the menu owns the terminal, so what went wrong has to reach it
-	var subjects []string
+	// the menu owns the terminal, so what happened has to reach it
+	var told []string
 	for _, n := range said {
-		subjects = append(subjects, n.Subject)
+		mark := "x"
+		if n.Good {
+			mark = "+"
+		}
+		told = append(told, mark+" "+n.Subject)
 	}
-	if want := []string{"Yt-mp4", "Mp4", "ally"}; !slices.Equal(subjects, want) {
-		t.Errorf("reported %v, want each dead stream then the provider", subjects)
+	want := []string{"+ ally", "x Yt-mp4", "x ally", "+ pewe"}
+	if !slices.Equal(told, want) {
+		t.Errorf("reported %v, want %v", told, want)
+	}
+	// the last stream of a provider is covered by the provider's own note, and
+	// a note must not promise a next attempt that never happens
+	for _, n := range said {
+		if strings.Contains(n.Reason, "trying the next stream") && n.Subject == "Mp4" {
+			t.Error("the last stream of a provider claimed another was coming")
+		}
+	}
+	if got := said[2].Reason; !strings.Contains(got, "trying pewe") {
+		t.Errorf("provider note = %q, want it to name where the walk went", got)
 	}
 }
 
@@ -849,9 +864,10 @@ func TestAbandonStalled(t *testing.T) {
 	// bee played after two refusals on 2026-08-23, so a refusal is not by itself
 	// a reason to give up on a stream
 	t.Run("a stream that plays survives its refusals", func(t *testing.T) {
-		var n atomic.Int64
+		var refused atomic.Int64
 		cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if n.Add(1) <= int64(refusalBudget)+2 {
+			if refused.Load() <= int64(refusalBudget) {
+				refused.Add(1)
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
@@ -865,7 +881,10 @@ func TestAbandonStalled(t *testing.T) {
 			played <- playStreams(ctx, px,
 				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, quiet,
 				func(pctx context.Context, s miruro.Stream) error {
-					// fetch until one body lands, then sit there the way a player does
+					// fetch until picture lands, then sit there the way a player
+					// does
+					// a refused fetch answers with the upstream status as its
+					// body, so only the content itself counts as having played
 					for pctx.Err() == nil {
 						resp, err := http.Get(px.Stream(s).URL)
 						if err != nil {
@@ -873,7 +892,7 @@ func TestAbandonStalled(t *testing.T) {
 						}
 						body, _ := io.ReadAll(resp.Body)
 						resp.Body.Close()
-						if len(body) > 0 {
+						if resp.StatusCode == http.StatusOK && string(body) == "picture" {
 							break
 						}
 					}
@@ -886,7 +905,10 @@ func TestAbandonStalled(t *testing.T) {
 		case <-played:
 			t.Fatal("a stream that relayed picture was abandoned")
 		case <-time.After(2 * time.Second):
-			// still running past the budget it spent, which is the point
+			// still running well past the refusals it spent getting there
+		}
+		if got := int(refused.Load()); got <= refusalBudget {
+			t.Errorf("the stream was refused %d times, want more than the budget of %d", got, refusalBudget)
 		}
 		// the watcher reads the tunables this test rewrote, so it has to be done
 		// before the restore runs

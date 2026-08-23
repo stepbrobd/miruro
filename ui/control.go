@@ -14,18 +14,22 @@ type endMsg struct{ dismiss bool }
 // the menu owns the terminal, so a note written to the log would land in the
 // middle of a redraw and is shown here instead
 type Note struct {
-	// Subject is what failed, a server or a provider
+	// Subject is what the note is about, a server or a provider
 	Subject string
-	// Reason is why, truncated to the terminal width
+	// Reason is what happened to it, shown after the subject and cut to fit the
+	// terminal along with it
 	Reason string
+	// Good marks a note that reports progress rather than a failure
+	Good bool
 }
 
 type noteMsg Note
 
 // keptNotes bounds how many notes stay on screen
-// a walk across every provider reports more than fits above the prompt, and the
-// last few are the ones that say where it got to
-const keptNotes = 5
+// a walk down every stream of every provider reports more than belongs under a
+// prompt, and eight covers the whole of one without pushing it off a short
+// terminal
+const keptNotes = 8
 
 func listenNote(ch <-chan Note) tea.Cmd {
 	if ch == nil {
@@ -96,7 +100,7 @@ func (m control) View() string {
 		b.WriteByte('\n')
 	}
 	for _, n := range m.seen {
-		b.WriteString(errLine(ok(false), n.Subject, n.Reason, m.term))
+		b.WriteString(errLine(ok(n.Good), n.Subject, n.Reason, m.term))
 		b.WriteByte('\n')
 	}
 	return b.String()

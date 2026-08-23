@@ -106,8 +106,8 @@ func TestControlShowsNotes(t *testing.T) {
 	m := fixture()
 	m.notes = make(chan Note)
 	m.term = 100
-	menu := m.View()
-	if strings.Contains(menu, "abandoning") {
+	before := m.View()
+	if strings.Contains(before, "abandoning") {
 		t.Fatal("a menu with no notes rendered one")
 	}
 
@@ -120,12 +120,12 @@ func TestControlShowsNotes(t *testing.T) {
 	if !strings.Contains(view, "HD-1") || !strings.Contains(view, "abandoning it") {
 		t.Errorf("view does not carry the note:\n%s", view)
 	}
-	if !strings.HasPrefix(view, menu) {
+	if !strings.HasPrefix(view, before) {
 		t.Errorf("the note displaced the menu instead of sitting under it:\n%s", view)
 	}
 }
 
-// a walk across every provider reports more notes than fit above the prompt
+// a walk across every provider reports more notes than belong under a prompt
 func TestControlKeepsTheLastNotes(t *testing.T) {
 	var m tea.Model = fixture()
 	for i := range keptNotes + 3 {
