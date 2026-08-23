@@ -10,55 +10,18 @@ import (
 
 type endMsg struct{ dismiss bool }
 
-// Note is one thing the playback reports while the menu is raised
-// the menu owns the terminal, so a note written to the log would land in the
-// middle of a redraw and is shown here instead
-type Note struct {
-	// Subject is what the note is about, a server or a provider
-	Subject string
-	// Reason is what happened to it, shown after the subject and cut to fit the
-	// terminal along with it
-	Reason string
-	// Good marks a note that reports progress rather than a failure
-	Good bool
-}
-
-type noteMsg Note
-
-// keptNotes bounds how many notes stay on screen
-// a walk down every stream of every provider reports more than belongs under a
-// prompt, and eight covers the whole of one without pushing it off a short
-// terminal
-const keptNotes = 8
-
-func listenNote(ch <-chan Note) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		n, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return noteMsg(n)
-	}
-}
-
-// control embeds the shared select form and adds playback ending as a second
-// event source, keys stay with huh so the menu behaves like every other prompt
 type control struct {
-	form  *huh.Form
-	wait  func() bool
-	notes <-chan Note
-	// seen holds the last keptNotes reported, oldest first
-	seen      []Note
-	term      int
+	form *huh.Form
+	wait func() bool
+	logs <-chan string
+	// seen holds the last keptLines written, oldest first
+	seen      []string
 	ended     bool
 	dismissed bool
 }
 
 func (m control) Init() tea.Cmd {
-	return tea.Batch(m.form.Init(), func() tea.Msg { return endMsg{m.wait()} }, listenNote(m.notes))
+	return tea.Batch(m.form.Init(), func() tea.Msg { return endMsg{m.wait()} }, listenLog(m.logs))
 }
 
 func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -70,16 +33,9 @@ func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, nil
-	case noteMsg:
-		m.seen = append(m.seen, Note(msg))
-		if len(m.seen) > keptNotes {
-			m.seen = m.seen[len(m.seen)-keptNotes:]
-		}
-		return m, listenNote(m.notes)
-	case tea.WindowSizeMsg:
-		// a resize arrives outside the note stream, so it must not re-arm the
-		// listener and start a second reader
-		m.term = msg.Width
+	case logMsg:
+		m.seen = keep(m.seen, string(msg))
+		return m, listenLog(m.logs)
 	}
 	f, cmd := m.form.Update(msg)
 	m.form = f.(*huh.Form)
@@ -99,10 +55,7 @@ func (m control) View() string {
 	if !strings.HasSuffix(view, "\n") {
 		b.WriteByte('\n')
 	}
-	for _, n := range m.seen {
-		b.WriteString(errLine(ok(n.Good), n.Subject, n.Reason, m.term))
-		b.WriteByte('\n')
-	}
+	writeLines(&b, m.seen)
 	return b.String()
 }
 
@@ -110,11 +63,14 @@ func (m control) View() string {
 // wait blocks until playback ends and reports whether the menu dismisses
 // itself, the action is "" on a dismissal and quit on an aborted form, and
 // ended reports whether playback was already over when the menu closed
-// notes are rendered under the menu as they arrive, and a nil channel shows
-// none
-func Control(ctx context.Context, title string, actions []string, wait func() bool, notes <-chan Note, opts ...tea.ProgramOption) (action string, ended bool, err error) {
+// the menu owns the terminal while it runs, so the log is routed under it
+// rather than left to land in the middle of a redraw
+func Control(ctx context.Context, title string, actions []string, wait func() bool, opts ...tea.ProgramOption) (action string, ended bool, err error) {
+	lines, restore := captureLog()
+	defer restore()
+
 	idx := 0
-	m := control{form: menu(title, actions, func(s string) string { return s }, &idx), wait: wait, notes: notes}
+	m := control{form: menu(title, actions, func(s string) string { return s }, &idx), wait: wait, logs: lines}
 	// the caller's context owns signal handling
 	// bubbletea's own handler would swallow a SIGTERM and end the program with
 	// no error, indistinguishable from a dismissal

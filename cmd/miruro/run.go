@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -414,7 +413,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			fmt.Sprintf("Episode %s of %s", num(ep), title),
 			controls(numbers, ep),
 			len(queue) > 0,
-			func(pctx context.Context, note func(ui.Note)) error { return stage.run(pctx, note, res, src) },
+			func(pctx context.Context) error { return stage.run(pctx, res, src) },
 			func() error { return st.save(e) },
 		)
 		if err != nil {
@@ -469,7 +468,7 @@ type playback struct {
 // providers, and reports the last failure when none of them produced picture
 // a provider that relayed no media body at all is dead for this episode however
 // many streams it listed, and the download path has always moved off one
-func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Result, src source) error {
+func (p playback) run(pctx context.Context, res *miruro.Result, src source) error {
 	tried := map[string]bool{}
 	var last error
 	for {
@@ -479,11 +478,12 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 		}
 
 		if ranked := p.client.Rank(pctx, res, p.cfg.Quality); len(ranked) > 0 {
-			note(ui.Note{Good: true, Subject: src.Code, Reason: fmt.Sprintf(
-				"playing %s %s%s", server(ranked[0]), src.Category, withSubs(subs))})
+			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
+				"server", server(ranked[0]), "rendition", src.Category,
+				"player", p.kind, "subs", len(subs))
 
 			before := p.px.Served()
-			last = playStreams(pctx, p.px, ranked, note, func(ctx context.Context, s miruro.Stream) error {
+			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s miruro.Stream) error {
 				return p.launch(ctx, s, subs)
 			})
 			if last == nil || pctx.Err() != nil || p.px.Served() != before {
@@ -500,11 +500,11 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 			// the session is over, and saying the player exited would hide that
 			return err
 		case err != nil:
-			note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, and no provider is left", last)})
+			log.Warn("no provider left to try", "provider", src.Code, "err", last)
 			// report what failed to play rather than what failed to resolve after
 			return last
 		}
-		note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, trying %s", last, nsrc.Code)})
+		log.Warn("nothing played, trying the next provider", "provider", src.Code, "next", nsrc.Code, "err", last)
 		res, src = next, nsrc
 	}
 }
@@ -513,12 +513,12 @@ func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Resu
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
 // inside the playback goroutine
-func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, note func(ui.Note), play func(context.Context, miruro.Stream) error) error {
+func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, play func(context.Context, miruro.Stream) error) error {
 	var err error
 	for i, s := range ranked {
 		before := px.Served()
 		pctx, stop := context.WithCancel(ctx)
-		settled := abandonStalled(pctx, px, server(s), note, stop)
+		settled := abandonStalled(pctx, px, server(s), stop)
 		err = play(pctx, s)
 		stop()
 		abandoned := <-settled
@@ -527,26 +527,13 @@ func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, no
 		}
 		// the watcher already said why it stopped this one
 		if !abandoned && i+1 < len(ranked) {
-			note(ui.Note{Subject: server(s), Reason: fmt.Sprintf("%v, trying the next stream", err)})
+			log.Warn("stream did not play, trying the next", "server", server(s), "err", err)
 		}
 	}
 	return err
 }
 
-// withSubs names the subtitle track count for a playing note, empty when the
-// rendition carries none
-func withSubs(subs []miruro.Subtitle) string {
-	switch len(subs) {
-	case 0:
-		return ""
-	case 1:
-		return " with 1 subtitle track"
-	default:
-		return fmt.Sprintf(" with %d subtitle tracks", len(subs))
-	}
-}
-
-// server names a stream for a note, since a provider does not always name its
+// server names a stream for the log, since a provider does not always name its
 // own host
 func server(s miruro.Stream) string {
 	if s.Server == "" {
@@ -582,7 +569,7 @@ var refusalCheck = time.Second
 // the returned channel yields whether the player was stopped and closes when the
 // watcher is done, and a caller must receive from it before it returns, since
 // nothing else joins the goroutine that reports through note
-func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(ui.Note), stop context.CancelFunc) <-chan bool {
+func abandonStalled(ctx context.Context, px *play.Proxy, name string, stop context.CancelFunc) <-chan bool {
 	served, refused := px.Served(), px.Refused()
 	settled := make(chan bool, 1)
 	go func() {
@@ -598,7 +585,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(
 				return
 			case <-grace.C:
 				if px.Served() == served {
-					note(ui.Note{Subject: name, Reason: "showed nothing in " + startGrace.String() + ", abandoning it"})
+					log.Warn("stream showed nothing in time, abandoning it", "server", name, "after", startGrace)
 					abandoned = true
 					stop()
 				}
@@ -608,7 +595,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(
 					return
 				}
 				if n := px.Refused() - refused; n >= refusalBudget {
-					note(ui.Note{Subject: name, Reason: fmt.Sprintf("refused %d bodies before it played, abandoning it", n)})
+					log.Warn("stream refused before it played, abandoning it", "server", name, "refused", n)
 					abandoned = true
 					stop()
 					return
@@ -633,32 +620,12 @@ func deadStream(err error, before, after int) bool {
 // the menu is up while the player runs, so a pick races playback ending
 // an early pick interrupts the player, a clean end mid-batch dismisses the
 // menu to auto-advance
-func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context, func(ui.Note)) error, save func() error) (string, error) {
+func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context) error, save func() error) (string, error) {
 	pctx, stop := context.WithCancel(ctx)
-	// the menu owns the terminal while playback runs, so what playback has to
-	// say goes to the menu rather than to the log
-	notes := make(chan ui.Note, 32)
-	// the menu shows the last few and drops the rest, so the record kept here is
-	// what a piped run and the scrollback have to go on
-	// two goroutines report, the playback and the stream watcher, so the slice
-	// needs the lock even though both finish before it is read
-	var mu sync.Mutex
-	var said []ui.Note
-	note := func(n ui.Note) {
-		mu.Lock()
-		said = append(said, n)
-		mu.Unlock()
-		// a menu that is not reading yet must not wedge playback for a status
-		// line
-		select {
-		case notes <- n:
-		default:
-		}
-	}
 	done := make(chan struct{})
 	var perr, werr error
 	go func() {
-		perr = run(pctx, note)
+		perr = run(pctx)
 		// save the moment playback ends cleanly rather than when the menu
 		// closes, so killing an idle menu cannot lose the watched entry
 		if perr == nil {
@@ -671,20 +638,9 @@ func playAndControl(ctx context.Context, title string, actions []string, batch b
 		<-done
 		return outcome(perr, batch)
 	}
-	action, ended, err := ui.Control(ctx, title, actions, wait, notes)
+	action, ended, err := ui.Control(ctx, title, actions, wait)
 	stop()
 	<-done
-	// run has returned, so nothing can send again and the listener can be
-	// released
-	close(notes)
-	// the menu has the terminal back, so what it showed can go to the log
-	for _, n := range said {
-		if n.Good {
-			log.Info(n.Reason, "provider", n.Subject)
-			continue
-		}
-		log.Warn(n.Reason, "source", n.Subject)
-	}
 	if err != nil {
 		return "", err
 	}

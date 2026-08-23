@@ -40,9 +40,12 @@ type downloads struct {
 	fin    []bool
 	remain int
 	ch     chan tea.Msg
+	logs   <-chan string
+	// seen holds the last keptLines written, oldest first
+	seen []string
 }
 
-func (m downloads) Init() tea.Cmd { return listen(m.ch) }
+func (m downloads) Init() tea.Cmd { return tea.Batch(listen(m.ch), listenLog(m.logs)) }
 
 func listen(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg { return <-ch }
@@ -63,6 +66,9 @@ func (m downloads) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, listen(m.ch)
+	case logMsg:
+		m.seen = keep(m.seen, string(msg))
+		return m, listenLog(m.logs)
 	case tea.WindowSizeMsg:
 		// a resize arrives outside the ch stream, so it must not re-arm listen
 		// and start a second reader
@@ -91,6 +97,9 @@ func (m downloads) View() string {
 			b.WriteString(fmt.Sprintf("  %s %s\n", name, Bytes(m.done[i])))
 		}
 	}
+	// a retry or a dropped stream writes to the log while the bars are up, so it
+	// goes under them rather than through them
+	writeLines(&b, m.seen)
 	return b.String()
 }
 
@@ -113,6 +122,9 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	lines, restore := captureLog()
+	defer restore()
+
 	m := downloads{
 		labels: labels,
 		width:  width,
@@ -123,6 +135,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 		fin:    make([]bool, n),
 		remain: n,
 		ch:     make(chan tea.Msg, 256),
+		logs:   lines,
 	}
 	for i := range m.bars {
 		m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())

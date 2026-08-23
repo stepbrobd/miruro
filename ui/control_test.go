@@ -42,7 +42,7 @@ func TestControlStay(t *testing.T) {
 
 func run(t *testing.T, input string, wait func() bool) (string, bool, error) {
 	t.Helper()
-	return Control(context.Background(), "t", []string{"next", "quit"}, wait, nil,
+	return Control(context.Background(), "t", []string{"next", "quit"}, wait,
 		tea.WithInput(strings.NewReader(input)), tea.WithoutRenderer())
 }
 
@@ -93,59 +93,81 @@ func TestControlCtxCancel(t *testing.T) {
 		<-release
 		return false
 	}
-	_, _, err := Control(ctx, "t", []string{"quit"}, wait, nil,
+	_, _, err := Control(ctx, "t", []string{"quit"}, wait,
 		tea.WithInput(strings.NewReader("")), tea.WithoutRenderer())
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled Control returned %v, want context.Canceled", err)
 	}
 }
 
-// the menu owns the terminal while playback runs, so a failure written to the
-// log lands inside a redraw and the user sees a prompt with no explanation
-func TestControlShowsNotes(t *testing.T) {
+// the menu owns the terminal while playback runs, so a log record written
+// straight to stderr lands inside a redraw and the user sees a prompt with no
+// explanation
+func TestControlShowsTheLog(t *testing.T) {
 	m := fixture()
-	m.notes = make(chan Note)
-	m.term = 100
+	m.logs = make(chan string)
 	before := m.View()
 	if strings.Contains(before, "abandoning") {
-		t.Fatal("a menu with no notes rendered one")
+		t.Fatal("a menu with no log rendered one")
 	}
 
-	next, cmd := m.Update(noteMsg{Subject: "HD-1", Reason: "refused 8 bodies before it played, abandoning it"})
+	next, cmd := m.Update(logMsg("WARN stream refused before it played, abandoning it server=HD-1"))
 	m = next.(control)
 	if cmd == nil {
-		t.Error("the note listener was not re-armed, so only one note would ever arrive")
+		t.Error("the log listener was not re-armed, so only one record would ever arrive")
 	}
 	view := m.View()
 	if !strings.Contains(view, "HD-1") || !strings.Contains(view, "abandoning it") {
-		t.Errorf("view does not carry the note:\n%s", view)
+		t.Errorf("view does not carry the record:\n%s", view)
 	}
 	if !strings.HasPrefix(view, before) {
-		t.Errorf("the note displaced the menu instead of sitting under it:\n%s", view)
+		t.Errorf("the record displaced the menu instead of sitting under it:\n%s", view)
 	}
 }
 
-// a walk across every provider reports more notes than belong under a prompt
-func TestControlKeepsTheLastNotes(t *testing.T) {
+// a walk across every provider writes more records than belong under a prompt
+func TestControlKeepsTheLastLines(t *testing.T) {
 	var m tea.Model = fixture()
-	for i := range keptNotes + 3 {
-		m, _ = m.Update(noteMsg{Subject: fmt.Sprintf("s%d", i), Reason: "gone"})
+	for i := range keptLines + 3 {
+		m, _ = m.Update(logMsg(fmt.Sprintf("line-%d", i)))
 	}
 	c := m.(control)
-	if len(c.seen) != keptNotes {
-		t.Fatalf("kept %d notes, want %d", len(c.seen), keptNotes)
+	if len(c.seen) != keptLines {
+		t.Fatalf("kept %d lines, want %d", len(c.seen), keptLines)
 	}
 	view := c.View()
-	if strings.Contains(view, "s0 ") || !strings.Contains(view, "s7") {
-		t.Errorf("kept the wrong window of notes:\n%s", view)
+	if strings.Contains(view, "line-0") || !strings.Contains(view, "line-10") {
+		t.Errorf("kept the wrong window:\n%s", view)
 	}
 }
 
-// a dismissal clears the menu to auto-advance, and the notes go with it
-func TestControlDismissedShowsNoNotes(t *testing.T) {
-	m, _ := fixture().Update(noteMsg{Subject: "HD-1", Reason: "gone"})
+// a dismissal clears the menu to auto-advance, and the log goes with it
+func TestControlDismissedShowsNoLog(t *testing.T) {
+	m, _ := fixture().Update(logMsg("gone"))
 	m, _ = m.Update(endMsg{dismiss: true})
 	if got := m.(control).View(); got != "" {
 		t.Errorf("dismissed menu rendered %q", got)
+	}
+}
+
+// the logger writes one whole record per call and holds its mutex while it
+// does, so the sink must never block it
+func TestSinkNeverBlocks(t *testing.T) {
+	s := make(sink, 1)
+	for range 50 {
+		if _, err := s.Write([]byte("a record\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s) != 1 {
+		t.Errorf("sink holds %d, want it to have dropped down to its capacity of 1", len(s))
+	}
+
+	drained := make(sink, 8)
+	if _, err := drained.Write([]byte("one\ntwo\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if len(drained) != 2 {
+		t.Errorf("a two-line record produced %d messages, want 2 with the blank dropped", len(drained))
 	}
 }
