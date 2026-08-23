@@ -141,7 +141,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
+		res, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +162,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil)
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "bonk", nil, nil)
 		if !errors.Is(err, miruro.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
@@ -179,7 +179,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "", nil)
+		_, served, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, "", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +194,7 @@ func TestAutoResolve(t *testing.T) {
 		defer srv.Close()
 
 		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "", nil)
+		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, "", nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
@@ -247,22 +247,31 @@ func TestOrderPinned(t *testing.T) {
 	}
 }
 
-// the pin's variant describes the pinned provider only, so a fallback must
-// not inherit hard and lose its subtitles
+// the pin's variant describes the pinned provider only, so a fallback takes
+// what it declares rather than inheriting hard and losing its subtitles
 func TestApplied(t *testing.T) {
+	caps := miruro.Config{
+		"bonk": {Hard: true, Soft: true},
+		"ally": {Hard: true},
+		"bee":  {Soft: true},
+	}
 	for _, tc := range []struct {
 		name   string
 		pin    Pin
 		served string
+		caps   miruro.Config
 		want   Variant
 	}{
-		{"pinned hard applies", Pin{"bonk", Hard}, "bonk", Hard},
-		{"fallback resets to soft", Pin{"bonk", Hard}, "ally", Soft},
-		{"pinned soft stays soft", Pin{"bonk", Soft}, "bonk", Soft},
-		{"empty pin is soft", Pin{}, "ally", Soft},
+		{"pinned hard applies", Pin{"bonk", Hard}, "bonk", caps, Hard},
+		{"pinned soft stays soft", Pin{"bonk", Soft}, "bonk", caps, Soft},
+		{"a hardsub fallback keeps its picture", Pin{"bonk", Hard}, "ally", caps, Hard},
+		{"a softsub fallback attaches the file", Pin{"bonk", Hard}, "bee", caps, Soft},
+		{"an undeclared fallback is soft", Pin{"bonk", Hard}, "ANIMEDUNYA", caps, Soft},
+		{"without the table a fallback is soft", Pin{"bonk", Hard}, "ally", nil, Soft},
+		{"empty pin is soft", Pin{}, "bee", caps, Soft},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := applied(tc.pin, tc.served); got != tc.want {
+			if got := applied(tc.pin, tc.served, tc.caps); got != tc.want {
 				t.Errorf("applied(%+v, %q) = %q, want %q", tc.pin, tc.served, got, tc.want)
 			}
 		})
@@ -426,7 +435,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	defer srv.Close()
 
 	client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	_, served, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true})
+	_, served, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +443,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 		t.Errorf("served = %q, want bonk", served)
 	}
 
-	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true, "bonk": true})
+	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, "", map[string]bool{"ally": true, "bonk": true}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no source resolved") {
 		t.Fatalf("err = %v, want the no-source error once every provider is spent", err)
 	}
