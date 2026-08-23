@@ -56,8 +56,10 @@ func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) ma
 // capabilities
 // asking for the one it does not carry answers 444, which would skip half the
 // matrix on a condition the run itself created
+// soft wins when a provider declares both, matching what the cli resolves to
+// with no pin, so the run covers the rendition the pick defaults to
 func rendition(caps miruro.Capabilities, code string) miruro.Category {
-	if c, ok := caps[code]; ok && c.Soft && !c.Hard {
+	if c, ok := caps[code]; ok && c.Soft {
 		return miruro.Ssub
 	}
 	return miruro.Sub
