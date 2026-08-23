@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/adrg/xdg"
+
+	"ysun.co/miruro"
 )
 
 func TestClearHistory(t *testing.T) {
@@ -129,5 +131,30 @@ func TestCachedEpisodesWithoutARoot(t *testing.T) {
 	got, err := cachedEpisodes()
 	if err != nil || len(got) != 0 {
 		t.Errorf("cachedEpisodes() = (%v, %v), want no episodes and no error", got, err)
+	}
+}
+
+// Category also names the ssub rendition, which is derived per resolution
+// a stored entry carrying it would ask every hardsub provider for a rendition
+// it does not have, and would write itself back unchanged every run
+func TestLoadNarrowsTheStoredCategory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.json")
+	body := `[{"anilistId":1,"title":"A","category":"ssub","episode":1},
+		{"anilistId":2,"title":"B","category":"dub","episode":1},
+		{"anilistId":3,"title":"C","category":"","episode":1}]`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := (&store{path: path}).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []miruro.Category{miruro.Sub, miruro.Dub, miruro.Sub}
+	for i, e := range entries {
+		if e.Category != want[i] {
+			t.Errorf("entry %d category = %q, want %q", i, e.Category, want[i])
+		}
 	}
 }

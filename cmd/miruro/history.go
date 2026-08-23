@@ -51,7 +51,21 @@ func (s *store) load() ([]entry, error) {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err
 	}
+	for i, e := range entries {
+		entries[i].Category = audio(e.Category)
+	}
 	return entries, nil
+}
+
+// audio keeps a stored category to the two a run can be started in
+// Category also names the ssub rendition, which is derived per resolution and
+// never a top level choice, so an entry carrying it would ask every hardsub
+// provider for a rendition it does not have and write itself back unchanged
+func audio(cat miruro.Category) miruro.Category {
+	if cat == miruro.Dub {
+		return miruro.Dub
+	}
+	return miruro.Sub
 }
 
 // save upserts by AnilistID and keeps the most recent entry first
