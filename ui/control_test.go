@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestControlStay(t *testing.T) {
 
 func run(t *testing.T, input string, wait func() bool) (string, bool, error) {
 	t.Helper()
-	return Control(context.Background(), "t", []string{"next", "quit"}, wait,
+	return Control(context.Background(), "t", []string{"next", "quit"}, wait, nil,
 		tea.WithInput(strings.NewReader(input)), tea.WithoutRenderer())
 }
 
@@ -92,9 +93,59 @@ func TestControlCtxCancel(t *testing.T) {
 		<-release
 		return false
 	}
-	_, _, err := Control(ctx, "t", []string{"quit"}, wait,
+	_, _, err := Control(ctx, "t", []string{"quit"}, wait, nil,
 		tea.WithInput(strings.NewReader("")), tea.WithoutRenderer())
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled Control returned %v, want context.Canceled", err)
+	}
+}
+
+// the menu owns the terminal while playback runs, so a failure written to the
+// log lands inside a redraw and the user sees a prompt with no explanation
+func TestControlShowsNotes(t *testing.T) {
+	m := fixture()
+	m.notes = make(chan Note)
+	m.term = 100
+	menu := m.View()
+	if strings.Contains(menu, "abandoning") {
+		t.Fatal("a menu with no notes rendered one")
+	}
+
+	next, cmd := m.Update(noteMsg{Subject: "HD-1", Reason: "refused 8 bodies before it played, abandoning it"})
+	m = next.(control)
+	if cmd == nil {
+		t.Error("the note listener was not re-armed, so only one note would ever arrive")
+	}
+	view := m.View()
+	if !strings.Contains(view, "HD-1") || !strings.Contains(view, "abandoning it") {
+		t.Errorf("view does not carry the note:\n%s", view)
+	}
+	if !strings.HasPrefix(view, menu) {
+		t.Errorf("the note displaced the menu instead of sitting under it:\n%s", view)
+	}
+}
+
+// a walk across every provider reports more notes than fit above the prompt
+func TestControlKeepsTheLastNotes(t *testing.T) {
+	var m tea.Model = fixture()
+	for i := range keptNotes + 3 {
+		m, _ = m.Update(noteMsg{Subject: fmt.Sprintf("s%d", i), Reason: "gone"})
+	}
+	c := m.(control)
+	if len(c.seen) != keptNotes {
+		t.Fatalf("kept %d notes, want %d", len(c.seen), keptNotes)
+	}
+	view := c.View()
+	if strings.Contains(view, "s0 ") || !strings.Contains(view, "s7") {
+		t.Errorf("kept the wrong window of notes:\n%s", view)
+	}
+}
+
+// a dismissal clears the menu to auto-advance, and the notes go with it
+func TestControlDismissedShowsNoNotes(t *testing.T) {
+	m, _ := fixture().Update(noteMsg{Subject: "HD-1", Reason: "gone"})
+	m, _ = m.Update(endMsg{dismiss: true})
+	if got := m.(control).View(); got != "" {
+		t.Errorf("dismissed menu rendered %q", got)
 	}
 }

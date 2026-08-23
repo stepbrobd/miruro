@@ -21,6 +21,7 @@ import (
 
 	"ysun.co/miruro"
 	"ysun.co/miruro/play"
+	"ysun.co/miruro/ui"
 )
 
 // sourcesServer decodes the pipe envelope and dispatches on the provider in
@@ -497,7 +498,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("a stream that never started falls through", func(t *testing.T) {
 		var tried []string
-		if err := playStreams(ctx, px, []miruro.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
+		if err := playStreams(ctx, px, []miruro.Stream{dead, live}, quiet, fakePlay(t, px, &tried)); err != nil {
 			t.Fatalf("the live stream did not play: %v", err)
 		}
 		if !slices.Equal(tried, []string{"HD-1", "HD-2"}) {
@@ -510,7 +511,7 @@ func TestPlayStreams(t *testing.T) {
 	t.Run("a stream that played is not retried", func(t *testing.T) {
 		var tried []string
 		quit := errors.New("player exit 4")
-		err := playStreams(ctx, px, []miruro.Stream{live, dead}, func(ctx context.Context, s miruro.Stream) error {
+		err := playStreams(ctx, px, []miruro.Stream{live, dead}, quiet, func(ctx context.Context, s miruro.Stream) error {
 			fakePlay(t, px, &tried)(ctx, s)
 			return quit
 		})
@@ -524,7 +525,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("every stream dead reports the last failure", func(t *testing.T) {
 		var tried []string
-		err := playStreams(ctx, px, []miruro.Stream{dead, dead}, fakePlay(t, px, &tried))
+		err := playStreams(ctx, px, []miruro.Stream{dead, dead}, quiet, fakePlay(t, px, &tried))
 		if err == nil {
 			t.Fatal("nothing played, playback must fail")
 		}
@@ -699,6 +700,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}}
 
 	var tried []string
+	var said []ui.Note
 	stage := playback{
 		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
 		px:       px,
@@ -719,11 +721,20 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); err != nil {
+	note := func(n ui.Note) { said = append(said, n) }
+	if err := stage.run(ctx, note, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); err != nil {
 		t.Fatalf("pewe should have played after ally refused everything: %v", err)
 	}
 	if want := []string{"Yt-mp4", "Mp4", "AniDBApp"}; !slices.Equal(tried, want) {
 		t.Errorf("tried %v, want both dead ally streams then pewe", tried)
+	}
+	// the menu owns the terminal, so what went wrong has to reach it
+	var subjects []string
+	for _, n := range said {
+		subjects = append(subjects, n.Subject)
+	}
+	if want := []string{"Yt-mp4", "Mp4", "ally"}; !slices.Equal(subjects, want) {
+		t.Errorf("reported %v, want each dead stream then the provider", subjects)
 	}
 }
 
@@ -774,7 +785,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); !errors.Is(err, quit) {
+	if err := stage.run(ctx, quiet, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); !errors.Is(err, quit) {
 		t.Errorf("err = %v, want the player's own failure", err)
 	}
 	if !slices.Equal(tried, []string{"Yt-mp4"}) {
@@ -823,7 +834,7 @@ func TestAbandonStalled(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			done <- playStreams(context.Background(), px,
-				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, skipping)
+				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, quiet, skipping)
 		}()
 		select {
 		case err := <-done:
@@ -852,7 +863,7 @@ func TestAbandonStalled(t *testing.T) {
 		played := make(chan error, 1)
 		go func() {
 			played <- playStreams(ctx, px,
-				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}},
+				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, quiet,
 				func(pctx context.Context, s miruro.Stream) error {
 					// fetch until one body lands, then sit there the way a player does
 					for pctx.Err() == nil {
@@ -883,3 +894,7 @@ func TestAbandonStalled(t *testing.T) {
 		<-played
 	})
 }
+
+// quiet drops the notes a playback reports, for tests that assert on what
+// played rather than on what was said about it
+func quiet(ui.Note) {}

@@ -413,7 +413,7 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 			fmt.Sprintf("Episode %s of %s", num(ep), title),
 			controls(numbers, ep),
 			len(queue) > 0,
-			func(pctx context.Context) error { return stage.run(pctx, res, src) },
+			func(pctx context.Context, note func(ui.Note)) error { return stage.run(pctx, note, res, src) },
 			func() error { return st.save(e) },
 		)
 		if err != nil {
@@ -468,7 +468,7 @@ type playback struct {
 // providers, and reports the last failure when none of them produced picture
 // a provider that relayed no media body at all is dead for this episode however
 // many streams it listed, and the download path has always moved off one
-func (p playback) run(pctx context.Context, res *miruro.Result, src source) error {
+func (p playback) run(pctx context.Context, note func(ui.Note), res *miruro.Result, src source) error {
 	tried := map[string]bool{}
 	var last error
 	for {
@@ -483,7 +483,7 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 				"player", p.kind, "subs", len(subs) > 0)
 
 			before := p.px.Served()
-			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s miruro.Stream) error {
+			last = playStreams(pctx, p.px, ranked, note, func(ctx context.Context, s miruro.Stream) error {
 				return p.launch(ctx, s, subs)
 			})
 			if last == nil || pctx.Err() != nil || p.px.Served() != before {
@@ -494,7 +494,7 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 		}
 
 		tried[src.Code] = true
-		log.Warn("no stream played, trying the next provider", "provider", src.Code, "err", last)
+		note(ui.Note{Subject: src.Code, Reason: fmt.Sprintf("%v, trying the next provider", last)})
 
 		next, nsrc, err := autoResolve(pctx, p.client, p.cat, p.ep, p.category, p.pin, tried, p.caps)
 		switch {
@@ -513,21 +513,30 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
 // inside the playback goroutine
-func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, play func(context.Context, miruro.Stream) error) error {
+func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, note func(ui.Note), play func(context.Context, miruro.Stream) error) error {
 	var err error
 	for _, s := range ranked {
 		before := px.Served()
 		pctx, stop := context.WithCancel(ctx)
-		settled := abandonStalled(pctx, px, s.Server, stop)
+		settled := abandonStalled(pctx, px, s.Server, note, stop)
 		err = play(pctx, s)
 		stop()
 		<-settled
 		if !deadStream(err, before, px.Served()) || ctx.Err() != nil {
 			return err
 		}
-		log.Warn("stream did not play, trying the next", "server", s.Server, "err", err)
+		note(ui.Note{Subject: server(s), Reason: fmt.Sprintf("%v, trying the next stream", err)})
 	}
 	return err
+}
+
+// server names a stream for a note, since a provider does not always name its
+// own host
+func server(s miruro.Stream) string {
+	if s.Server == "" {
+		return "stream"
+	}
+	return s.Server
 }
 
 // startGrace is how long a stream has to relay its first media body
@@ -554,7 +563,7 @@ var refusalCheck = time.Second
 // player never exits for playStreams to move on
 // once any media body is relayed the user is watching, and a later gap is theirs
 // to deal with rather than grounds for restarting the episode elsewhere
-func abandonStalled(ctx context.Context, px *play.Proxy, server string, stop context.CancelFunc) <-chan struct{} {
+func abandonStalled(ctx context.Context, px *play.Proxy, name string, note func(ui.Note), stop context.CancelFunc) <-chan struct{} {
 	served, refused := px.Served(), px.Refused()
 	settled := make(chan struct{})
 	go func() {
@@ -569,7 +578,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, server string, stop con
 				return
 			case <-grace.C:
 				if px.Served() == served {
-					log.Warn("stream showed nothing in time, abandoning it", "server", server, "after", startGrace)
+					note(ui.Note{Subject: name, Reason: "showed nothing in " + startGrace.String() + ", abandoning it"})
 					stop()
 				}
 				return
@@ -578,7 +587,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, server string, stop con
 					return
 				}
 				if n := px.Refused() - refused; n >= refusalBudget {
-					log.Warn("stream refused before it played, abandoning it", "server", server, "refused", n)
+					note(ui.Note{Subject: name, Reason: fmt.Sprintf("refused %d bodies before it played, abandoning it", n)})
 					stop()
 					return
 				}
@@ -602,12 +611,23 @@ func deadStream(err error, before, after int) bool {
 // the menu is up while the player runs, so a pick races playback ending
 // an early pick interrupts the player, a clean end mid-batch dismisses the
 // menu to auto-advance
-func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context) error, save func() error) (string, error) {
+func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context, func(ui.Note)) error, save func() error) (string, error) {
 	pctx, stop := context.WithCancel(ctx)
+	// the menu owns the terminal while playback runs, so what playback has to
+	// say goes to the menu rather than to the log
+	notes := make(chan ui.Note, 32)
+	note := func(n ui.Note) {
+		// a menu that is not reading yet must not wedge playback for a status
+		// line, and the last few notes are the ones worth keeping anyway
+		select {
+		case notes <- n:
+		default:
+		}
+	}
 	done := make(chan struct{})
 	var perr, werr error
 	go func() {
-		perr = run(pctx)
+		perr = run(pctx, note)
 		// save the moment playback ends cleanly rather than when the menu
 		// closes, so killing an idle menu cannot lose the watched entry
 		if perr == nil {
@@ -620,9 +640,12 @@ func playAndControl(ctx context.Context, title string, actions []string, batch b
 		<-done
 		return outcome(perr, batch)
 	}
-	action, ended, err := ui.Control(ctx, title, actions, wait)
+	action, ended, err := ui.Control(ctx, title, actions, wait, notes)
 	stop()
 	<-done
+	// run has returned, so nothing can send again and the listener can be
+	// released
+	close(notes)
 	if err != nil {
 		return "", err
 	}
