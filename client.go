@@ -68,6 +68,13 @@ type Client struct {
 	// base indexes the mirror that answered last, so one failure does not cost
 	// every later request the same walk
 	base int
+
+	// the capability table is fetched at most once per client
+	// cfgMu is only ever taken before mu, never after
+	cfgMu   sync.Mutex
+	cfg     Config
+	cfgErr  error
+	cfgDone bool
 }
 
 func New() *Client {
