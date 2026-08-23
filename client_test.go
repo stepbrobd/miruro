@@ -300,7 +300,7 @@ func serves(body string) http.HandlerFunc {
 }
 
 // every mirror fronts one backend, so the walk exists for the failures a
-// different host can answer and for nothing else
+// different host can answer
 func TestPipeRotation(t *testing.T) {
 	ctx := context.Background()
 
@@ -370,6 +370,28 @@ func TestPipeRotation(t *testing.T) {
 		c := &Client{Bases: []string{blocked.URL, dead.URL}, HTTP: blocked.Client()}
 		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
+		}
+	})
+
+	// the walk exists for hosts that cannot answer, so a host that reached the
+	// backend is the one to start from even when the backend said no
+	t.Run("a mirror that reached the backend becomes the preferred one", func(t *testing.T) {
+		bad := mirror(t, blocks)
+		down := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		c := &Client{Bases: []string{bad.URL, down.URL}, HTTP: down.Client()}
+
+		for range 3 {
+			if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
+				t.Fatalf("err = %v, want ErrUpstream", err)
+			}
+		}
+		if got := bad.hits.Load(); got != 1 {
+			t.Errorf("blocked mirror served %d requests, want only the one that found the block", got)
+		}
+		if got := down.hits.Load(); got != 3 {
+			t.Errorf("reachable mirror served %d requests, want all 3", got)
 		}
 	})
 

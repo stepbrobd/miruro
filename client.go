@@ -44,8 +44,8 @@ var (
 // mirrors are the domains that front one miruro backend, which answers every
 // one of them with the same bytes
 // www.miruro.com publishes this list and is not itself a pipe host
-// the order leads with .ru on MiruroAPI's report that it is the least
-// aggressively filtered, which is unverified here
+// the order leads with .ru on MiruroAPI's report that it carries the softest
+// Cloudflare rules, which is unverified here
 var mirrors = []string{
 	"https://www.miruro.ru",
 	"https://www.miruro.to",
@@ -70,7 +70,7 @@ type Client struct {
 	base int
 
 	// the capability table is fetched at most once per client
-	// cfgMu is only ever taken before mu, never after
+	// cfgMu is only ever taken before mu
 	cfgMu   sync.Mutex
 	cfg     Config
 	cfgErr  error
@@ -100,7 +100,7 @@ type envelope struct {
 
 // pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body.
 // It walks the mirrors from the one that answered last, and only a failure a
-// different mirror could answer moves it along.
+// different mirror could answer moves it along
 func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
 	if query == nil {
 		query = map[string]string{}
@@ -115,17 +115,22 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 		return nil, fmt.Errorf("%w: no mirror configured", ErrUpstream)
 	}
 
-	start := c.mirror()
+	start := c.current()
 	blocked := false
 	var last error
 	for i := range c.Bases {
 		idx := (start + i) % len(c.Bases)
-		body, again, err := c.attempt(ctx, c.Bases[idx], path, e)
-		if err == nil {
+		body, v, err := c.attempt(ctx, c.Bases[idx], path, e)
+		switch v {
+		case served:
 			c.prefer(idx)
 			return body, nil
-		}
-		if !again {
+		case refused:
+			// this host reached the backend, so it is the one to start from next
+			// time even though the backend said no
+			c.prefer(idx)
+			return nil, err
+		case aborted:
 			return nil, err
 		}
 		if errors.Is(err, ErrBlocked) {
@@ -142,15 +147,30 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	return nil, last
 }
 
-// attempt runs the pipe against one mirror.
-// again reports whether another mirror could answer, which covers a transport
-// failure and a WAF rejection. An upstream status is not one of them: every
-// mirror fronts the same backend, so walking them all would multiply the
-// requests a provider outage already costs.
-func (c *Client) attempt(ctx context.Context, base, path, e string) (out []byte, again bool, err error) {
+// verdict is what pipe does with one mirror's outcome
+type verdict int
+
+const (
+	// served means the mirror returned a decoded body
+	served verdict = iota
+	// refused means the mirror reached the backend and the backend said no
+	// the host works, so the walk stops and the index stays on it
+	refused
+	// unreachable means only this mirror failed, so the walk continues
+	unreachable
+	// aborted means the request never left, so there is nothing to walk to
+	aborted
+)
+
+// attempt runs the pipe against one mirror and reports what pipe should do
+// next.
+// A transport failure and a WAF rejection are what another mirror could answer
+// every mirror fronts the same backend, so walking them all on a backend status
+// would multiply the requests a provider outage already costs
+func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, verdict, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/secure/pipe?e="+e, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, aborted, err
 	}
 	setHeaders(req.Header, base)
 
@@ -159,36 +179,36 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) (out []byte,
 		// keep a cancelled context as a context error so callers can match it
 		// otherwise the fallback loop treats Ctrl-C as a recoverable failure
 		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
+			return nil, aborted, ctx.Err()
 		}
-		return nil, true, fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, unreachable, fmt.Errorf("%w: %v", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPipeRaw+1))
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
+			return nil, aborted, ctx.Err()
 		}
-		return nil, true, err
+		return nil, unreachable, err
 	}
 	if len(body) > maxPipeRaw {
-		return nil, false, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
+		return nil, refused, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
 	}
 
 	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
 	switch {
 	case resp.StatusCode == http.StatusForbidden && isHTML:
-		return nil, true, ErrBlocked
+		return nil, unreachable, ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, false, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
+		return nil, refused, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
 	case isHTML:
-		return nil, false, ErrUpstream
+		return nil, refused, ErrUpstream
 	}
 
 	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
 		if body, err = decode(body, obf); err != nil {
-			return nil, false, err
+			return nil, refused, err
 		}
 	}
 
@@ -198,12 +218,12 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) (out []byte,
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, false, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
+		return nil, refused, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
 	}
-	return body, false, nil
+	return body, served, nil
 }
 
-func (c *Client) mirror() int {
+func (c *Client) current() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.base >= len(c.Bases) {
