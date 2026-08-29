@@ -110,6 +110,13 @@ func Cached(dir string) (Cache, error) {
 // a segment is renamed into place only once it is whole, so an interrupted run
 // resumes with just the segments it still lacks
 func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, prog Progress) error {
+	// ffmpeg resolves the local playlist's segments against the playlist's own
+	// directory, so a relative dir would remux dir/dir/00000.ts and the failure
+	// would wipe a fully fetched cache
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
 	pl, err := resolvePlaylist(ctx, hc, srcURL)
 	if err != nil {
 		return err

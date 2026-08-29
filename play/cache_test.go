@@ -98,6 +98,21 @@ func TestCachedHLSRemovesItsCache(t *testing.T) {
 	}
 }
 
+// ffmpeg resolves the local playlist's segments against the playlist's own
+// directory, so a relative cache dir used to remux dir/dir/00000.ts and the
+// failure wiped the fully fetched cache
+func TestCachedHLSAcceptsARelativeDir(t *testing.T) {
+	f := newHLSFixture(t)
+	t.Chdir(t.TempDir())
+
+	if err := cachedHLS(context.Background(), http.DefaultClient, f.url(), "show.mp4", "cache", nil); err != nil {
+		t.Fatalf("cachedHLS: %v", err)
+	}
+	if fi, err := os.Stat("show.mp4"); err != nil || fi.Size() == 0 {
+		t.Fatalf("no usable output: %v", err)
+	}
+}
+
 // an interrupted run must refetch only the segments it still lacks
 func TestCachedHLSResumesFromPartialCache(t *testing.T) {
 	f := newHLSFixture(t)
