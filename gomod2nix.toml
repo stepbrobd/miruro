@@ -138,8 +138,8 @@ schema = 3
     hash = 'sha256-WRD2MrAHjXy2/DWPmUew1ojVQzamOJM3EEWmZedpYKs='
 
   [mod.'golang.org/x/exp']
-    version = 'v0.0.0-20260820142414-ca536658362e'
-    hash = 'sha256-1XYX6CymrUCUHBy43cQHof4/YXfuY8bpTxHf79YPblM='
+    version = 'v0.0.0-20260824195058-e88cd73687aa'
+    hash = 'sha256-8aABAHGuW6uSooqzXprNBLgbu+RrIpvYS/CXaGjDC4k='
 
   [mod.'golang.org/x/sys']
     version = 'v0.47.0'
