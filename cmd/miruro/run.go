@@ -20,6 +20,17 @@ import (
 	"ysun.co/miruro/ui"
 )
 
+// runState is immutable state shared by every episode in one command
+type runState struct {
+	client    *miruro.Client
+	cat       *miruro.Catalog
+	anilistID int
+	title     string
+	category  miruro.Category
+	caps      miruro.Capabilities
+	cfg       config
+}
+
 func run(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	cfg := loadConfig()
@@ -133,10 +144,14 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Warn("--skip applies only to playback")
 	}
 
-	if flagDownload {
-		return downloadEpisodes(ctx, client, cat, anilistID, title, eps, category, pin, caps, cfg)
+	state := &runState{
+		client: client, cat: cat, anilistID: anilistID, title: title,
+		category: category, caps: caps, cfg: cfg,
 	}
-	return watch(ctx, client, st, cat, anilistID, title, numbers, eps, category, pin, caps, cfg, player)
+	if flagDownload {
+		return state.download(ctx, eps, pin)
+	}
+	return state.watch(ctx, st, numbers, eps, pin, player)
 }
 
 func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
@@ -247,7 +262,7 @@ func chooseEpisodes(numbers []float64, start float64, label func(float64) string
 	return []float64{ep}, nil
 }
 
-func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, anilistID int, title string, eps []float64, category miruro.Category, pin Pin, caps miruro.Capabilities, cfg config) error {
+func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	px, err := play.StartProxy(ctx)
 	if err != nil {
 		return err
@@ -268,7 +283,7 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	// worker i alone writes swapped[i], published by Downloads joining them
 	swapped := make([]bool, len(eps))
 
-	sv := saver{client: client, px: px, hc: hc, cat: cat, id: anilistID, title: title, category: category, pin: pin, caps: caps, cfg: cfg}
+	sv := saver{runState: s, px: px, hc: hc, pin: pin}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		src, missed, err := sv.save(dctx, eps[i], report)
@@ -321,22 +336,16 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	if len(off) > 0 {
 		log.Warn("episodes saved with a different rendition than pinned", "episodes", strings.Join(off, " "))
 	}
-	log.Info("saved", "dir", cfg.DownloadDir, "episodes", len(eps))
+	log.Info("saved", "dir", s.cfg.DownloadDir, "episodes", len(eps))
 	return nil
 }
 
 // saver holds what every episode of one download run shares
 type saver struct {
-	client   *miruro.Client
-	px       *play.Proxy
-	hc       *http.Client
-	cat      *miruro.Catalog
-	id       int
-	title    string
-	category miruro.Category
-	pin      Pin
-	caps     miruro.Capabilities
-	cfg      config
+	*runState
+	px  *play.Proxy
+	hc  *http.Client
+	pin Pin
 }
 
 // save writes one episode, dropping to the next provider when a download fails
@@ -399,23 +408,23 @@ func (s saver) from(ctx context.Context, res *miruro.Result, src source, stream 
 		subs = nil
 	}
 	name := fmt.Sprintf("%s - E%s", s.title, num(ep))
-	cache := cacheDir(s.id, ep, src.Category, src.Code, s.cfg.Quality)
+	cache := cacheDir(s.anilistID, ep, src.Category, src.Code, s.cfg.Quality)
 	return play.Download(ctx, s.hc, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
 }
 
-func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Catalog, anilistID int, title string, numbers, queue []float64, category miruro.Category, pin Pin, caps miruro.Capabilities, cfg config, player play.Player) error {
+func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float64, pin Pin, player play.Player) error {
 	px, err := play.StartProxy(ctx)
 	if err != nil {
 		return err
 	}
 	defer px.Close()
 
-	details := cat.Details(category)
+	details := s.cat.Details(s.category)
 	ep := queue[0]
 	queue = queue[1:]
 
 	for {
-		res, src, carry, err := resolve(ctx, client, cat, ep, category, pin, caps)
+		res, src, carry, err := s.resolve(ctx, ep, pin)
 		if err != nil {
 			return err
 		}
@@ -425,25 +434,24 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 
 		var skips []miruro.SkipRange
 		if flagSkip {
-			skips = episodeSkips(cat, ep)
+			skips = episodeSkips(s.cat, ep)
 		}
 
-		mediaTitle := fmt.Sprintf("%s Episode %s", title, num(ep))
+		mediaTitle := fmt.Sprintf("%s Episode %s", s.title, num(ep))
 		if d := details[ep]; d.Title != "" {
 			mediaTitle += " - " + d.Title
 		}
 
 		stage := playback{
-			client: client, px: px, cat: cat, category: category, caps: caps,
-			cfg: cfg, pin: pin, title: title, ep: ep, kind: player.Kind,
-			launch: func(pctx context.Context, s miruro.Stream, subs []miruro.Subtitle) error {
-				return player.Play(pctx, px.Stream(s), px.Subtitles(subs, s.Referer), skips, mediaTitle)
+			runState: s, px: px, pin: pin, ep: ep, kind: player.Kind,
+			launch: func(pctx context.Context, stream miruro.Stream, subs []miruro.Subtitle) error {
+				return player.Play(pctx, px.Stream(stream), px.Subtitles(subs, stream.Referer), skips, mediaTitle)
 			},
 		}
 
-		e := entry{AnilistID: anilistID, Title: title, Provider: pin.String(), Category: category, Episode: ep}
+		e := entry{AnilistID: s.anilistID, Title: s.title, Provider: pin.String(), Category: s.category, Episode: ep}
 		action, err := playAndControl(ctx,
-			fmt.Sprintf("Episode %s of %s", num(ep), title),
+			fmt.Sprintf("Episode %s of %s", num(ep), s.title),
 			controls(numbers, ep),
 			len(queue) > 0,
 			func(pctx context.Context) error { return stage.run(pctx, res, src) },
@@ -482,16 +490,11 @@ func watch(ctx context.Context, client *miruro.Client, st *store, cat *miruro.Ca
 // playback is one episode's attempt, the ambient state the stream and provider
 // walk needs
 type playback struct {
-	client   *miruro.Client
-	px       *play.Proxy
-	cat      *miruro.Catalog
-	category miruro.Category
-	caps     miruro.Capabilities
-	cfg      config
-	pin      Pin
-	title    string
-	ep       float64
-	kind     play.Kind
+	*runState
+	px   *play.Proxy
+	pin  Pin
+	ep   float64
+	kind play.Kind
 	// launch runs the player on one stream with the subtitles chosen for the
 	// provider that served it, a field so a test needs no player binary
 	launch func(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle) error
@@ -768,24 +771,24 @@ func apply(action string, numbers []float64, ep float64) (step, bool) {
 // with a pinned provider it resolves with fallback and carries the pin unchanged
 // with no pin it asks once, for a provider and its subtitle rendition together,
 // and the pick is the pin whether or not that provider ends up serving
-func resolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pin Pin, caps miruro.Capabilities) (*miruro.Result, source, Pin, error) {
+func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Result, source, Pin, error) {
 	if pin.Code != "" {
-		res, src, err := autoResolve(ctx, client, cat, ep, category, pin, nil, caps)
+		res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, pin, nil, s.caps)
 		return res, src, pin, err
 	}
 
-	avail, err := candidates(cat, ep, category, caps)
+	avail, err := candidates(s.cat, ep, s.category, s.caps)
 	if err != nil {
 		return nil, source{}, pin, err
 	}
 
-	rows := offers(avail, caps, category, pin)
+	rows := offers(avail, s.caps, s.category, pin)
 	width := widest(rows)
 	pick, err := ui.Select("Select provider", rows, func(o offer) string { return o.label(width) })
 	if err != nil {
 		return nil, source{}, pin, err
 	}
-	res, src, err := autoResolve(ctx, client, cat, ep, category, pick.Pin, nil, caps)
+	res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, pick.Pin, nil, s.caps)
 	return res, src, pick.Pin, err
 }
 

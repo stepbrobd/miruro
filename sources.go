@@ -62,20 +62,16 @@ type Result struct {
 	Subtitles []Subtitle
 }
 
+func playable(s Stream) bool {
+	return !s.Dead && (s.Kind == HLS || s.Kind == MP4)
+}
+
 // Playable reports whether Rank can return a stream
 // an embed-only result carries no hls or mp4, so a caller must skip it rather
 // than accept it and fail later outside the fallback loop
 // the two agree on dead streams for the same reason
 func (r *Result) Playable() bool {
-	for _, s := range r.Streams {
-		if s.Dead {
-			continue
-		}
-		if s.Kind == HLS || s.Kind == MP4 {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(r.Streams, playable)
 }
 
 // Sources resolves an episode on a provider to playable streams and subtitles.
@@ -201,7 +197,7 @@ func primary(tag string) string {
 func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
-		if s.Dead {
+		if !playable(s) {
 			continue
 		}
 		switch s.Kind {

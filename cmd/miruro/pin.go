@@ -144,19 +144,20 @@ func orderPinned(rows []offer, pin Pin) []offer {
 	if pin.Code == "" {
 		return rows
 	}
-	out := make([]offer, 0, len(rows))
-	for _, want := range []func(offer) bool{
-		func(o offer) bool { return o.Pin == pin },
-		func(o offer) bool { return o.Code == pin.Code },
-		func(o offer) bool { return pin.Variant != "" && o.declared && o.Variant == pin.Variant },
-		func(offer) bool { return true },
-	} {
-		for _, o := range rows {
-			if want(o) && !slices.Contains(out, o) {
-				out = append(out, o)
-			}
+	priority := func(o offer) int {
+		switch {
+		case o.Pin == pin:
+			return 0
+		case o.Code == pin.Code:
+			return 1
+		case pin.Variant != "" && o.declared && o.Variant == pin.Variant:
+			return 2
+		default:
+			return 3
 		}
 	}
+	out := slices.Clone(rows)
+	slices.SortStableFunc(out, func(a, b offer) int { return priority(a) - priority(b) })
 	return out
 }
 

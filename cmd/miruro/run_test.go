@@ -115,15 +115,14 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 	}
 	t.Cleanup(func() { px.Close() })
 	dir := t.TempDir()
-	return saver{
+	state := &runState{
 		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-		px:       px,
-		hc:       http.DefaultClient,
 		cat:      cat,
 		title:    "Show",
 		category: miruro.Sub,
 		cfg:      config{Quality: "best", DownloadDir: dir},
-	}, dir
+	}
+	return saver{runState: state, px: px, hc: http.DefaultClient}, dir
 }
 
 // savedEpisode asserts the episode landed whole under dir
@@ -463,14 +462,14 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 // a bulk run that falls to another rendition must say so, and the measure is
 // the source the pinned pick would have resolved
 func TestSaverWanted(t *testing.T) {
-	sv := saver{
+	sv := saver{runState: &runState{
 		cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
 			"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "k1", Number: 1}}},
 			"bee":  {Code: "bee", Sub: []miruro.Episode{{ID: "b1", Number: 1}}},
 		}},
 		caps:     testCaps,
 		category: miruro.Sub,
-	}
+	}}
 
 	if _, ok := sv.wanted(1); ok {
 		t.Error("no pin still produced an expectation")
@@ -738,14 +737,16 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 
 	var tried []string
 	stage := playback{
-		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-		px:       px,
-		cat:      cat,
-		category: miruro.Sub,
-		cfg:      config{Quality: "best"},
-		pin:      Pin{Code: "ally", Variant: Hard},
-		title:    "Grow Up Show",
-		ep:       8,
+		runState: &runState{
+			client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
+			cat:      cat,
+			title:    "Grow Up Show",
+			category: miruro.Sub,
+			cfg:      config{Quality: "best"},
+		},
+		px:  px,
+		pin: Pin{Code: "ally", Variant: Hard},
+		ep:  8,
 		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
 			tried = append(tried, s.Server)
 			return fakePlay(t, px, new([]string))(ctx, s)
@@ -822,18 +823,20 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	quit := errors.New("player exit 4")
 	var tried []string
 	stage := playback{
-		client: &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-		px:     px,
-		cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
-			"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
-			// a second provider the walk could reach, so the guard has something
-			// to prevent rather than nothing to do
-			"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
-		}},
-		category: miruro.Sub,
-		cfg:      config{Quality: "best"},
-		pin:      Pin{Code: "ally", Variant: Hard},
-		ep:       8,
+		runState: &runState{
+			client: &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
+			cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
+				"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
+				// a second provider the walk could reach, so the guard has something
+				// to prevent rather than nothing to do
+				"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
+			}},
+			category: miruro.Sub,
+			cfg:      config{Quality: "best"},
+		},
+		px:  px,
+		pin: Pin{Code: "ally", Variant: Hard},
+		ep:  8,
 		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
 			tried = append(tried, s.Server)
 			fakePlay(t, px, new([]string))(ctx, s)
