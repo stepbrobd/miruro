@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -142,19 +143,82 @@ func (r *reader) Read(p []byte) (int, error) {
 // playlist straight to ffmpeg
 // a playlist this package cannot take apart is still downloadable, it just
 // starts over when interrupted
+// the finished file must carry audio, because ffmpeg keeps going when a demuxed
+// master's audio rendition refuses to serve and exits zero on a silent episode
 func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog Progress) error {
 	// fail before fetching so a missing binary cannot wipe a good cache
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return errors.New("ffmpeg is required to download hls streams")
 	}
+	err := errNoCache
 	if cache != "" {
-		err := cachedHLS(ctx, hc, srcURL, dest, cache, prog)
-		if !errors.Is(err, errNoCache) {
-			return err
-		}
-		log.Debug("playlist is not cacheable, downloading without resume", "dest", dest)
+		err = cachedHLS(ctx, hc, srcURL, dest, cache, prog)
 	}
-	return runFFmpeg(ctx, dest, prog, "-i", srcURL)
+	if errors.Is(err, errNoCache) {
+		if cache != "" {
+			log.Debug("playlist is not cacheable, downloading without resume", "dest", dest)
+		}
+		err = runFFmpeg(ctx, dest, prog, "-i", srcURL)
+	}
+	if err != nil {
+		return err
+	}
+	if err := audible(ctx, dest); err != nil {
+		os.Remove(dest)
+		return err
+	}
+	return nil
+}
+
+// audible refuses an episode whose audio is missing or runs far short of the
+// picture, so a caller retries another stream instead of keeping a silent file
+// providers serve audio as a separate hls rendition, and one that dies while
+// the video keeps serving remuxes into exactly such a file with no error
+// a missing ffprobe or an unreadable report skips the check rather than failing
+// a download the old behaviour would have kept
+func audible(ctx context.Context, dest string) error {
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		log.Debug("ffprobe not installed, audio not verified", "dest", dest)
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error",
+		"-show_entries", "stream=codec_type,duration", "-of", "json", dest).Output()
+	if err != nil {
+		log.Debug("ffprobe failed, audio not verified", "dest", dest, "err", err)
+		return nil
+	}
+	var report struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+			Duration  string `json:"duration"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		log.Debug("ffprobe report unreadable, audio not verified", "dest", dest, "err", err)
+		return nil
+	}
+
+	var video, audio float64
+	heard := false
+	for _, s := range report.Streams {
+		d, _ := strconv.ParseFloat(s.Duration, 64)
+		switch s.CodecType {
+		case "video":
+			video = max(video, d)
+		case "audio":
+			heard = true
+			audio = max(audio, d)
+		}
+	}
+	if !heard {
+		return errors.New("episode has no audio")
+	}
+	// renditions drift by fractions of a second, a dead one falls minutes short
+	if gap := video - audio; audio > 0 && gap > 5 && gap > video/10 {
+		return fmt.Errorf("audio ends %.0fs before the video", gap)
+	}
+	return nil
 }
 
 // runFFmpeg remuxes the given input to dest atomically

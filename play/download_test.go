@@ -15,21 +15,31 @@ import (
 	"ysun.co/miruro"
 )
 
+// sampleSegment synthesises one transport stream segment, with audio unless the test
+// needs the silent case
+func sampleSegment(t *testing.T, audio bool) string {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	seg := filepath.Join(t.TempDir(), "seg.ts")
+	args := []string{"-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1"}
+	if audio {
+		args = append(args, "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac")
+	}
+	args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", seg)
+	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
+		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
+	}
+	return seg
+}
+
 // ffmpeg chooses its muxer from the output file extension, and the download
 // writes to a .part file, so the format has to be named explicitly
 // only driving the real binary catches a muxer refusal, no unit assertion does
 func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
-
-	seg := filepath.Join(t.TempDir(), "seg.ts")
-	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
-		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
-		"-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", seg)
-	if out, err := gen.CombinedOutput(); err != nil {
-		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
-	}
+	seg := sampleSegment(t, true)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -63,6 +73,46 @@ func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
 	}
 	if out, err := exec.Command("ffmpeg", "-v", "error", "-i", dest, "-f", "null", "-").CombinedOutput(); err != nil {
 		t.Fatalf("output is not a playable mp4: %v: %s", err, out)
+	}
+}
+
+// ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
+// and exits zero on a silent episode, so the download has to refuse the result
+// itself rather than keep a file nobody can watch
+func TestDownloadRefusesASilentEpisode(t *testing.T) {
+	seg := sampleSegment(t, false)
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base := srv.URL
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "master.m3u8"):
+			fmt.Fprintf(w, "#EXTM3U\n"+
+				"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"ja\",DEFAULT=YES,URI=\"%s/audio.m3u8\"\n"+
+				"#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=64x64,AUDIO=\"a\"\n%s/video.m3u8\n", base, base)
+		case strings.HasSuffix(r.URL.Path, "video.m3u8"):
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", base)
+		case strings.HasSuffix(r.URL.Path, ".ts"):
+			http.ServeFile(w, r, seg)
+		default:
+			http.Error(w, "denied", http.StatusForbidden)
+		}
+	})
+
+	dir, name := t.TempDir(), "Show - E1"
+	_, err := Download(context.Background(), http.DefaultClient,
+		miruro.Stream{URL: base + "/master.m3u8", Kind: miruro.HLS},
+		nil, dir, name, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "no audio") {
+		t.Fatalf("err = %v, want the silent episode refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name+".mp4")); !os.IsNotExist(err) {
+		t.Error("the silent file was kept, so a rerun would skip the episode forever")
 	}
 }
 
