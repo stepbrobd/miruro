@@ -9,6 +9,8 @@ import (
 )
 
 // Variant decides whether a provider's external subtitle file is attached
+// the zero value is a pin that names no rendition, so a bare "pewe" stays
+// distinguishable from an explicit "pewe:soft"
 type Variant string
 
 const (
@@ -16,27 +18,28 @@ const (
 	Hard Variant = "hard" // play as delivered, subtitles already in the picture
 )
 
-// Pin is a provider choice, a code with a subtitle Variant
+// Pin is a provider choice, a code with an optional subtitle Variant
 type Pin struct {
 	Code    string
 	Variant Variant
 }
 
 // ParsePin reads a "code" or "code:variant" pin
-// a bare code or an unrecognised variant means Soft
+// a bare code and an unrecognised variant both leave the variant unstated
 func ParsePin(s string) Pin {
 	code, variant, _ := strings.Cut(s, ":")
-	if Variant(variant) == Hard {
-		return Pin{Code: code, Variant: Hard}
+	switch v := Variant(variant); v {
+	case Soft, Hard:
+		return Pin{Code: code, Variant: v}
 	}
-	return Pin{Code: code, Variant: Soft}
+	return Pin{Code: code}
 }
 
-// String is the "code:variant" form persisted to history and read back by resume
-// an empty code is the empty pin, meaning no provider was chosen
+// String is the form persisted to history and read back by resume, the bare
+// code when the variant is unstated and "" when no provider was chosen
 func (p Pin) String() string {
-	if p.Code == "" {
-		return ""
+	if p.Code == "" || p.Variant == "" {
+		return p.Code
 	}
 	return p.Code + ":" + string(p.Variant)
 }
@@ -130,9 +133,13 @@ func widest(rows []offer) int {
 }
 
 // orderPinned puts the pinned pick first, then the pinned provider's other
-// rendition, then everything else in preference order
+// rendition, then the providers declaring the pinned rendition, then everything
+// else in preference order
 // a pin naming a rendition the provider stopped carrying still reaches the one
 // it does carry before the run moves to another provider
+// past the pinned provider the rendition is what the pin still asks for, so a
+// hard pin falls to another provider's hardsub before any softsub, while an
+// unstated variant prefers nothing beyond its provider
 func orderPinned(rows []offer, pin Pin) []offer {
 	if pin.Code == "" {
 		return rows
@@ -141,6 +148,7 @@ func orderPinned(rows []offer, pin Pin) []offer {
 	for _, want := range []func(offer) bool{
 		func(o offer) bool { return o.Pin == pin },
 		func(o offer) bool { return o.Code == pin.Code },
+		func(o offer) bool { return pin.Variant != "" && o.declared && o.Variant == pin.Variant },
 		func(offer) bool { return true },
 	} {
 		for _, o := range rows {

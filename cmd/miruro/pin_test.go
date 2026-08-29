@@ -13,12 +13,12 @@ func TestParsePin(t *testing.T) {
 		in   string
 		want Pin
 	}{
-		{"bonk", Pin{"bonk", Soft}},
+		{"bonk", Pin{Code: "bonk"}},
 		{"bonk:hard", Pin{"bonk", Hard}},
 		{"bonk:soft", Pin{"bonk", Soft}},
-		{"bonk:xyz", Pin{"bonk", Soft}},
-		{"", Pin{"", Soft}},
-		{"ally", Pin{"ally", Soft}},
+		{"bonk:xyz", Pin{Code: "bonk"}},
+		{"", Pin{}},
+		{"ally", Pin{Code: "ally"}},
 	}
 	for _, c := range cases {
 		if got := ParsePin(c.in); got != c.want {
@@ -34,6 +34,7 @@ func TestPinString(t *testing.T) {
 	}{
 		{Pin{"bonk", Hard}, "bonk:hard"},
 		{Pin{"ally", Soft}, "ally:soft"},
+		{Pin{Code: "bonk"}, "bonk"},
 		{Pin{"", Soft}, ""},
 	}
 	for _, c := range cases {
@@ -41,9 +42,11 @@ func TestPinString(t *testing.T) {
 			t.Errorf("%+v.String() = %q, want %q", c.pin, got, c.want)
 		}
 	}
-	// round trip through the persisted form
-	if got := ParsePin(Pin{"bonk", Hard}.String()); got != (Pin{"bonk", Hard}) {
-		t.Errorf("round trip lost the pin: %+v", got)
+	// round trip through the persisted form, the bare pin included
+	for _, pin := range []Pin{{"bonk", Hard}, {Code: "bonk"}} {
+		if got := ParsePin(pin.String()); got != pin {
+			t.Errorf("round trip lost the pin: %+v became %+v", pin, got)
+		}
 	}
 }
 
@@ -197,10 +200,14 @@ func TestOrderPinned(t *testing.T) {
 	}{
 		{"the pinned rendition leads", Pin{"bonk", Hard},
 			[]string{"bonk:hard", "bonk:soft", "kiwi:hard", "bee:soft"}},
+		{"past the provider the pinned rendition still leads", Pin{"kiwi", Hard},
+			[]string{"kiwi:hard", "bonk:hard", "bee:soft", "bonk:soft"}},
 		{"a pin on the provider's other rendition still leads with the provider", Pin{"bee", Hard},
+			[]string{"bee:soft", "kiwi:hard", "bonk:hard", "bonk:soft"}},
+		{"a bare pin leads with its provider and prefers nothing past it", Pin{Code: "bee"},
 			[]string{"bee:soft", "kiwi:hard", "bonk:soft", "bonk:hard"}},
-		{"an absent code keeps the order", Pin{"zzz", Soft},
-			[]string{"kiwi:hard", "bee:soft", "bonk:soft", "bonk:hard"}},
+		{"an absent code still orders by its variant", Pin{"zzz", Soft},
+			[]string{"bee:soft", "bonk:soft", "kiwi:hard", "bonk:hard"}},
 		{"an empty pin keeps the order", Pin{},
 			[]string{"kiwi:hard", "bee:soft", "bonk:soft", "bonk:hard"}},
 	} {

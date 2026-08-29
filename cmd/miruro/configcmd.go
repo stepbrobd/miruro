@@ -183,7 +183,7 @@ func check(md toml.MetaData, c config) []string {
 		case code == "":
 			out = append(out, fmt.Sprintf("provider %q names a variant with no provider", c.Provider))
 		case Variant(variant) != Soft && Variant(variant) != Hard:
-			out = append(out, fmt.Sprintf("provider variant %q is not soft or hard, so it reads as soft", variant))
+			out = append(out, fmt.Sprintf("provider variant %q is not soft or hard, so it is ignored", variant))
 		}
 	}
 	if dir := expand(c.DownloadDir); dir != "" {
