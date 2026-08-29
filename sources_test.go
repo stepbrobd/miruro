@@ -84,7 +84,7 @@ func TestRankHead(t *testing.T) {
 		}
 	})
 
-	t.Run("unlabelled hls expands the master", func(t *testing.T) {
+	t.Run("unlabelled hls restricts the master to the expanded height", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, "#EXTM3U\n"+
 				"#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080\nindex-1080.m3u8\n"+
@@ -95,11 +95,23 @@ func TestRankHead(t *testing.T) {
 		c := &Client{HTTP: srv.Client()}
 		r := &Result{Streams: []Stream{{URL: srv.URL + "/master.m3u8", Kind: HLS}}}
 		s := top(t, c, r, "720p")
-		if want := srv.URL + "/index-720.m3u8"; s.URL != want {
-			t.Errorf("selected %q, want %q", s.URL, want)
+		// the master travels whole rather than the variant URL out of it, since a
+		// bare variant loses the audio renditions the master associates
+		if want := srv.URL + "/master.m3u8"; s.URL != want {
+			t.Errorf("selected %q, want the master %q", s.URL, want)
+		}
+		if s.Height != 720 {
+			t.Errorf("height = %d, want 720", s.Height)
 		}
 		if s.Quality != "720p" {
 			t.Errorf("quality = %q, want 720p", s.Quality)
+		}
+
+		// the same master unrestricted stays reachable behind the pick as the
+		// fallback when its restricted variant will not play
+		ranked := c.Rank(context.Background(), r, "720p")
+		if len(ranked) != 2 || ranked[1].URL != s.URL || ranked[1].Height != 0 {
+			t.Errorf("ranked = %+v, want the unrestricted master second", ranked)
 		}
 	})
 

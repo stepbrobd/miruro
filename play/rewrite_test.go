@@ -15,7 +15,7 @@ func rewritten(p *Proxy, body, base string) string {
 	if err != nil {
 		panic(err)
 	}
-	return string(p.rewrite([]byte(body), "https://ref/", u))
+	return string(p.rewrite([]byte(body), "https://ref/", u, 0))
 }
 
 func TestRewriteMasterPlaylist(t *testing.T) {
@@ -89,6 +89,61 @@ func TestRewriteSkipsDataURI(t *testing.T) {
 	out := rewritten(fakeProxy(), media, "https://cdn.example/s/media.m3u8")
 	if !strings.Contains(out, `URI="data:text/plain;base64,AAAA"`) {
 		t.Errorf("data: key URI should pass through untouched:\n%s", out)
+	}
+}
+
+// a stream restricted to one height must lose the other variants and nothing
+// else, or the player would still negotiate its own pick from the full master
+func TestFilterMaster(t *testing.T) {
+	master := "#EXTM3U\n" +
+		"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"ja\",URI=\"audio/index.m3u8\"\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1920x1080,AUDIO=\"a\"\n" +
+		"1080/index.m3u8\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=500,RESOLUTION=1280x720,AUDIO=\"a\"\n" +
+		"720/index.m3u8\n"
+
+	out := string(filterMaster([]byte(master), 720))
+	if strings.Contains(out, "1080/index.m3u8") || strings.Contains(out, "RESOLUTION=1920x1080") {
+		t.Errorf("the other variant survived:\n%s", out)
+	}
+	if !strings.Contains(out, "720/index.m3u8") {
+		t.Errorf("the wanted variant was dropped:\n%s", out)
+	}
+	if !strings.Contains(out, "#EXT-X-MEDIA:TYPE=AUDIO") {
+		t.Errorf("the audio rendition was dropped:\n%s", out)
+	}
+
+	// a height nothing carries keeps the master whole, since an empty master
+	// plays nothing at all
+	if got := string(filterMaster([]byte(master), 480)); got != master {
+		t.Errorf("an absent height changed the master:\n%s", got)
+	}
+
+	// a media playlist has no variants to restrict
+	media := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXT-X-ENDLIST\n"
+	if got := string(filterMaster([]byte(media), 720)); got != media {
+		t.Errorf("a media playlist was rewritten:\n%s", got)
+	}
+}
+
+// the restriction rides the proxied stream URL, so the height set on a Stream
+// has to survive the payload round trip into the rewrite
+func TestRewriteRestrictsToStreamHeight(t *testing.T) {
+	master := "#EXTM3U\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1920x1080\n" +
+		"1080/index.m3u8\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=500,RESOLUTION=1280x720\n" +
+		"720/index.m3u8\n"
+	u, err := url.Parse("https://cdn.example/stream/master.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(fakeProxy().rewrite([]byte(master), "https://ref/", u, 1080))
+	if strings.Contains(out, "RESOLUTION=1280x720") {
+		t.Errorf("the restricted variant survived:\n%s", out)
+	}
+	if n := strings.Count(out, "http://127.0.0.1:9999/tok/"); n != 1 {
+		t.Errorf("want 1 proxied variant, got %d:\n%s", n, out)
 	}
 }
 

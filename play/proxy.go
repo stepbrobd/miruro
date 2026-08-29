@@ -76,6 +76,8 @@ type target struct {
 	URL     string `json:"u"`
 	Referer string `json:"r"`
 	Kind    kind   `json:"k"`
+	// Height restricts a master playlist to the variants of one picture height
+	Height int `json:"h,omitempty"`
 }
 
 // Proxy relays provider streams over localhost, so a player sees plain HTTP/1.1
@@ -155,11 +157,10 @@ func (p *Proxy) Close() error {
 
 // URL returns the localhost address a player or ffmpeg should open for s
 func (p *Proxy) URL(s miruro.Stream) string {
-	k := media
 	if s.Kind == miruro.HLS {
-		k = playlist
+		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height})
 	}
-	return p.proxied(s.URL, s.Referer, k)
+	return p.proxied(s.URL, s.Referer, media)
 }
 
 // Opaque returns a localhost address relaying rawURL byte for byte
@@ -224,8 +225,12 @@ func (p *Proxy) Stream(s miruro.Stream) miruro.Stream {
 }
 
 func (p *Proxy) proxied(rawURL, referer string, k kind) string {
-	b, _ := json.Marshal(target{URL: rawURL, Referer: referer, Kind: k})
-	return p.base + "/" + base64.RawURLEncoding.EncodeToString(b) + k.suffix()
+	return p.encode(target{URL: rawURL, Referer: referer, Kind: k})
+}
+
+func (p *Proxy) encode(t target) string {
+	b, _ := json.Marshal(t)
+	return p.base + "/" + base64.RawURLEncoding.EncodeToString(b) + t.Kind.suffix()
 }
 
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
@@ -264,7 +269,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Write(p.rewrite(body, t.Referer, resp.Request.URL))
+		w.Write(p.rewrite(body, t.Referer, resp.Request.URL, t.Height))
 	case segment, cipher:
 		// a segment is fetched whole and de-obfuscated
 		// a cipher segment relays whole because CBC cannot decrypt from an offset

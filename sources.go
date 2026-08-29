@@ -30,6 +30,12 @@ type Stream struct {
 	URL     string
 	Kind    Kind
 	Quality string
+	// Height restricts an hls master to the variants of one picture height,
+	// applied by the stream proxy while rewriting, zero restricts nothing
+	// the master travels whole so the audio renditions it associates through
+	// EXT-X-MEDIA stay attached, where following a variant URL out of it would
+	// sever them and download a silent episode
+	Height  int
 	Referer string
 	// Server is the provider's own name for the host behind this stream,
 	// "HD-1" or "VidPlay-1", empty when it names none
@@ -210,13 +216,20 @@ func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 	lead(hls)
 	lead(mp4)
 
+	// the quality pick can be the master restricted to one height, and the same
+	// master unrestricted still belongs behind it as the fallback
+	type key struct {
+		url    string
+		height int
+	}
 	out := make([]Stream, 0, 1+len(hls)+len(mp4))
-	seen := map[string]bool{}
+	seen := map[key]bool{}
 	add := func(s Stream) {
-		if s.URL == "" || seen[s.URL] {
+		k := key{s.URL, s.Height}
+		if s.URL == "" || seen[k] {
 			return
 		}
-		seen[s.URL] = true
+		seen[k] = true
 		out = append(out, s)
 	}
 	if s, ok := c.preferred(ctx, hls, mp4, quality); ok {
@@ -248,8 +261,11 @@ func lead(streams []Stream) {
 
 // preferred applies the quality heuristic, an author-owned decision
 // "best" hands mpv the hls master to negotiate
-// "worst" and an explicit height pick from the API quality labels, or from an
-// expanded master when the streams carry none
+// "worst" and an explicit height pick from the API quality labels, or from what
+// an expanded master carries when the streams carry none
+// a height found by expansion restricts the master rather than following the
+// variant URL out of it, since a bare variant loses the audio renditions the
+// master associates
 // it prefers hls over a direct mp4, and reports false only when there is
 // nothing playable at all
 func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality string) (Stream, bool) {
@@ -261,7 +277,10 @@ func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality strin
 			return s, true
 		}
 		if variants, err := c.expandMaster(ctx, hls[0]); err == nil {
-			if s, ok := pickQuality(variants, quality); ok {
+			if v, ok := pickQuality(variants, quality); ok {
+				s := hls[0]
+				s.Quality = v.Quality
+				s.Height = parseHeight(v.Quality)
 				return s, true
 			}
 		}
