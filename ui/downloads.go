@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 // ErrCancelled marks a download the user interrupted before it finished, so
@@ -104,7 +106,7 @@ func (m downloads) View() string {
 }
 
 // Downloads runs labelled tasks with a worker limit, rendering one live progress
-// bar per line
+// bar per line when stdout is a terminal
 // each task receives a context that is cancelled when the user quits and a
 // reporter for bytes done and total
 // a task the user interrupts before it finishes is returned as ErrCancelled
@@ -112,57 +114,64 @@ func (m downloads) View() string {
 // every child process a task started has been reaped
 func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
 	n := len(labels)
-	width := 0
-	for _, l := range labels {
-		if len(l) > width {
-			width = len(l)
-		}
-	}
 
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	lines, restore := captureLog()
-	defer restore()
-
-	m := downloads{
-		labels: labels,
-		width:  width,
-		bars:   make([]progress.Model, n),
-		done:   make([]int64, n),
-		total:  make([]int64, n),
-		errs:   make([]error, n),
-		fin:    make([]bool, n),
-		remain: n,
-		ch:     make(chan tea.Msg, 256),
-		logs:   lines,
-	}
-	for i := range m.bars {
-		m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
-	}
-
 	results := make([]error, n)
+	ch := make(chan tea.Msg, 256)
 	done := make(chan struct{})
 	go func() {
 		// closing after schedule's wg.Wait publishes every results write
-		schedule(dctx, labels, workers, task, m.ch, results)
+		schedule(dctx, labels, workers, task, ch, results)
 		close(done)
 	}()
 
-	_, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
+	// without a terminal there is nothing to draw and no quit key to read, the
+	// workers run to completion under the caller's context
+	// handing tea a non-terminal stdin would have it open /dev/tty itself, which
+	// puts a terminal that is merely nearby into raw mode under a piped run
+	if term.IsTerminal(os.Stdout.Fd()) {
+		width := 0
+		for _, l := range labels {
+			if len(l) > width {
+				width = len(l)
+			}
+		}
+		lines, restore := captureLog()
+		defer restore()
 
-	// a finish, quit key, or interrupt stops the workers
-	// any other error means no terminal, and they run to completion
-	if err == nil || errors.Is(err, tea.ErrInterrupted) || ctx.Err() != nil {
-		cancel()
+		m := downloads{
+			labels: labels,
+			width:  width,
+			bars:   make([]progress.Model, n),
+			done:   make([]int64, n),
+			total:  make([]int64, n),
+			errs:   make([]error, n),
+			fin:    make([]bool, n),
+			remain: n,
+			ch:     ch,
+			logs:   lines,
+		}
+		for i := range m.bars {
+			m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
+		}
+
+		_, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
+
+		// a finish, quit key, or interrupt stops the workers
+		// any other error leaves them running to completion
+		if err == nil || errors.Is(err, tea.ErrInterrupted) || ctx.Err() != nil {
+			cancel()
+		}
 	}
 	// consuming ch keeps senders unblocked until the workers join
 	for {
 		select {
-		case <-m.ch:
+		case <-ch:
 		case <-done:
 			// releases a listen command tea may still have parked on ch
-			close(m.ch)
+			close(ch)
 			return results
 		}
 	}

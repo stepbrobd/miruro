@@ -106,8 +106,10 @@ func TestErrLineNarrowTerm(t *testing.T) {
 	}
 }
 
-// tests run without a terminal, so tea fails to start, the context stays live,
-// and Downloads collects through the consume-until-done path
+// tests run without a terminal on stdout, so Downloads skips the live view and
+// collects through the consume-until-done path
+// starting tea here would have it open /dev/tty, whose cancel reader races its
+// own shutdown under the race detector whenever a terminal is nearby
 
 func TestDownloadsCompletion(t *testing.T) {
 	want := []error{nil, errors.New("boom"), nil, errors.New("split")}
