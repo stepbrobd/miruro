@@ -265,16 +265,22 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	// workers run concurrently, so the tally of episodes that lost their
 	// subtitles is shared state
 	var bare atomic.Int64
+	// worker i alone writes swapped[i], published by Downloads joining them
+	swapped := make([]bool, len(eps))
 
 	sv := saver{client: client, px: px, hc: hc, cat: cat, id: anilistID, title: title, category: category, pin: pin, caps: caps, cfg: cfg}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
-		missed, err := sv.save(dctx, eps[i], report)
+		src, missed, err := sv.save(dctx, eps[i], report)
 		if err != nil {
 			return err
 		}
 		if missed > 0 {
 			bare.Add(1)
+		}
+		if want, ok := sv.wanted(eps[i]); ok && (src.Category != want.Category || src.Attach != want.Attach) {
+			swapped[i] = true
+			log.Warn("episode saved with a different rendition than pinned", "episode", labels[i], "provider", src.Pin)
 		}
 		return nil
 	})
@@ -304,6 +310,17 @@ func downloadEpisodes(ctx context.Context, client *miruro.Client, cat *miruro.Ca
 	if n := bare.Load(); n > 0 {
 		log.Warn("episodes saved without subtitles", "count", n)
 	}
+	// name the episodes so a re-fetch knows which files to delete first, since a
+	// rerun skips whatever is already on disk
+	var off []string
+	for i, s := range swapped {
+		if s {
+			off = append(off, labels[i])
+		}
+	}
+	if len(off) > 0 {
+		log.Warn("episodes saved with a different rendition than pinned", "episodes", strings.Join(off, " "))
+	}
 	log.Info("saved", "dir", cfg.DownloadDir, "episodes", len(eps))
 	return nil
 }
@@ -326,17 +343,18 @@ type saver struct {
 // after its own retries
 // a provider that resolves and then dies mid-episode is common enough that
 // failing the episode over it would waste the rest of the run
-// it reports the sidecars that were lost, the way play.Download does
-func (s saver) save(ctx context.Context, ep float64, report play.Progress) (int, error) {
+// it reports the source that served the episode and the sidecars that were
+// lost, the way play.Download does
+func (s saver) save(ctx context.Context, ep float64, report play.Progress) (source, int, error) {
 	tried := map[string]bool{}
 	var last error
 	for {
 		res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, s.pin, tried, s.caps)
 		if err != nil {
 			if last != nil {
-				return 0, last
+				return source{}, 0, last
 			}
-			return 0, err
+			return source{}, 0, err
 		}
 		tried[src.Code] = true
 
@@ -345,16 +363,31 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (int,
 		for _, stream := range s.client.Rank(ctx, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
-				return missed, nil
+				return src, missed, nil
 			}
 			if ctx.Err() != nil {
-				return 0, err
+				return source{}, 0, err
 			}
 			// name the provider, since the next attempt reports its own failure
 			last = fmt.Errorf("%s: %w", src.Code, err)
 			log.Warn("download failed, trying the next stream", "episode", num(ep), "provider", src.Code, "err", err)
 		}
 	}
+}
+
+// wanted is the source the pinned pick would resolve, what an episode that fell
+// elsewhere is measured against when the run reports a rendition swap
+// without a pin there is no expectation to diverge from
+func (s saver) wanted(ep float64) (source, bool) {
+	if s.pin.Code == "" {
+		return source{}, false
+	}
+	avail, err := candidates(s.cat, ep, s.category, s.caps)
+	if err != nil {
+		return source{}, false
+	}
+	rows := orderPinned(offers(avail, s.caps, s.category, s.pin), s.pin)
+	return rows[0].source(s.category), true
 }
 
 // from downloads one episode from one stream of the source that served it

@@ -409,7 +409,7 @@ func TestSaveFallsBackToAnotherProvider(t *testing.T) {
 	defer srv.Close()
 
 	sv, dir := newSaver(t, srv, twoProviderCatalog())
-	if _, err := sv.save(context.Background(), 1, nil); err != nil {
+	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the fallback provider did not save the episode: %v", err)
 	}
 	savedEpisode(t, dir)
@@ -428,7 +428,7 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 	defer srv.Close()
 
 	sv, _ := newSaver(t, srv, twoProviderCatalog())
-	_, err := sv.save(context.Background(), 1, nil)
+	_, _, err := sv.save(context.Background(), 1, nil)
 	if err == nil {
 		t.Fatal("every provider was dead, the episode must fail")
 	}
@@ -454,10 +454,45 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 		"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
 	}}
 	sv, dir := newSaver(t, srv, cat)
-	if _, err := sv.save(context.Background(), 1, nil); err != nil {
+	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the second stream did not save the episode: %v", err)
 	}
 	savedEpisode(t, dir)
+}
+
+// a bulk run that falls to another rendition must say so, and the measure is
+// the source the pinned pick would have resolved
+func TestSaverWanted(t *testing.T) {
+	sv := saver{
+		cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
+			"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "k1", Number: 1}}},
+			"bee":  {Code: "bee", Sub: []miruro.Episode{{ID: "b1", Number: 1}}},
+		}},
+		caps:     testCaps,
+		category: miruro.Sub,
+	}
+
+	if _, ok := sv.wanted(1); ok {
+		t.Error("no pin still produced an expectation")
+	}
+
+	sv.pin = Pin{"kiwi", Hard}
+	want, ok := sv.wanted(1)
+	if !ok || want.Category != miruro.Sub || want.Attach {
+		t.Errorf("wanted = (%+v, %v), want kiwi's burned-in rendition", want, ok)
+	}
+	// bee's soft source is what a fallback would have served, and it has to read
+	// as a swap against the hard pin
+	swap := offer{Pin: Pin{"bee", Soft}, declared: true}.source(miruro.Sub)
+	if swap.Category == want.Category && swap.Attach == want.Attach {
+		t.Error("a soft fallback reads as the pinned rendition")
+	}
+
+	// a bare pin measures against what its provider declares
+	sv.pin = Pin{Code: "kiwi"}
+	if want, ok := sv.wanted(1); !ok || want.Category != miruro.Sub || want.Attach {
+		t.Errorf("wanted = (%+v, %v), want the declared hardsub for a bare kiwi pin", want, ok)
+	}
 }
 
 // fakePlay stands in for the player, fetching what it was handed the way a real
