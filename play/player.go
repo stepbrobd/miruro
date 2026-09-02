@@ -2,6 +2,7 @@
 package play
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -169,7 +169,9 @@ func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 		}
 		marks = append(marks, mark{s.Start, start}, mark{s.End, "Episode"})
 	}
-	sort.Slice(marks, func(i, j int) bool { return marks[i].at < marks[j].at })
+	// a stable sort keeps an intro end that meets an outro start in the order
+	// the ranges were written, so the marks title deterministically
+	slices.SortStableFunc(marks, func(a, b mark) int { return cmp.Compare(a.at, b.at) })
 
 	var b strings.Builder
 	b.WriteString(";FFMETADATA1\n")

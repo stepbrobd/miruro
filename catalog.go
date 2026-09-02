@@ -1,8 +1,8 @@
 package miruro
 
 import (
+	"cmp"
 	"slices"
-	"sort"
 )
 
 // Category is a closed set
@@ -80,7 +80,7 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	for n := range seen {
 		out = append(out, n)
 	}
-	sort.Float64s(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -120,12 +120,7 @@ func (c *Catalog) Details(cat Category) map[float64]Episode {
 	for code := range c.Providers {
 		codes = append(codes, code)
 	}
-	sort.Slice(codes, func(i, j int) bool {
-		if a, b := preference(codes[i]), preference(codes[j]); a != b {
-			return a < b
-		}
-		return codes[i] < codes[j]
-	})
+	slices.SortFunc(codes, byPreference)
 
 	out := make(map[float64]Episode)
 	for _, code := range codes {
@@ -155,11 +150,15 @@ func (c *Catalog) Available(number float64, cat Category) []Provider {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if a, b := preference(out[i].Code), preference(out[j].Code); a != b {
-			return a < b
-		}
-		return out[i].Code < out[j].Code
-	})
+	slices.SortFunc(out, func(a, b Provider) int { return byPreference(a.Code, b.Code) })
 	return out
+}
+
+// byPreference orders provider codes by the preference list, then by code so
+// equal ranks stay reproducible
+func byPreference(a, b string) int {
+	if n := cmp.Compare(preference(a), preference(b)); n != 0 {
+		return n
+	}
+	return cmp.Compare(a, b)
 }

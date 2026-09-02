@@ -1,9 +1,10 @@
 package mirurotv
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
-	"sort"
+	"slices"
 	"strconv"
 
 	"ysun.co/miruro"
@@ -98,11 +99,8 @@ func bestSkips(rows []skipEntry) []miruro.SkipRange {
 	for k, r := range best {
 		out = append(out, miruro.SkipRange{Episode: k.ep, Kind: k.kind, Start: r.Start, End: r.End})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Episode != out[j].Episode {
-			return out[i].Episode < out[j].Episode
-		}
-		return out[i].Start < out[j].Start
+	slices.SortFunc(out, func(a, b miruro.SkipRange) int {
+		return cmp.Or(cmp.Compare(a.Episode, b.Episode), cmp.Compare(a.Start, b.Start))
 	})
 	return out
 }
