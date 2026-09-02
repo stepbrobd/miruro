@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -183,6 +184,23 @@ func TestExpandMasterRedirect(t *testing.T) {
 
 // the api mirrors the html5 track kinds, so a thumbnails sprite index arrives on
 // the same list as dialogue and must never reach a player as subtitles
+// every other body a host answers is capped, and a master is the one read
+// that had none
+func TestExpandMasterRefusesAnOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "#EXTM3U\n")
+		filler := []byte(strings.Repeat("#", 1<<20-1) + "\n")
+		for range maxMaster/len(filler) + 2 {
+			w.Write(filler)
+		}
+	}))
+	defer srv.Close()
+	_, err := expandMaster(context.Background(), srv.Client(), Stream{URL: srv.URL + "/master.m3u8", Kind: HLS})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("err = %v, want the body refused", err)
+	}
+}
+
 func TestOrder(t *testing.T) {
 	en := Subtitle{Label: "English", Lang: "en"}
 	es := Subtitle{Label: "Spanish", Lang: "es", Default: true}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -271,6 +272,11 @@ func parseHeight(q string) int {
 
 var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 
+// maxMaster caps a master playlist read
+// a real master is a few kilobytes, so only a hostile or broken host reaches
+// this, and the read must end somewhere short of memory
+const maxMaster = 16 << 20
+
 // expandMaster fetches an hls master playlist and returns its variant streams
 // labelled by height
 // it errors on a non-200, on a non-master body, or on a master with no
@@ -295,7 +301,8 @@ func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, err
 	base := resp.Request.URL
 	var variants []Stream
 	var height string
-	sc := bufio.NewScanner(resp.Body)
+	lr := &io.LimitedReader{R: resp.Body, N: maxMaster + 1}
+	sc := bufio.NewScanner(lr)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -322,6 +329,9 @@ func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, err
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
+	}
+	if lr.N == 0 {
+		return nil, fmt.Errorf("master playlist exceeds %d bytes: %s", maxMaster, s.URL)
 	}
 	if len(variants) == 0 {
 		return nil, fmt.Errorf("not a master playlist: %s", s.URL)
