@@ -21,7 +21,7 @@ func TestConfig(t *testing.T) {
 
 	t.Run("capabilities are read the way the api means them", func(t *testing.T) {
 		srv := mirror(t, serves(configBody))
-		cfg, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Config(ctx)
+		cfg, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Capabilities(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +47,7 @@ func TestConfig(t *testing.T) {
 		srv := mirror(t, serves(configBody))
 		c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		for range 3 {
-			if _, err := c.Config(ctx); err != nil {
+			if _, err := c.Capabilities(ctx); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -62,7 +62,7 @@ func TestConfig(t *testing.T) {
 		})
 		c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		for range 3 {
-			if _, err := c.Config(ctx); !errors.Is(err, ErrUpstream) {
+			if _, err := c.Capabilities(ctx); !errors.Is(err, ErrUpstream) {
 				t.Fatalf("err = %v, want ErrUpstream", err)
 			}
 		}
@@ -78,17 +78,17 @@ func TestConfig(t *testing.T) {
 
 		dead, cancel := context.WithCancel(ctx)
 		cancel()
-		if _, err := c.Config(dead); !errors.Is(err, context.Canceled) {
+		if _, err := c.Capabilities(dead); !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v, want context.Canceled", err)
 		}
-		if _, err := c.Config(ctx); err != nil {
+		if _, err := c.Capabilities(ctx); err != nil {
 			t.Fatalf("the next run inherited the cancellation: %v", err)
 		}
 	})
 
 	t.Run("a body that is not the table is an error", func(t *testing.T) {
 		srv := mirror(t, serves(`[1,2,3]`))
-		if _, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Config(ctx); err == nil {
+		if _, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Capabilities(ctx); err == nil {
 			t.Fatal("want a parse error")
 		}
 	})

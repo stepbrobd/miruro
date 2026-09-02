@@ -79,6 +79,9 @@ type Client struct {
 	cfgDone bool
 }
 
+// Name is the backend name, what a config entry and a log line call it
+func (c *Client) Name() string { return "miruro" }
+
 func New() *Client {
 	// the cloned default transport keeps HTTP/2 via ALPN, which passes the WAF
 	// ResponseHeaderTimeout excludes the body read, so Timeout backstops an

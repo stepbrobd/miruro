@@ -35,7 +35,7 @@ func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) ma
 	t.Helper()
 	out := map[string]miruro.Provider{}
 	for _, id := range titles {
-		cat, err := client.Episodes(ctx, id)
+		cat, err := client.Episodes(ctx, miruro.Media{ID: id})
 		if err != nil {
 			t.Fatalf("catalog %d: %v", id, err)
 		}
@@ -69,7 +69,7 @@ func rendition(caps miruro.Capabilities, code string) miruro.Category {
 // the run falls back to asking every provider for sub
 func capabilities(ctx context.Context, t *testing.T, client *miruro.Client) miruro.Capabilities {
 	t.Helper()
-	caps, err := client.Config(ctx)
+	caps, err := client.Capabilities(ctx)
 	if err != nil {
 		t.Logf("capability table unavailable, every provider will be asked for sub: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err != nil {
 				t.Skipf("provider did not resolve %s, an upstream condition rather than a defect: %v", cat, err)
 			}
-			ranked := client.Rank(ctx, res, "")
+			ranked := miruro.Rank(ctx, client.HTTP, res, "")
 			if len(ranked) == 0 {
 				t.Skip("no selectable stream")
 			}
@@ -288,7 +288,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 			if len(res.Subtitles) == 0 {
 				t.Skip("provider ships no subtitles")
 			}
-			ranked := client.Rank(ctx, res, "")
+			ranked := miruro.Rank(ctx, client.HTTP, res, "")
 			if len(ranked) == 0 {
 				t.Skip("no selectable stream")
 			}

@@ -23,12 +23,12 @@ type Caps struct {
 // episodes resource serves providers the config resource omits
 type Capabilities map[string]Caps
 
-// Config fetches the capability table, once per client.
+// Capabilities fetches the capability table, once per client.
 // A failure is remembered, so a run that cannot reach the resource treats every
 // provider as undeclared instead of refetching per episode
 // a cancelled run is not remembered, since the next one would inherit a verdict
 // about nothing that was ever attempted
-func (c *Client) Config(ctx context.Context) (Capabilities, error) {
+func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 	c.cfgMu.Lock()
 	defer c.cfgMu.Unlock()
 	if c.cfgDone {

@@ -194,7 +194,9 @@ func primary(tag string) string {
 // one provider often serves an episode from several hosts, and the one it flags
 // as default can be the dead one, so a caller that can retry walks past the head
 // rather than giving up on the provider
-func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
+// hc fetches a master playlist when the quality asked for is not among the
+// labels the provider gave, and must keep HTTP/2 for the CDNs that need it
+func Rank(ctx context.Context, hc *http.Client, r *Result, quality string) []Stream {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
 		if !playable(s) {
@@ -228,7 +230,7 @@ func (c *Client) Rank(ctx context.Context, r *Result, quality string) []Stream {
 		seen[k] = true
 		out = append(out, s)
 	}
-	if s, ok := c.preferred(ctx, hls, mp4, quality); ok {
+	if s, ok := preferred(ctx, hc, hls, mp4, quality); ok {
 		add(s)
 	}
 	for _, s := range hls {
@@ -264,7 +266,7 @@ func lead(streams []Stream) {
 // master associates
 // it prefers hls over a direct mp4, and reports false only when there is
 // nothing playable at all
-func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality string) (Stream, bool) {
+func preferred(ctx context.Context, hc *http.Client, hls, mp4 []Stream, quality string) (Stream, bool) {
 	if len(hls) > 0 {
 		if quality == "" || quality == "best" {
 			return hls[0], true
@@ -272,7 +274,7 @@ func (c *Client) preferred(ctx context.Context, hls, mp4 []Stream, quality strin
 		if s, ok := pickQuality(hls, quality); ok {
 			return s, true
 		}
-		if variants, err := c.expandMaster(ctx, hls[0]); err == nil {
+		if variants, err := expandMaster(ctx, hc, hls[0]); err == nil {
 			if v, ok := pickQuality(variants, quality); ok {
 				s := hls[0]
 				s.Quality = v.Quality
@@ -346,12 +348,12 @@ var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 // it errors on a non-200, on a non-master body, or on a master with no
 // height-labelled variants, so a media playlist or an error page never becomes
 // fabricated variants
-func (c *Client) expandMaster(ctx context.Context, s Stream) ([]Stream, error) {
+func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, error) {
 	req, err := newGet(ctx, s.URL, s.Referer)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}

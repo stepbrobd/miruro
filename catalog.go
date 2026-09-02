@@ -77,8 +77,11 @@ func (e skipEntry) plausible() bool {
 
 type Provider struct {
 	Code string
-	Sub  []Episode
-	Dub  []Episode
+	// Backend is the upstream that listed the provider and resolves its
+	// episodes
+	Backend Backend
+	Sub     []Episode
+	Dub     []Episode
 }
 
 // Episodes lists the episodes a provider carries in a category
@@ -97,9 +100,9 @@ type Catalog struct {
 	Aniskip   []SkipRange
 }
 
-// Episodes fetches the provider and episode map for an AniList id
-func (c *Client) Episodes(ctx context.Context, anilistID int) (*Catalog, error) {
-	body, err := c.pipe(ctx, "episodes", map[string]string{"anilistId": strconv.Itoa(anilistID)})
+// Episodes fetches the provider and episode map for a title
+func (c *Client) Episodes(ctx context.Context, m Media) (*Catalog, error) {
+	body, err := c.pipe(ctx, "episodes", map[string]string{"anilistId": strconv.Itoa(m.ID)})
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +128,7 @@ func (c *Client) Episodes(ctx context.Context, anilistID int) (*Catalog, error) 
 		Providers: make(map[string]Provider, len(raw.Providers)),
 	}
 	for code, p := range raw.Providers {
-		cat.Providers[code] = Provider{Code: code, Sub: p.Episodes.Sub, Dub: p.Episodes.Dub}
+		cat.Providers[code] = Provider{Code: code, Backend: c, Sub: p.Episodes.Sub, Dub: p.Episodes.Dub}
 	}
 	cat.Aniskip = bestSkips(raw.Mappings.Aniskip)
 	return cat, nil
@@ -182,10 +185,14 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	return out
 }
 
-// order is the provider preference, an author-owned default
+// order is the provider preference across every backend, an author-owned
+// default
 // ally and pewe lead because they are the two the 2026-08-23 integration run
 // watched carry a whole episode end to end, and kiwi follows on AnimeTV-Fork's
 // note that it is the best quality of the set
+// allanime is the AllAnime site reached directly rather than through miruro,
+// which served a whole episode from its own storage on 2026-09-02, and it sits
+// behind the three measured miruro providers because one run is thin evidence
 // the tail is what the same run saw fail, in the order it sits in below: bonk
 // refused a segment partway through, hop was unreachable across every mirror
 // and title, bee's playlist answered 502, and AnimeTV-Fork annotates moo lowest
@@ -193,7 +200,7 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 // miruro publishes its own order in the config resource and rewrites it between
 // deploys, which would move the default provider under a resumed history entry
 // and a filled segment cache, so this list stays here instead
-var order = []string{"ally", "pewe", "kiwi", "bonk", "hop", "bee", "moo"}
+var order = []string{"ally", "pewe", "kiwi", "allanime", "bonk", "hop", "bee", "moo"}
 
 // preference places a provider in order, with an unnamed code after every named
 // one rather than interleaved, since nothing is known about it

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,15 +21,51 @@ import (
 	"ysun.co/miruro/ui"
 )
 
-// runState is immutable state shared by every episode in one command
+// runState is the state shared by every episode in one command
 type runState struct {
-	client    *miruro.Client
+	// hc fetches a master playlist when a quality pick needs one expanded
+	hc        *http.Client
 	cat       *miruro.Catalog
 	anilistID int
 	title     string
 	category  miruro.Category
 	caps      miruro.Capabilities
 	cfg       config
+	// refused remembers the backends that refused the run
+	refused refusals
+}
+
+// refusals is the set of backends whose firewall refused this client
+// a refusal holds for the process, since every later request would meet the
+// same one, and download workers share it, so it is probed once and reported
+// once
+type refusals struct {
+	mu   sync.Mutex
+	dead map[string]error
+}
+
+// add records a refusal and reports whether it is the first for the backend
+func (r *refusals) add(b miruro.Backend, err error) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dead == nil {
+		r.dead = map[string]error{}
+	}
+	if _, seen := r.dead[b.Name()]; seen {
+		return false
+	}
+	r.dead[b.Name()] = err
+	return true
+}
+
+// get returns the refusal a backend answered, nil when it answered none
+func (r *refusals) get(b miruro.Backend) error {
+	if b == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dead[b.Name()]
 }
 
 func run(cmd *cobra.Command, args []string) error {
@@ -64,14 +101,14 @@ func run(cmd *cobra.Command, args []string) error {
 	if len(cfg.Mirrors) > 0 {
 		client.Bases = cfg.Mirrors
 	}
+	backends := miruro.Backends{client}
 
 	category := miruro.Sub
 	if cfg.Dub {
 		category = miruro.Dub
 	}
 
-	var anilistID int
-	var title string
+	var media miruro.Media
 	startEp := -1.0
 	pinned := cfg.Provider
 
@@ -83,7 +120,7 @@ func run(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		anilistID, title, startEp = e.AnilistID, e.Title, e.Episode
+		media, startEp = miruro.Media{ID: e.AnilistID, Romaji: e.Title}, e.Episode
 		// an explicit flag overrides what the entry saved, so a sub run can be
 		// corrected with --dub and a saved bonk:soft with --provider bonk:hard
 		if !flagDub {
@@ -93,17 +130,28 @@ func run(cmd *cobra.Command, args []string) error {
 			pinned = e.Provider
 		}
 	} else {
-		id, t, err := findAnime(ctx, client, args)
+		media, err = findAnime(ctx, client, args)
 		if err != nil {
 			return err
 		}
-		anilistID, title = id, t
 	}
 
-	cat, err := client.Episodes(ctx, anilistID)
-	if err != nil {
-		return err
+	// a backend that cannot answer costs the run its providers and nothing
+	// else, so the failure is reported and the rest of the catalog stands
+	cat, failed := backends.Episodes(ctx, media)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
+	for _, f := range failed {
+		log.Warn("backend did not answer", "backend", f.Backend, "err", f.Err)
+	}
+	if len(cat.Providers) == 0 {
+		if len(failed) > 0 {
+			return errors.Join(joined(failed)...)
+		}
+		return fmt.Errorf("no provider carries %s", media.Title())
+	}
+	title := media.Title()
 	if cat.Title != "" {
 		title = cat.Title
 	}
@@ -123,12 +171,12 @@ func run(cmd *cobra.Command, args []string) error {
 	// a run without it asks every provider for the plain category and offers the
 	// embeds it would otherwise drop, so the table is a correction rather than a
 	// requirement
-	caps, err := client.Config(ctx)
-	switch {
-	case ctx.Err() != nil:
+	caps, failed := backends.Capabilities(ctx)
+	if ctx.Err() != nil {
 		return ctx.Err()
-	case err != nil:
-		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "err", err)
+	}
+	for _, f := range failed {
+		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "backend", f.Backend, "err", f.Err)
 	}
 
 	pin := ParsePin(pinned)
@@ -145,7 +193,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	state := &runState{
-		client: client, cat: cat, anilistID: anilistID, title: title,
+		hc: client.HTTP, cat: cat, anilistID: media.ID, title: title,
 		category: category, caps: caps, cfg: cfg,
 	}
 	if flagDownload {
@@ -154,31 +202,36 @@ func run(cmd *cobra.Command, args []string) error {
 	return state.watch(ctx, st, numbers, eps, pin, player)
 }
 
-func findAnime(ctx context.Context, client *miruro.Client, args []string) (int, string, error) {
+func findAnime(ctx context.Context, client *miruro.Client, args []string) (miruro.Media, error) {
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
 		q, err := ui.Prompt("Search anime")
 		if err != nil {
-			return 0, "", err
+			return miruro.Media{}, err
 		}
 		query = q
 	}
 	if query == "" {
-		return 0, "", errors.New("empty query")
+		return miruro.Media{}, errors.New("empty query")
 	}
 
 	media, err := client.Search(ctx, query)
 	if err != nil {
-		return 0, "", err
+		return miruro.Media{}, err
 	}
 	if len(media) == 0 {
-		return 0, "", fmt.Errorf("no results for %q", query)
+		return miruro.Media{}, fmt.Errorf("no results for %q", query)
 	}
-	m, err := ui.Select("Select anime", media, mediaLabel)
-	if err != nil {
-		return 0, "", err
+	return ui.Select("Select anime", media, mediaLabel)
+}
+
+// joined widens backend failures to errors for errors.Join
+func joined(failed []miruro.Failure) []error {
+	out := make([]error, len(failed))
+	for i, f := range failed {
+		out[i] = f
 	}
-	return m.ID, m.Title(), nil
+	return out
 }
 
 // formatNames maps AniList's format enum to display names
@@ -358,7 +411,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 	tried := map[string]bool{}
 	var last error
 	for {
-		res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, s.pin, tried, s.caps)
+		res, src, err := s.autoResolve(ctx, ep, s.pin, tried)
 		if err != nil {
 			if last != nil {
 				return source{}, 0, last
@@ -369,7 +422,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 
 		// one provider serves an episode from several hosts, so a dead default
 		// stream is not a dead provider
-		for _, stream := range s.client.Rank(ctx, res, s.cfg.Quality) {
+		for _, stream := range miruro.Rank(ctx, s.hc, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
 				return src, missed, nil
@@ -513,7 +566,7 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 			subs = nil
 		}
 
-		if ranked := p.client.Rank(pctx, res, p.cfg.Quality); len(ranked) > 0 {
+		if ranked := miruro.Rank(pctx, p.hc, res, p.cfg.Quality); len(ranked) > 0 {
 			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
 				"server", server(ranked[0]), "rendition", src.Category,
 				"player", p.kind, "subs", len(subs))
@@ -530,7 +583,7 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 		}
 
 		tried[src.Code] = true
-		next, nsrc, err := autoResolve(pctx, p.client, p.cat, p.ep, p.category, p.pin, tried, p.caps)
+		next, nsrc, err := p.autoResolve(pctx, p.ep, p.pin, tried)
 		switch {
 		case errors.Is(err, miruro.ErrBlocked):
 			// the session is over, and saying the player exited would hide that
@@ -773,7 +826,7 @@ func apply(action string, numbers []float64, ep float64) (step, bool) {
 // and the pick is the pin whether or not that provider ends up serving
 func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Result, source, Pin, error) {
 	if pin.Code != "" {
-		res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, pin, nil, s.caps)
+		res, src, err := s.autoResolve(ctx, ep, pin, nil)
 		return res, src, pin, err
 	}
 
@@ -788,36 +841,55 @@ func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Re
 	if err != nil {
 		return nil, source{}, pin, err
 	}
-	res, src, err := autoResolve(ctx, s.client, s.cat, ep, s.category, pick.Pin, nil, s.caps)
+	res, src, err := s.autoResolve(ctx, ep, pick.Pin, nil)
 	return res, src, pick.Pin, err
 }
 
 // autoResolve tries the pinned pick first then the rest, never prompting
 // skip names providers a caller has already used, so an episode being retried
 // moves on instead of resolving the same dead source again
-func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog, ep float64, category miruro.Category, pin Pin, skip map[string]bool, caps miruro.Capabilities) (*miruro.Result, source, error) {
-	avail, err := candidates(cat, ep, category, caps)
+// a backend that refuses this client takes its other providers out of the walk
+// with it for the rest of the run, since each would cost a request against the
+// same refusal, and the refusal is what is reported when nothing else served
+func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*miruro.Result, source, error) {
+	avail, err := candidates(s.cat, ep, s.category, s.caps)
 	if err != nil {
 		return nil, source{}, err
 	}
 
-	var last error
-	for _, o := range orderPinned(offers(avail, caps, category, pin), pin) {
+	var last, blocked error
+	for _, o := range orderPinned(offers(avail, s.caps, s.category, pin), pin) {
+		p := s.cat.Providers[o.Code]
 		if skip[o.Code] {
 			continue
 		}
-		src := o.source(category)
-		e := find(cat.Providers[o.Code].Episodes(src.Category), ep)
+		if err := s.refused.get(p.Backend); err != nil {
+			blocked = err
+			continue
+		}
+		src := o.source(s.category)
+		e := find(p.Episodes(src.Category), ep)
 		if e == nil {
 			continue
 		}
-		res, err := client.Sources(ctx, e.ID, o.Code, src.Category)
+		res, err := s.cat.Sources(ctx, e.ID, o.Code, src.Category)
 		if err != nil {
-			if errors.Is(err, miruro.ErrBlocked) {
-				return nil, source{}, err
-			}
 			if ctx.Err() != nil {
 				return nil, source{}, ctx.Err()
+			}
+			if errors.Is(err, miruro.ErrBlocked) {
+				if s.refused.add(p.Backend, err) {
+					log.Warn("backend refused the run, skipping its providers", "backend", p.Backend.Name(), "err", err)
+				}
+				blocked = err
+				continue
+			}
+			// a provider that fails to resolve is reported only when none served,
+			// so the pinned one says so as it happens and the rest under --verbose
+			if o.Code == pin.Code {
+				log.Warn("pinned provider did not resolve, trying the next", "provider", o.Code, "err", err)
+			} else {
+				log.Debug("provider did not resolve, trying the next", "provider", o.Code, "err", err)
 			}
 			// name the provider so a report points at the one that failed
 			last = fmt.Errorf("%s: %w", o.Code, err)
@@ -831,7 +903,10 @@ func autoResolve(ctx context.Context, client *miruro.Client, cat *miruro.Catalog
 		}
 		return res, src, nil
 	}
-	if last == nil {
+	switch {
+	case blocked != nil:
+		return nil, source{}, blocked
+	case last == nil:
 		last = fmt.Errorf("no source resolved for episode %s", num(ep))
 	}
 	return nil, source{}, last

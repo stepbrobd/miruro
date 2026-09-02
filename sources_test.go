@@ -60,9 +60,9 @@ func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // top is the stream a caller plays, the head of Rank
-func top(t *testing.T, c *Client, r *Result, quality string) Stream {
+func top(t *testing.T, hc *http.Client, r *Result, quality string) Stream {
 	t.Helper()
-	ranked := c.Rank(context.Background(), r, quality)
+	ranked := Rank(context.Background(), hc, r, quality)
 	if len(ranked) == 0 {
 		t.Fatal("Rank returned nothing playable")
 	}
@@ -73,12 +73,12 @@ func TestRankHead(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("labelled hls match needs no network", func(t *testing.T) {
-		c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
+		hc := &http.Client{Transport: failTransport{t}}
 		r := &Result{Streams: []Stream{
 			{URL: "u1080", Kind: HLS, Quality: "1080p"},
 			{URL: "u720", Kind: HLS, Quality: "720p"},
 		}}
-		s := top(t, c, r, "720p")
+		s := top(t, hc, r, "720p")
 		if s.URL != "u720" {
 			t.Errorf("selected %q, want u720", s.URL)
 		}
@@ -92,9 +92,9 @@ func TestRankHead(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		c := &Client{HTTP: srv.Client()}
+		hc := srv.Client()
 		r := &Result{Streams: []Stream{{URL: srv.URL + "/master.m3u8", Kind: HLS}}}
-		s := top(t, c, r, "720p")
+		s := top(t, hc, r, "720p")
 		// the master travels whole rather than the variant URL out of it, since a
 		// bare variant loses the audio renditions the master associates
 		if want := srv.URL + "/master.m3u8"; s.URL != want {
@@ -109,7 +109,7 @@ func TestRankHead(t *testing.T) {
 
 		// the same master unrestricted stays reachable behind the pick as the
 		// fallback when its restricted variant will not play
-		ranked := c.Rank(context.Background(), r, "720p")
+		ranked := Rank(context.Background(), hc, r, "720p")
 		if len(ranked) != 2 || ranked[1].URL != s.URL || ranked[1].Height != 0 {
 			t.Errorf("ranked = %+v, want the unrestricted master second", ranked)
 		}
@@ -119,34 +119,34 @@ func TestRankHead(t *testing.T) {
 		srv := httptest.NewServer(http.NotFoundHandler())
 		defer srv.Close()
 
-		c := &Client{HTTP: srv.Client()}
+		hc := srv.Client()
 		first := Stream{URL: srv.URL + "/master.m3u8", Kind: HLS}
 		r := &Result{Streams: []Stream{first, {URL: srv.URL + "/other.m3u8", Kind: HLS}}}
-		s := top(t, c, r, "720p")
+		s := top(t, hc, r, "720p")
 		if s.URL != first.URL {
 			t.Errorf("selected %q, want the first hls %q", s.URL, first.URL)
 		}
 	})
 
 	t.Run("mp4 only picks by label then falls back", func(t *testing.T) {
-		c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
+		hc := &http.Client{Transport: failTransport{t}}
 		r := &Result{Streams: []Stream{
 			{URL: "m480", Kind: MP4, Quality: "480p"},
 			{URL: "m720", Kind: MP4, Quality: "720p"},
 		}}
-		s := top(t, c, r, "720p")
+		s := top(t, hc, r, "720p")
 		if s.URL != "m720" {
 			t.Errorf("selected %q, want m720", s.URL)
 		}
-		s = top(t, c, r, "2160p")
+		s = top(t, hc, r, "2160p")
 		if s.URL != "m480" {
 			t.Errorf("selected %q, want the first mp4 m480", s.URL)
 		}
 	})
 
 	t.Run("empty result ranks nothing", func(t *testing.T) {
-		c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
-		if got := c.Rank(ctx, &Result{}, "best"); len(got) != 0 {
+		hc := &http.Client{Transport: failTransport{t}}
+		if got := Rank(ctx, hc, &Result{}, "best"); len(got) != 0 {
 			t.Errorf("Rank over an empty result = %v, want nothing playable", got)
 		}
 	})
@@ -165,8 +165,8 @@ func TestExpandMasterRedirect(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := &Client{HTTP: srv.Client()}
-	variants, err := c.expandMaster(context.Background(), Stream{URL: srv.URL + "/master.m3u8", Kind: HLS})
+	hc := srv.Client()
+	variants, err := expandMaster(context.Background(), hc, Stream{URL: srv.URL + "/master.m3u8", Kind: HLS})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestOrder(t *testing.T) {
 // can be the dead one, so the rest have to stay reachable behind it
 func TestRank(t *testing.T) {
 	ctx := context.Background()
-	c := &Client{HTTP: &http.Client{Transport: failTransport{t}}}
+	hc := &http.Client{Transport: failTransport{t}}
 
 	r := &Result{Streams: []Stream{
 		{URL: "hd1", Kind: HLS, Quality: "1080p"},
@@ -261,7 +261,7 @@ func TestRank(t *testing.T) {
 	urls := func(quality string) []string {
 		t.Helper()
 		var out []string
-		for _, s := range c.Rank(ctx, r, quality) {
+		for _, s := range Rank(ctx, hc, r, quality) {
 			out = append(out, s.URL)
 		}
 		return out
@@ -274,7 +274,7 @@ func TestRank(t *testing.T) {
 	if got, want := urls("720p"), []string{"hd2", "hd1", "direct"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Rank(720p) = %v, want %v", got, want)
 	}
-	if got := c.Rank(ctx, &Result{Streams: []Stream{{URL: "embed", Kind: Embed}}}, "best"); len(got) != 0 {
+	if got := Rank(ctx, hc, &Result{Streams: []Stream{{URL: "embed", Kind: Embed}}}, "best"); len(got) != 0 {
 		t.Errorf("Rank over an embed-only result = %v, want nothing playable", got)
 	}
 
@@ -283,7 +283,7 @@ func TestRank(t *testing.T) {
 		{URL: "second", Kind: HLS, Server: "HD-2"},
 		{URL: "first", Kind: HLS, Server: "HD-1", Default: true},
 	}}
-	if got := c.Rank(ctx, flagged, "best"); len(got) != 2 || got[0].URL != "first" || got[1].URL != "second" {
+	if got := Rank(ctx, hc, flagged, "best"); len(got) != 2 || got[0].URL != "first" || got[1].URL != "second" {
 		t.Errorf("Rank ignored the provider's default flag: %+v", got)
 	}
 }
@@ -291,11 +291,12 @@ func TestRank(t *testing.T) {
 // the api marks some streams inactive, and offering one costs a playback
 // attempt that cannot work
 func TestDeadStreamsAreSkipped(t *testing.T) {
+	hc := &http.Client{Transport: failTransport{t}}
 	res := &Result{Streams: []Stream{
 		{URL: "dead", Kind: HLS, Dead: true, Default: true},
 		{URL: "live", Kind: HLS},
 	}}
-	got := (&Client{}).Rank(context.Background(), res, "best")
+	got := Rank(context.Background(), hc, res, "best")
 	if len(got) != 1 || got[0].URL != "live" {
 		t.Errorf("Rank = %v, want the dead stream dropped", got)
 	}
@@ -309,7 +310,7 @@ func TestDeadStreamsAreSkipped(t *testing.T) {
 	if only.Playable() {
 		t.Error("a result whose only stream is dead must not report playable")
 	}
-	if got := (&Client{}).Rank(context.Background(), only, "best"); len(got) != 0 {
+	if got := Rank(context.Background(), hc, only, "best"); len(got) != 0 {
 		t.Errorf("Rank = %v, want nothing", got)
 	}
 }

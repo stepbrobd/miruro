@@ -81,13 +81,33 @@ func serveBlocked(w http.ResponseWriter, r *http.Request) {
 
 // Available orders providers by preference, where ally leads bonk, so ally
 // probes first when no pin reorders them
-func twoProviderCatalog() *miruro.Catalog {
-	return &miruro.Catalog{
+func twoProviderCatalog(b miruro.Backend) *miruro.Catalog {
+	return served(&miruro.Catalog{
 		Providers: map[string]miruro.Provider{
 			"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-1", Number: 1}}},
 			"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
 		},
+	}, b)
+}
+
+// resolver is the state one resolution needs
+func resolver(cat *miruro.Catalog, category miruro.Category, caps miruro.Capabilities) *runState {
+	return &runState{cat: cat, category: category, caps: caps}
+}
+
+// served points every provider of a hand-written catalog at one backend, the
+// way a fetched catalog arrives
+func served(cat *miruro.Catalog, b miruro.Backend) *miruro.Catalog {
+	for code, p := range cat.Providers {
+		p.Backend = b
+		cat.Providers[code] = p
 	}
+	return cat
+}
+
+// pipe is a miruro client against a fake pipe server
+func pipe(srv *httptest.Server) *miruro.Client {
+	return &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 }
 
 // deadCDN serves an episode body except under prefix, which 404s, so a test can
@@ -115,9 +135,10 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 	}
 	t.Cleanup(func() { px.Close() })
 	dir := t.TempDir()
+	client := pipe(srv)
 	state := &runState{
-		client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-		cat:      cat,
+		hc:       srv.Client(),
+		cat:      served(cat, client),
 		title:    "Show",
 		category: miruro.Sub,
 		cfg:      config{Quality: "best", DownloadDir: dir},
@@ -143,8 +164,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		res, src, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{Code: "bonk"}, nil, nil)
+		res, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -164,8 +184,7 @@ func TestAutoResolve(t *testing.T) {
 		}, &hits)
 		defer srv.Close()
 
-		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{Code: "bonk"}, nil, nil)
+		_, _, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if !errors.Is(err, miruro.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
@@ -181,8 +200,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, src, err := autoResolve(ctx, client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, nil, nil)
+		_, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,8 +214,7 @@ func TestAutoResolve(t *testing.T) {
 		srv := sourcesServer(t, map[string]http.HandlerFunc{}, &hits)
 		defer srv.Close()
 
-		client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-		_, _, err := autoResolve(ctx, client, twoProviderCatalog(), 9, miruro.Sub, Pin{}, nil, nil)
+		_, _, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 9, Pin{}, nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
@@ -377,14 +394,77 @@ func TestOutcome(t *testing.T) {
 
 // a retried episode must move past the providers it already burned, or the
 // fallback loop would resolve the same dead source forever
+// fakeBackend answers one provider from memory, or refuses every request
+type fakeBackend struct {
+	name string
+	err  error
+	hits int
+}
+
+func (f *fakeBackend) Name() string { return f.name }
+
+func (f *fakeBackend) Episodes(context.Context, miruro.Media) (*miruro.Catalog, error) {
+	return &miruro.Catalog{}, nil
+}
+
+func (f *fakeBackend) Sources(context.Context, string, string, miruro.Category) (*miruro.Result, error) {
+	f.hits++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &miruro.Result{Streams: []miruro.Stream{{URL: f.name, Kind: miruro.HLS}}}, nil
+}
+
+func (f *fakeBackend) Capabilities(context.Context) (miruro.Capabilities, error) {
+	return miruro.Capabilities{}, nil
+}
+
+// a backend whose firewall refused the run would answer every one of its
+// providers the same, so the walk skips them and reaches the other backend,
+// and only when nothing else served is the refusal what comes back
+func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
+	blocked := &fakeBackend{name: "miruro", err: miruro.ErrBlocked}
+	open := &fakeBackend{name: "allanime"}
+	ep := []miruro.Episode{{ID: "e1", Number: 1}}
+	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
+		"ally":     {Code: "ally", Backend: blocked, Sub: ep},
+		"pewe":     {Code: "pewe", Backend: blocked, Sub: ep},
+		"allanime": {Code: "allanime", Backend: open, Sub: ep},
+	}}
+	st := resolver(cat, miruro.Sub, nil)
+	res, src, err := st.autoResolve(context.Background(), 1, Pin{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Code != "allanime" || res.Streams[0].URL != "allanime" {
+		t.Errorf("served = %q, want allanime", src.Code)
+	}
+	if blocked.hits != 1 {
+		t.Errorf("blocked backend asked %d times, want once", blocked.hits)
+	}
+
+	// the refusal holds for the run, so the next episode costs it no request
+	if _, src, err := st.autoResolve(context.Background(), 1, Pin{Code: "ally"}, nil); err != nil || src.Code != "allanime" {
+		t.Errorf("second resolution = %q, %v, want allanime again", src.Code, err)
+	}
+	if blocked.hits != 1 {
+		t.Errorf("blocked backend asked %d times across two resolutions, want once", blocked.hits)
+	}
+
+	delete(cat.Providers, "allanime")
+	if _, _, err := st.autoResolve(context.Background(), 1, Pin{}, nil); !errors.Is(err, miruro.ErrBlocked) {
+		t.Errorf("err = %v, want %v when nothing else served", err, miruro.ErrBlocked)
+	}
+}
+
 func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	srv := sourcesServer(t, map[string]http.HandlerFunc{
 		"bonk": serveJSON(hlsPayload),
 	}, nil)
 	defer srv.Close()
 
-	client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	_, src, err := autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, map[string]bool{"ally": true}, nil)
+	cat := twoProviderCatalog(pipe(srv))
+	_, src, err := resolver(cat, miruro.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +472,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 		t.Errorf("served = %q, want bonk", src.Code)
 	}
 
-	_, _, err = autoResolve(context.Background(), client, twoProviderCatalog(), 1, miruro.Sub, Pin{}, map[string]bool{"ally": true, "bonk": true}, nil)
+	_, _, err = resolver(cat, miruro.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
 	if err == nil || !strings.Contains(err.Error(), "no source resolved") {
 		t.Fatalf("err = %v, want the no-source error once every provider is spent", err)
 	}
@@ -407,7 +487,7 @@ func TestSaveFallsBackToAnotherProvider(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	sv, dir := newSaver(t, srv, twoProviderCatalog())
+	sv, dir := newSaver(t, srv, twoProviderCatalog(nil))
 	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the fallback provider did not save the episode: %v", err)
 	}
@@ -426,7 +506,7 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	sv, _ := newSaver(t, srv, twoProviderCatalog())
+	sv, _ := newSaver(t, srv, twoProviderCatalog(nil))
 	_, _, err := sv.save(context.Background(), 1, nil)
 	if err == nil {
 		t.Fatal("every provider was dead, the episode must fail")
@@ -680,8 +760,7 @@ func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 					"bonk": {Code: "bonk", Dub: []miruro.Episode{{ID: "bonk-d1", Number: 1}}},
 				}}
 			}
-			client := &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-			_, src, err := autoResolve(context.Background(), client, catalog, 1, tc.category, tc.pin, nil, caps)
+			_, src, err := resolver(served(catalog, pipe(srv)), tc.category, caps).autoResolve(context.Background(), 1, tc.pin, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -736,10 +815,11 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}}
 
 	var tried []string
+	client := pipe(srv)
 	stage := playback{
 		runState: &runState{
-			client:   &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-			cat:      cat,
+			hc:       srv.Client(),
+			cat:      served(cat, client),
 			title:    "Grow Up Show",
 			category: miruro.Sub,
 			cfg:      config{Quality: "best"},
@@ -754,7 +834,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}
 
 	// ally is the pin, so it is what resolve would have handed over
-	res, err := stage.client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	res, err := client.Sources(ctx, "ally-8", "ally", miruro.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,15 +902,16 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 
 	quit := errors.New("player exit 4")
 	var tried []string
+	client := pipe(srv)
 	stage := playback{
 		runState: &runState{
-			client: &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()},
-			cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
+			hc: srv.Client(),
+			cat: served(&miruro.Catalog{Providers: map[string]miruro.Provider{
 				"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
 				// a second provider the walk could reach, so the guard has something
 				// to prevent rather than nothing to do
 				"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
-			}},
+			}}, client),
 			category: miruro.Sub,
 			cfg:      config{Quality: "best"},
 		},
@@ -844,7 +925,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 		},
 	}
 
-	res, err := stage.client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	res, err := client.Sources(ctx, "ally-8", "ally", miruro.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
