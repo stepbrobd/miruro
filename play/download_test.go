@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"ysun.co/miruro"
@@ -155,7 +157,7 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "video.mp4"):
-			w.Write([]byte("not really an mp4, but bytes on disk"))
+			w.Write(mp4Bytes)
 		case strings.HasSuffix(r.URL.Path, "good.vtt"):
 			w.Write([]byte("WEBVTT\n"))
 		default:
@@ -183,6 +185,37 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, name+".en.vtt")); err != nil {
 		t.Errorf("the sidecar that resolved was not written: %v", err)
+	}
+}
+
+// mp4Bytes opens with the file type box every mp4 leads with and carries
+// nothing a player could show, which is all the container check reads
+var mp4Bytes = []byte("\x00\x00\x00\x18ftypisom" + "not really an mp4, but bytes on disk")
+
+// a host answering a page where the video should be used to be saved as the
+// episode and skipped as finished on every rerun
+func TestDownloadRefusesAnMP4ThatIsNotOne(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><body>not found</body></html>")
+	}))
+	defer srv.Close()
+
+	dir, name := t.TempDir(), "Show - E1"
+	_, err := Download(context.Background(), http.DefaultClient,
+		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4}, nil, dir, name, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "not an mp4") {
+		t.Fatalf("err = %v, want the page refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name+".mp4")); !os.IsNotExist(err) {
+		t.Error("the page was kept as the episode")
+	}
+	// the refusal is retried like a dropped connection, since that is what it
+	// can also be
+	if n := hits.Load(); n != attempts {
+		t.Errorf("fetched %d times, want %d", n, attempts)
 	}
 }
 

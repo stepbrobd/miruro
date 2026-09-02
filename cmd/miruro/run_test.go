@@ -111,6 +111,10 @@ func pipe(srv *httptest.Server) *mirurotv.Client {
 	return &mirurotv.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 }
 
+// episodeBody opens with the file type box the download path checks for and
+// carries nothing a player could show, which is all that check reads
+const episodeBody = "\x00\x00\x00\x18ftypisom episode bytes"
+
 // deadCDN serves an episode body except under prefix, which 404s, so a test can
 // spell one dead host among live ones
 func deadCDN(t *testing.T, prefix string) *httptest.Server {
@@ -120,7 +124,7 @@ func deadCDN(t *testing.T, prefix string) *httptest.Server {
 			http.NotFound(w, r)
 			return
 		}
-		io.WriteString(w, "episode bytes")
+		io.WriteString(w, episodeBody)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -150,7 +154,7 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 // savedEpisode asserts the episode landed whole under dir
 func savedEpisode(t *testing.T, dir string) {
 	t.Helper()
-	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != "episode bytes" {
+	if body, err := os.ReadFile(filepath.Join(dir, "Show - E1.mp4")); err != nil || string(body) != episodeBody {
 		t.Errorf("saved %q (%v), want the whole episode", body, err)
 	}
 }

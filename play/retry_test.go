@@ -113,7 +113,7 @@ func TestGrabRetriesTransientStatus(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "ep.mp4")
-	if err := grab(context.Background(), srv.Client(), srv.URL+"/video.mp4", dest, nil); err != nil {
+	if err := grab(context.Background(), srv.Client(), srv.URL+"/video.mp4", dest, nil, nil); err != nil {
 		t.Fatalf("a recoverable download failed: %v", err)
 	}
 	if body, err := os.ReadFile(dest); err != nil || string(body) != "episode bytes" {

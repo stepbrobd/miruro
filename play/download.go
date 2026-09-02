@@ -48,7 +48,7 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 
 	switch s.Kind {
 	case miruro.MP4:
-		if err := grab(ctx, hc, s.URL, dest, prog); err != nil {
+		if err := grab(ctx, hc, s.URL, dest, prog, mp4Head); err != nil {
 			return 0, err
 		}
 	case miruro.HLS:
@@ -58,12 +58,17 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	default:
 		return 0, fmt.Errorf("cannot download %s stream", s.Kind)
 	}
+	// a finished episode must carry audio whatever container it arrived in
+	if err := audible(ctx, dest); err != nil {
+		os.Remove(dest)
+		return 0, err
+	}
 
 	var missed int
 	seen := map[string]int{}
 	for _, sub := range subs {
 		side := filepath.Join(dir, name+sidecar(sub, seen))
-		err := grab(ctx, hc, sub.File, side, nil)
+		err := grab(ctx, hc, sub.File, side, nil, nil)
 		if err == nil {
 			continue
 		}
@@ -81,11 +86,13 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 // it writes a .part file and renames on success, so an interrupted or failed
 // fetch never leaves a truncated file that looks complete
 // a transient failure is retried, since a provider that 502s once usually
-// answers the next attempt
+// answers the next attempt, and a body that fails its plausibility check is
+// one, since a host answering a page where a video should be is what a
+// dropped connection looks like too
 // the proxy injects the referer upstream, so none is set here
-func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress) error {
+func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress, plausible func(head []byte) error) error {
 	part := dest + ".part"
-	err := retry(ctx, func() error { return fetchFile(ctx, hc, url, part, prog) })
+	err := retry(ctx, func() error { return fetchFile(ctx, hc, url, part, prog, plausible) })
 	if err != nil {
 		os.Remove(part)
 		return err
@@ -93,9 +100,20 @@ func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress)
 	return os.Rename(part, dest)
 }
 
+// mp4Head refuses a body that does not open with the file type box every mp4
+// leads with, which is what a host answering an error page with a 200 looks
+// like
+func mp4Head(head []byte) error {
+	if len(head) < 8 || string(head[4:8]) != "ftyp" {
+		return errors.New("body is not an mp4")
+	}
+	return nil
+}
+
 // fetchFile writes one whole body to part, truncating whatever a failed earlier
 // attempt left behind
-func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Progress) error {
+// plausible, when given, judges the head of the body once it is on disk
+func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Progress, plausible func(head []byte) error) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -118,9 +136,13 @@ func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Prog
 	if prog != nil {
 		src = &reader{r: resp.Body, total: resp.ContentLength, prog: prog}
 	}
-	_, err = io.Copy(f, src)
+	var head bytes.Buffer
+	_, err = io.Copy(f, io.TeeReader(src, limitWriter(&head, 8)))
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil && plausible != nil {
+		err = plausible(head.Bytes())
 	}
 	return err
 }
@@ -143,8 +165,6 @@ func (r *reader) Read(p []byte) (int, error) {
 // playlist straight to ffmpeg
 // a playlist this package cannot take apart is still downloadable, it just
 // starts over when interrupted
-// the finished file must carry audio, because ffmpeg keeps going when a demuxed
-// master's audio rendition refuses to serve and exits zero on a silent episode
 func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog Progress) error {
 	// fail before fetching so a missing binary cannot wipe a good cache
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
@@ -160,20 +180,15 @@ func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog 
 		}
 		err = runFFmpeg(ctx, dest, prog, "-i", srcURL)
 	}
-	if err != nil {
-		return err
-	}
-	if err := audible(ctx, dest); err != nil {
-		os.Remove(dest)
-		return err
-	}
-	return nil
+	return err
 }
 
 // audible refuses an episode whose audio is missing or runs far short of the
 // picture, so a caller retries another stream instead of keeping a silent file
 // providers serve audio as a separate hls rendition, and one that dies while
-// the video keeps serving remuxes into exactly such a file with no error
+// the video keeps serving remuxes into exactly such a file with no error, and
+// ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
+// and exits zero on the result
 // a missing ffprobe or an unreadable report skips the check rather than failing
 // a download the old behaviour would have kept
 func audible(ctx context.Context, dest string) error {
