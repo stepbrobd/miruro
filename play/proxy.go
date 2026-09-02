@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -262,14 +263,22 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// a buffered body is announced with its length, so a reader that checks
+	// what it got against what was announced can do so through the proxy
 	switch t.Kind {
 	case playlist:
 		body, ok := buffered(w, resp, maxPlaylistBody)
 		if !ok {
 			return
 		}
+		out, err := p.rewrite(body, t.Referer, resp.Request.URL, t.Height)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Write(p.rewrite(body, t.Referer, resp.Request.URL, t.Height))
+		w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+		w.Write(out)
 	case segment, cipher:
 		// a segment is fetched whole and de-obfuscated
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
@@ -282,6 +291,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 			body = normalizeSegment(body)
 		}
 		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		n, _ := w.Write(body)
 		p.tally(t.Kind, n > 0)
 	default:
@@ -407,16 +417,34 @@ func mirrored(err error) int {
 	return http.StatusBadGateway
 }
 
-// relay forwards a body untouched and reports the bytes it copied
-func relay(w http.ResponseWriter, resp *http.Response) int64 {
+// relay forwards a body untouched
+// a body the upstream cuts short must not end cleanly for the player, since a
+// clean end hands it a truncated episode as a whole one and a download would
+// rename it into place, so the connection is dropped the way the upstream
+// dropped it
+// a write failure is the player going away, which is its choice
+func relay(w http.ResponseWriter, resp *http.Response) {
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	n, _ := io.Copy(w, resp.Body)
-	return n
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		switch {
+		case err == io.EOF:
+			return
+		case err != nil:
+			panic(http.ErrAbortHandler)
+		}
+	}
 }
 
 // normalizeSegment drops the decoy image some providers place before the

@@ -257,6 +257,76 @@ func TestProxyRelaysRange(t *testing.T) {
 	}
 }
 
+// an upstream that answers and then drops the connection mid-body must not
+// reach the player as a body that ended cleanly, since a download would rename
+// that into place as a finished episode
+func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Write(bytes.Repeat([]byte("v"), 5000))
+		w.(http.Flusher).Flush()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.URL(miruro.Stream{URL: cdn.URL + "/ep.mp4", Kind: miruro.MP4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err == nil {
+		t.Errorf("relayed %d bytes as a whole body", len(got))
+	}
+	if px.Served() != 1 {
+		t.Errorf("served = %d, want the body counted as it started", px.Served())
+	}
+}
+
+// a buffered body is announced with its length, so a reader that compares what
+// arrived against what was announced can do so through the proxy
+func TestProxyAnnouncesTheLengthOfABufferedBody(t *testing.T) {
+	seg := bytes.Repeat(tsPacket188(), 40)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.Write(seg)
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.proxied(cdn.URL+"/0.ts", "", segment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength != int64(len(seg)) {
+		t.Errorf("content length = %d, want %d", resp.ContentLength, len(seg))
+	}
+}
+
+// tsPacket188 is one transport stream packet, a sync byte and padding
+func tsPacket188() []byte {
+	p := make([]byte, tsPacket)
+	p[0] = 0x47
+	return p
+}
+
 func httpGetString(t *testing.T, u string) string { return string(httpGetBytes(t, u)) }
 
 func httpGetBytes(t *testing.T, u string) []byte {

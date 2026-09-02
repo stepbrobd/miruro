@@ -3,11 +3,18 @@ package play
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// errPlaylist marks a playlist the rewriter cannot take apart
+// the alternative is handing the player the upstream urls, which are exactly
+// what the proxy exists to keep away from it
+var errPlaylist = errors.New("playlist unreadable")
 
 var (
 	uriAttr        = regexp.MustCompile(`URI="([^"]+)"`)
@@ -21,8 +28,13 @@ var (
 // height restricts a master to the variants of that picture height, applied
 // before rewriting so a media playlist and a master with no such variant pass
 // through whole
-func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) []byte {
-	body = filterMaster(body, height)
+// a playlist that cannot be scanned is refused rather than passed on with its
+// upstream urls intact
+func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) ([]byte, error) {
+	body, err := filterMaster(body, height)
+	if err != nil {
+		return nil, err
+	}
 	child := childKind(body)
 
 	var out bytes.Buffer
@@ -40,10 +52,10 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 		}
 		out.WriteByte('\n')
 	}
-	if sc.Err() != nil {
-		return body
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %v", errPlaylist, err)
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 // filterMaster keeps only the variants of one picture height in a master
@@ -51,12 +63,12 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 // associates stay attached to the variants that remain
 // a height no variant carries filters nothing, since a master emptied of
 // variants would play nothing at all where the full master still plays
-func filterMaster(body []byte, height int) []byte {
+func filterMaster(body []byte, height int) ([]byte, error) {
 	if height <= 0 || !bytes.Contains(body, []byte("#EXT-X-STREAM-INF")) {
-		return body
+		return body, nil
 	}
 	if !hasVariant(body, height) {
-		return body
+		return body, nil
 	}
 
 	var out bytes.Buffer
@@ -72,17 +84,16 @@ func filterMaster(body []byte, height int) []byte {
 				continue
 			}
 		case drop && trimmed != "" && !strings.HasPrefix(trimmed, "#"):
-			// the URI of the variant whose tag was dropped
 			drop = false
 			continue
 		}
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
-	if sc.Err() != nil {
-		return body
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %v", errPlaylist, err)
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 func hasVariant(body []byte, height int) bool {

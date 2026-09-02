@@ -1,6 +1,7 @@
 package play
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,7 +16,34 @@ func rewritten(p *Proxy, body, base string) string {
 	if err != nil {
 		panic(err)
 	}
-	return string(p.rewrite([]byte(body), "https://ref/", u, 0))
+	out, err := p.rewrite([]byte(body), "https://ref/", u, 0)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
+}
+
+func filtered(t *testing.T, body string, height int) []byte {
+	t.Helper()
+	out, err := filterMaster([]byte(body), height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// a playlist the scanner cannot take apart must not reach the player with its
+// upstream urls intact
+func TestRewriteRefusesAnUnscannablePlaylist(t *testing.T) {
+	body := "#EXTM3U\n#EXTINF:4.0,\n" + strings.Repeat("a", 9<<20) + "\n"
+	u, _ := url.Parse("https://cdn.example/x.m3u8")
+	if _, err := fakeProxy().rewrite([]byte(body), "", u, 0); !errors.Is(err, errPlaylist) {
+		t.Errorf("err = %v, want %v", err, errPlaylist)
+	}
+	master := "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n" + strings.Repeat("a", 9<<20) + "\n"
+	if _, err := filterMaster([]byte(master), 720); !errors.Is(err, errPlaylist) {
+		t.Errorf("filterMaster err = %v, want %v", err, errPlaylist)
+	}
 }
 
 func TestRewriteMasterPlaylist(t *testing.T) {
@@ -102,7 +130,7 @@ func TestFilterMaster(t *testing.T) {
 		"#EXT-X-STREAM-INF:BANDWIDTH=500,RESOLUTION=1280x720,AUDIO=\"a\"\n" +
 		"720/index.m3u8\n"
 
-	out := string(filterMaster([]byte(master), 720))
+	out := string(filtered(t, master, 720))
 	if strings.Contains(out, "1080/index.m3u8") || strings.Contains(out, "RESOLUTION=1920x1080") {
 		t.Errorf("the other variant survived:\n%s", out)
 	}
@@ -115,13 +143,13 @@ func TestFilterMaster(t *testing.T) {
 
 	// a height nothing carries keeps the master whole, since an empty master
 	// plays nothing at all
-	if got := string(filterMaster([]byte(master), 480)); got != master {
+	if got := string(filtered(t, master, 480)); got != master {
 		t.Errorf("an absent height changed the master:\n%s", got)
 	}
 
 	// a media playlist has no variants to restrict
 	media := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXT-X-ENDLIST\n"
-	if got := string(filterMaster([]byte(media), 720)); got != media {
+	if got := string(filtered(t, media, 720)); got != media {
 		t.Errorf("a media playlist was rewritten:\n%s", got)
 	}
 }
@@ -138,7 +166,11 @@ func TestRewriteRestrictsToStreamHeight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := string(fakeProxy().rewrite([]byte(master), "https://ref/", u, 1080))
+	rewrote, err := fakeProxy().rewrite([]byte(master), "https://ref/", u, 1080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(rewrote)
 	if strings.Contains(out, "RESOLUTION=1280x720") {
 		t.Errorf("the restricted variant survived:\n%s", out)
 	}
