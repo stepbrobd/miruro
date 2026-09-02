@@ -77,6 +77,19 @@ func newHLSFixture(t *testing.T) *hlsFixture {
 
 func (f *hlsFixture) url() string { return f.srv.URL + "/media.m3u8" }
 
+// a title starting with a dash under the relative default directory reads as
+// an ffmpeg option, and every hls download of it used to fail at the remux
+func TestRunFFmpegNamesTheOutputAbsolutely(t *testing.T) {
+	f := newHLSFixture(t)
+	t.Chdir(t.TempDir())
+	if err := runFFmpeg(context.Background(), "-Show - E1.mp4", nil, "-i", f.url()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat("-Show - E1.mp4"); err != nil || fi.Size() == 0 {
+		t.Errorf("episode not saved: %v", err)
+	}
+}
+
 // a cached download must leave a playable file and no cache behind
 func TestCachedHLSRemovesItsCache(t *testing.T) {
 	f := newHLSFixture(t)

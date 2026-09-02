@@ -227,6 +227,13 @@ func audible(ctx context.Context, dest string) error {
 // any failure is surfaced through the returned error, which the TUI shows on
 // the task row
 func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string) error {
+	// ffmpeg reads a leading dash as an option, and the default download
+	// directory is relative, so a title starting with one has to be named
+	// absolutely to stay an output
+	dest, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
 	// name the muxer explicitly because ffmpeg infers the output format from the
 	// file extension, and the .part suffix hides the real one
 	part := dest + ".part"
