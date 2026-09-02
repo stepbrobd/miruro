@@ -57,18 +57,19 @@ type offer struct {
 // subtitle rendition a provider declares
 // the table describes the two sub renditions only, so a dub run gets one bare
 // row per provider and keeps every track the dub ships
-// an undeclared provider takes the pinned variant when the pin names it, which
-// is the only way an explicit code:hard survives a run that could not reach the
-// table
+// an undeclared provider is offered with its variant unstated, the way its row
+// reads and the way its pin is persisted, and takes the pinned variant when
+// the pin names one, which is the only way an explicit code:hard survives a
+// run that could not reach the table
 func offers(avail []miruro.Provider, caps miruro.Capabilities, category miruro.Category, pin Pin) []offer {
 	out := make([]offer, 0, len(avail))
 	for _, p := range avail {
 		c, ok := caps[p.Code]
 		switch {
 		case category != miruro.Sub:
-			out = append(out, offer{Pin: Pin{Code: p.Code, Variant: Soft}})
+			out = append(out, offer{Pin: Pin{Code: p.Code}})
 		case !ok, !c.Hard && !c.Soft:
-			v := Soft
+			var v Variant
 			if pin.Code == p.Code {
 				v = pin.Variant
 			}

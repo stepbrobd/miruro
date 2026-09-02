@@ -75,7 +75,7 @@ func TestOffers(t *testing.T) {
 	for _, o := range rows {
 		got = append(got, o.Pin.String())
 	}
-	want := []string{"kiwi:hard", "bee:soft", "bonk:soft", "bonk:hard", "void:soft", "ANIMEDUNYA:soft"}
+	want := []string{"kiwi:hard", "bee:soft", "bonk:soft", "bonk:hard", "void", "ANIMEDUNYA"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("offers = %v, want %v", got, want)
 	}
@@ -106,7 +106,7 @@ func TestOffersForDub(t *testing.T) {
 		t.Fatalf("offers = %d rows, want one per provider", len(rows))
 	}
 	for _, o := range rows {
-		if o.declared || o.Variant != Soft {
+		if o.declared || o.Variant != "" {
 			t.Errorf("%q = %+v, want a bare row untouched by the sub pin", o.Code, o)
 		}
 		if got := o.source(miruro.Dub); got.Category != miruro.Dub || !got.Attach {
@@ -125,8 +125,8 @@ func TestOffersWithoutTheTable(t *testing.T) {
 		t.Fatalf("offers = %d rows, want one per provider", len(rows))
 	}
 	for _, o := range rows {
-		if o.declared || o.Variant != Soft {
-			t.Errorf("%q = %+v, want an undeclared soft row", o.Code, o)
+		if o.declared || o.Variant != "" {
+			t.Errorf("%q = %+v, want an undeclared bare row", o.Code, o)
 		}
 		if got := o.source(miruro.Sub); got.Category != miruro.Sub || !got.Attach {
 			t.Errorf("%q source = %+v, want the sub rendition with its subtitles", o.Code, got)
