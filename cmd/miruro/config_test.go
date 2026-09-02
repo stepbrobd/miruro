@@ -21,7 +21,7 @@ func TestLoadConfig(t *testing.T) {
 	t.Cleanup(xdg.Reload)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	xdg.Reload()
-	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD", "MIRURO_DUB", "MIRURO_MIRRORS"} {
+	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD", "MIRURO_DUB", "MIRURO_MIRRORS", "MIRURO_BACKENDS"} {
 		t.Setenv(v, "")
 	}
 
@@ -79,6 +79,19 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("MIRURO_MIRRORS", "miruro.tv,ftp://miruro.tv, ")
 		if c := loadConfig(); len(c.Mirrors) != 0 {
 			t.Errorf("Mirrors = %v, want none kept", c.Mirrors)
+		}
+	})
+
+	t.Run("backends come from the file and the environment, trimmed", func(t *testing.T) {
+		if err := os.WriteFile(path, []byte("backends = [\"allanime\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"allanime"}) {
+			t.Errorf("Backends = %v, want allanime", c.Backends)
+		}
+		t.Setenv("MIRURO_BACKENDS", "miruro, allanime")
+		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"miruro", "allanime"}) {
+			t.Errorf("Backends = %v, want both", c.Backends)
 		}
 	})
 

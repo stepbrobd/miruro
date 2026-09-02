@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/backend/mirurotv"
 	"ysun.co/miruro/play"
 )
 
@@ -75,6 +77,11 @@ const template = `# miruro configuration
 
 # pipe origins to try, in order, replacing the built-in list
 # mirrors = ["https://www.miruro.ru", "https://www.miruro.to", "https://www.miruro.bz", "https://www.miruro.tv"]
+
+# upstreams to resolve against, in the order their providers are merged
+# miruro is the aggregator and allanime the site its ally provider fronts,
+# reached directly, and naming only one leaves the other out of every prompt
+# backends = ["miruro", "allanime"]
 `
 
 func configPath() (string, error) {
@@ -123,6 +130,7 @@ func runConfigShow(*cobra.Command, []string) error {
 		fmt.Fprintf(w, "download\t%s\n", c.DownloadDir)
 		fmt.Fprintf(w, "dub\t%v\n", c.Dub)
 		fmt.Fprintf(w, "mirrors\t%s\n", or(strings.Join(c.Mirrors, " "), "built in"))
+		fmt.Fprintf(w, "backends\t%s\n", or(strings.Join(c.Backends, " "), "all"))
 	})
 }
 
@@ -207,5 +215,25 @@ func check(md toml.MetaData, c config) []string {
 	if len(c.Mirrors) > 0 && usable == 0 {
 		out = append(out, "no mirror is usable, so the built-in origins are used")
 	}
+	known := 0
+	for _, b := range c.Backends {
+		if !slices.Contains(backendNames, strings.TrimSpace(b)) {
+			out = append(out, fmt.Sprintf("backend %q is not one of %s", b, strings.Join(backendNames, ", ")))
+			continue
+		}
+		known++
+	}
+	if len(c.Backends) > 0 && known == 0 {
+		out = append(out, "no backend is usable, so every backend is used")
+	}
 	return out
 }
+
+// backendNames is what the backends key may name
+var backendNames = func() []string {
+	var out []string
+	for _, b := range all(mirurotv.New()) {
+		out = append(out, b.Name())
+	}
+	return out
+}()

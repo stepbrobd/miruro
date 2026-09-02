@@ -458,6 +458,32 @@ func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
 	}
 }
 
+func TestEnabled(t *testing.T) {
+	a, b := &fakeBackend{name: "miruro"}, &fakeBackend{name: "allanime"}
+	all := miruro.Backends{a, b}
+	names := func(bs miruro.Backends) string {
+		var out []string
+		for _, b := range bs {
+			out = append(out, b.Name())
+		}
+		return strings.Join(out, ",")
+	}
+	for _, tc := range []struct {
+		names []string
+		want  string
+	}{
+		{nil, "miruro,allanime"},
+		{[]string{"allanime"}, "allanime"},
+		{[]string{"allanime", "miruro"}, "allanime,miruro"},
+		{[]string{"anilist", "miruro"}, "miruro"},
+		{[]string{"anilist"}, "miruro,allanime"},
+	} {
+		if got := names(enabled(all, tc.names)); got != tc.want {
+			t.Errorf("enabled(%v) = %s, want %s", tc.names, got, tc.want)
+		}
+	}
+}
+
 func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	srv := sourcesServer(t, map[string]http.HandlerFunc{
 		"bonk": serveJSON(hlsPayload),

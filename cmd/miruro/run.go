@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/backend/allanime"
 	"ysun.co/miruro/backend/mirurotv"
 	"ysun.co/miruro/play"
 	"ysun.co/miruro/ui"
@@ -102,7 +103,7 @@ func run(cmd *cobra.Command, args []string) error {
 	if len(cfg.Mirrors) > 0 {
 		client.Bases = cfg.Mirrors
 	}
-	backends := miruro.Backends{client}
+	backends := enabled(all(client), cfg.Backends)
 
 	category := miruro.Sub
 	if cfg.Dub {
@@ -224,6 +225,36 @@ func findAnime(ctx context.Context, client *mirurotv.Client, args []string) (mir
 		return miruro.Media{}, fmt.Errorf("no results for %q", query)
 	}
 	return ui.Select("Select anime", media, mediaLabel)
+}
+
+// all is every upstream this build resolves against, in the order the merged
+// catalog lists them
+// a new backend is one package implementing miruro.Backend and one entry here
+func all(client *mirurotv.Client) miruro.Backends {
+	return miruro.Backends{client, allanime.New()}
+}
+
+// enabled keeps the backends a config names, every one when it names none
+// a name nothing implements is warned about, since a typo would otherwise
+// read as the backend being down
+func enabled(backends miruro.Backends, names []string) miruro.Backends {
+	if len(names) == 0 {
+		return backends
+	}
+	var out miruro.Backends
+	for _, name := range names {
+		i := slices.IndexFunc(backends, func(b miruro.Backend) bool { return b.Name() == name })
+		if i < 0 {
+			log.Warn("ignoring unknown backend", "backend", name)
+			continue
+		}
+		out = append(out, backends[i])
+	}
+	if len(out) == 0 {
+		log.Warn("no usable backend configured, using every backend")
+		return backends
+	}
+	return out
 }
 
 // joined widens backend failures to errors for errors.Join

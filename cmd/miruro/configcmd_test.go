@@ -36,6 +36,9 @@ func TestCheck(t *testing.T) {
 			[]string{"does not exist"}},
 		{"a mirror that is not an origin", "mirrors = [\"miruro.tv\"]\n",
 			[]string{`mirror "miruro.tv" is not an http`, "no mirror is usable"}},
+		{"the backends spelled out", "backends = [\"allanime\", \"miruro\"]\n", nil},
+		{"a backend nothing implements", "backends = [\"anilist\"]\n",
+			[]string{`backend "anilist" is not one of miruro, allanime`, "no backend is usable"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var c config

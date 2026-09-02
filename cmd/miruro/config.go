@@ -23,6 +23,8 @@ type config struct {
 	// a domain blocked at the resolver costs a timeout per run, so reordering
 	// belongs to whoever is behind that resolver
 	Mirrors []string `toml:"mirrors"`
+	// Backends keeps only the named upstreams, in the order they are merged
+	Backends []string `toml:"backends"`
 }
 
 func loadConfig() config {
@@ -65,6 +67,12 @@ func loadConfig() config {
 	}
 	if v := os.Getenv("MIRURO_MIRRORS"); v != "" {
 		c.Mirrors = strings.Split(v, ",")
+	}
+	if v := os.Getenv("MIRURO_BACKENDS"); v != "" {
+		c.Backends = strings.Split(v, ",")
+	}
+	for i, b := range c.Backends {
+		c.Backends[i] = strings.TrimSpace(b)
 	}
 	c.DownloadDir = expand(c.DownloadDir)
 	// a configured list that loses every entry would otherwise revert to the
