@@ -1,7 +1,6 @@
 package play
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -170,7 +169,7 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 	// base is the playlist the segments belong to, which is the variant once one
 	// is followed, since its children resolve against its own directory
 	base := srcURL
-	if bytes.Contains(body, []byte("#EXT-X-STREAM-INF")) {
+	if isMaster(body) {
 		// a rendition group carries audio or subtitles in their own playlists, and
 		// following only the video variant would silently drop them
 		if bytes.Contains(body, []byte("#EXT-X-MEDIA")) {
@@ -245,8 +244,7 @@ func bestVariant(body []byte, base string) (string, error) {
 		bestRate int64 = -1
 		rate     int64 = -1
 	)
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc := lines(body)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		switch {
@@ -289,8 +287,7 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 	pl := &mediaPlaylist{keyAt: -1}
 	var pending float64 = -1
 
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc := lines(body)
 	for sc.Scan() {
 		line := sc.Text()
 		trimmed := strings.TrimSpace(line)

@@ -38,8 +38,7 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 	child := childKind(body)
 
 	var out bytes.Buffer
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc := lines(body)
 	for sc.Scan() {
 		line := sc.Text()
 		switch trimmed := strings.TrimSpace(line); {
@@ -64,7 +63,7 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 // a height no variant carries filters nothing, since a master emptied of
 // variants would play nothing at all where the full master still plays
 func filterMaster(body []byte, height int) ([]byte, error) {
-	if height <= 0 || !bytes.Contains(body, []byte("#EXT-X-STREAM-INF")) {
+	if height <= 0 || !isMaster(body) {
 		return body, nil
 	}
 	if !hasVariant(body, height) {
@@ -72,8 +71,7 @@ func filterMaster(body []byte, height int) ([]byte, error) {
 	}
 
 	var out bytes.Buffer
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc := lines(body)
 	drop := false
 	for sc.Scan() {
 		line := sc.Text()
@@ -126,7 +124,7 @@ func variantHeight(line string) int {
 // forgoes the decoy strip on a shape no decoyed provider uses
 func childKind(body []byte) kind {
 	switch {
-	case bytes.Contains(body, []byte("#EXT-X-STREAM-INF")):
+	case isMaster(body):
 		return playlist
 	case bytes.Contains(body, []byte("#EXT-X-BYTERANGE")):
 		return media
@@ -135,6 +133,18 @@ func childKind(body []byte) kind {
 	default:
 		return segment
 	}
+}
+
+// isMaster reports whether a playlist lists variants rather than segments
+func isMaster(body []byte) bool {
+	return bytes.Contains(body, []byte("#EXT-X-STREAM-INF"))
+}
+
+// lines scans a playlist with room for the longest line a real one carries
+func lines(body []byte) *bufio.Scanner {
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	return sc
 }
 
 // encrypted reports whether the playlist declares a key, which makes its
