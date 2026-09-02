@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/backend/mirurotv"
 )
 
 // titles are the anime the integration run pulls its provider list from
@@ -31,7 +32,7 @@ var titles = []int{
 
 // providerMatrix is every provider the live catalogs carry, each mapped to the
 // first title that has it
-func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) map[string]miruro.Provider {
+func providerMatrix(ctx context.Context, t *testing.T, client *mirurotv.Client) map[string]miruro.Provider {
 	t.Helper()
 	out := map[string]miruro.Provider{}
 	for _, id := range titles {
@@ -67,7 +68,7 @@ func rendition(caps miruro.Capabilities, code string) miruro.Category {
 
 // capabilities fetches the provider table, empty when the resource is down so
 // the run falls back to asking every provider for sub
-func capabilities(ctx context.Context, t *testing.T, client *miruro.Client) miruro.Capabilities {
+func capabilities(ctx context.Context, t *testing.T, client *mirurotv.Client) miruro.Capabilities {
 	t.Helper()
 	caps, err := client.Capabilities(ctx)
 	if err != nil {
@@ -96,7 +97,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	client := miruro.New()
+	client := mirurotv.New()
 
 	px, err := StartProxy(ctx)
 	if err != nil {
@@ -264,7 +265,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	client := miruro.New()
+	client := mirurotv.New()
 
 	px, err := StartProxy(ctx)
 	if err != nil {

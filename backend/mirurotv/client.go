@@ -1,7 +1,8 @@
-// Package miruro is the data layer, an AniList-backed client for miruro.tv.
+// Package mirurotv is the miruro.tv backend, an aggregator fronting several
+// provider sites behind one obfuscated api.
 // It owns the search, episode, and source resolution against the secure pipe,
 // including the browser header set, the HTTP/2 transport, and deobfuscation.
-package miruro
+package mirurotv
 
 import (
 	"bytes"
@@ -19,28 +20,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ysun.co/miruro"
 )
 
 const (
-	// UserAgent is the one browser identity shared by the pipe, the quality
-	// probe, and the stream proxy, so a CDN sees a single client across a
-	// playlist and its segments
-	UserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-
 	// maxPipeBody caps the decoded pipe response against a decompression bomb
 	// the largest real payload, One Piece, decodes to about 8.7 MB
 	maxPipeBody = 64 << 20
 	// maxPipeRaw caps the wire body feeding decode, sized so anything that
 	// decodes within maxPipeBody fits despite the base64 over gzip expansion
 	maxPipeRaw = 96 << 20
-)
-
-var (
-	// ErrBlocked is fatal
-	// the WAF rejected the request
-	ErrBlocked = errors.New("cloudflare blocked request")
-	// ErrUpstream is recoverable and drives provider fallback
-	ErrUpstream = errors.New("miruro upstream unreachable")
 )
 
 // mirrors are the domains that front one miruro backend, which answers every
@@ -74,7 +64,7 @@ type Client struct {
 	// the capability table is fetched at most once per client
 	// cfgMu is only ever taken before mu
 	cfgMu   sync.Mutex
-	cfg     Capabilities
+	cfg     miruro.Capabilities
 	cfgErr  error
 	cfgDone bool
 }
@@ -117,7 +107,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	e := base64.RawURLEncoding.EncodeToString(env)
 
 	if len(c.Bases) == 0 {
-		return nil, fmt.Errorf("%w: no mirror configured", ErrUpstream)
+		return nil, fmt.Errorf("%w: no mirror configured", miruro.ErrUpstream)
 	}
 
 	start := c.current()
@@ -138,7 +128,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 		case aborted:
 			return nil, err
 		}
-		if errors.Is(err, ErrBlocked) {
+		if errors.Is(err, miruro.ErrBlocked) {
 			blocked = true
 		}
 		last = err
@@ -147,7 +137,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	// blocked, even when a later mirror failed to connect at all, since reporting
 	// that as recoverable sends the fallback loop back into the block
 	if blocked {
-		return nil, ErrBlocked
+		return nil, miruro.ErrBlocked
 	}
 	return nil, last
 }
@@ -195,7 +185,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", ErrUpstream, err)
+		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", miruro.ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 
@@ -214,11 +204,11 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
 	switch {
 	case resp.StatusCode == http.StatusForbidden && isHTML:
-		return nil, unreachable, ErrBlocked
+		return nil, unreachable, miruro.ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, refused, fmt.Errorf("%w: status %d", ErrUpstream, resp.StatusCode)
+		return nil, refused, fmt.Errorf("%w: miruro status %d", miruro.ErrUpstream, resp.StatusCode)
 	case isHTML:
-		return nil, refused, ErrUpstream
+		return nil, refused, fmt.Errorf("%w: miruro answered html", miruro.ErrUpstream)
 	}
 
 	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
@@ -233,7 +223,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, refused, fmt.Errorf("%w: %s: %s", ErrUpstream, path, fail.Error)
+		return nil, refused, fmt.Errorf("%w: miruro %s: %s", miruro.ErrUpstream, path, fail.Error)
 	}
 	return body, served, nil
 }
@@ -287,23 +277,11 @@ func decode(body []byte, obf string) ([]byte, error) {
 	return out, nil
 }
 
-func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", UserAgent)
-	if referer != "" {
-		req.Header.Set("Referer", referer)
-	}
-	return req, nil
-}
-
 // setHeaders writes the browser header set the WAF expects
 // the origin follows the mirror in use, so a rule comparing it against the host
 // sees what a browser on that domain would send
 func setHeaders(h http.Header, base string) {
-	h.Set("User-Agent", UserAgent)
+	h.Set("User-Agent", miruro.UserAgent)
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("Accept-Language", "en-US,en;q=0.5")
 	h.Set("Referer", base+"/")

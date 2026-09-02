@@ -183,31 +183,6 @@ func TestExpandMasterRedirect(t *testing.T) {
 
 // the api mirrors the html5 track kinds, so a thumbnails sprite index arrives on
 // the same list as dialogue and must never reach a player as subtitles
-func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"streams":[{"url":"u","type":"hls"}],"subtitles":[
-			{"file":"thumbs.vtt","label":"thumbnails","kind":"thumbnails"},
-			{"file":"en.vtt","label":"English","kind":"captions","language":"en","default":true},
-			{"file":"pt.vtt","label":"Portugues","kind":"subtitles","language":"pt-BR"},
-			{"file":"bare.vtt","label":"Bare"}]}`)
-	}))
-	defer srv.Close()
-
-	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	res, err := c.Sources(context.Background(), "ep", "bonk", Sub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []Subtitle{
-		{File: "en.vtt", Label: "English", Lang: "en", Default: true},
-		{File: "pt.vtt", Label: "Portugues", Lang: "pt-BR"},
-		{File: "bare.vtt", Label: "Bare"},
-	}
-	if !reflect.DeepEqual(res.Subtitles, want) {
-		t.Errorf("subtitles = %+v, want %+v", res.Subtitles, want)
-	}
-}
-
 func TestOrder(t *testing.T) {
 	en := Subtitle{Label: "English", Lang: "en"}
 	es := Subtitle{Label: "Spanish", Lang: "es", Default: true}
@@ -316,17 +291,3 @@ func TestDeadStreamsAreSkipped(t *testing.T) {
 }
 
 // an absent flag is not a dead stream, and most streams carry no flag at all
-func TestAbsentActiveFlagStaysPlayable(t *testing.T) {
-	srv := mirror(t, serves(`{"streams":[{"url":"u","type":"hls"},{"url":"v","type":"hls","isActive":false}]}`))
-	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	res, err := c.Sources(context.Background(), "ep", "bonk", Sub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Streams[0].Dead {
-		t.Error("a stream with no isActive was marked dead")
-	}
-	if !res.Streams[1].Dead {
-		t.Error("an explicit isActive false was not marked dead")
-	}
-}

@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/backend/mirurotv"
 	"ysun.co/miruro/play"
 	"ysun.co/miruro/ui"
 )
@@ -97,7 +98,7 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	client := miruro.New()
+	client := mirurotv.New()
 	if len(cfg.Mirrors) > 0 {
 		client.Bases = cfg.Mirrors
 	}
@@ -202,7 +203,7 @@ func run(cmd *cobra.Command, args []string) error {
 	return state.watch(ctx, st, numbers, eps, pin, player)
 }
 
-func findAnime(ctx context.Context, client *miruro.Client, args []string) (miruro.Media, error) {
+func findAnime(ctx context.Context, client *mirurotv.Client, args []string) (miruro.Media, error) {
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
 		q, err := ui.Prompt("Search anime")

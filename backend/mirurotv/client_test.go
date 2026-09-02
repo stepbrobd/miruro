@@ -1,4 +1,4 @@
-package miruro
+package mirurotv
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ysun.co/miruro"
 )
 
 func obfuscate(t *testing.T, plain []byte, version string) []byte {
@@ -49,7 +51,7 @@ func TestDecode(t *testing.T) {
 }
 
 // the taxonomy switch tests 403 html before the general >= 400 branch
-// a reorder would report a WAF rejection as recoverable ErrUpstream and send
+// a reorder would report a WAF rejection as recoverable miruro.ErrUpstream and send
 // the fallback loop back into the block, so every case asserts on the
 // sentinel with errors.Is rather than on message text
 func TestPipeErrorTaxonomy(t *testing.T) {
@@ -69,19 +71,19 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			status:  http.StatusForbidden,
 			ctype:   "text/html",
 			body:    []byte("<html>blocked</html>"),
-			wantErr: ErrBlocked,
+			wantErr: miruro.ErrBlocked,
 		},
 		{
 			name:    "server error is recoverable",
 			status:  http.StatusInternalServerError,
-			wantErr: ErrUpstream,
+			wantErr: miruro.ErrUpstream,
 		},
 		{
 			name:    "html with an ok status is recoverable",
 			status:  http.StatusOK,
 			ctype:   "text/html",
 			body:    []byte("<html>challenge</html>"),
-			wantErr: ErrUpstream,
+			wantErr: miruro.ErrUpstream,
 		},
 		{
 			name:   "xor envelope round-trips",
@@ -102,7 +104,7 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			status:  http.StatusOK,
 			obf:     "1",
 			body:    obfuscate(t, []byte(`{"error":"Secure pipe failed"}`), "1"),
-			wantErr: ErrUpstream,
+			wantErr: miruro.ErrUpstream,
 		},
 		{
 			name:    "a cancelled context surfaces as such",
@@ -248,7 +250,7 @@ func TestSearch(t *testing.T) {
 		defer srv.Close()
 
 		_, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
-		if !errors.Is(err, ErrUpstream) || !strings.Contains(err.Error(), "Secure pipe failed") {
+		if !errors.Is(err, miruro.ErrUpstream) || !strings.Contains(err.Error(), "Secure pipe failed") {
 			t.Errorf("err = %v, want the upstream reason", err)
 		}
 	})
@@ -344,8 +346,8 @@ func TestPipeRotation(t *testing.T) {
 		other := mirror(t, serves(`{"ok":true}`))
 
 		c := &Client{Bases: []string{down.URL, other.URL}, HTTP: other.Client()}
-		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
-			t.Fatalf("err = %v, want ErrUpstream", err)
+		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, miruro.ErrUpstream) {
+			t.Fatalf("err = %v, want miruro.ErrUpstream", err)
 		}
 		if got := other.hits.Load(); got != 0 {
 			t.Errorf("the second mirror served %d requests, want none for a backend status", got)
@@ -355,8 +357,8 @@ func TestPipeRotation(t *testing.T) {
 	t.Run("blocked everywhere is fatal", func(t *testing.T) {
 		a, b := mirror(t, blocks), mirror(t, blocks)
 		c := &Client{Bases: []string{a.URL, b.URL}, HTTP: a.Client()}
-		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, ErrBlocked) {
-			t.Fatalf("err = %v, want ErrBlocked", err)
+		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, miruro.ErrBlocked) {
+			t.Fatalf("err = %v, want miruro.ErrBlocked", err)
 		}
 	})
 
@@ -368,8 +370,8 @@ func TestPipeRotation(t *testing.T) {
 		dead.Close()
 
 		c := &Client{Bases: []string{blocked.URL, dead.URL}, HTTP: blocked.Client()}
-		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, ErrBlocked) {
-			t.Fatalf("err = %v, want ErrBlocked", err)
+		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, miruro.ErrBlocked) {
+			t.Fatalf("err = %v, want miruro.ErrBlocked", err)
 		}
 	})
 
@@ -383,8 +385,8 @@ func TestPipeRotation(t *testing.T) {
 		c := &Client{Bases: []string{bad.URL, down.URL}, HTTP: down.Client()}
 
 		for range 3 {
-			if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
-				t.Fatalf("err = %v, want ErrUpstream", err)
+			if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, miruro.ErrUpstream) {
+				t.Fatalf("err = %v, want miruro.ErrUpstream", err)
 			}
 		}
 		if got := bad.hits.Load(); got != 1 {
@@ -405,8 +407,8 @@ func TestPipeRotation(t *testing.T) {
 
 		hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 200 * time.Millisecond}}
 		c := &Client{Bases: []string{quiet.URL, other.URL}, HTTP: hc}
-		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, ErrUpstream) {
-			t.Fatalf("err = %v, want ErrUpstream", err)
+		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, miruro.ErrUpstream) {
+			t.Fatalf("err = %v, want miruro.ErrUpstream", err)
 		}
 		if got := other.hits.Load(); got != 0 {
 			t.Errorf("the second mirror served %d requests, want none for a backend that went quiet", got)
@@ -414,8 +416,8 @@ func TestPipeRotation(t *testing.T) {
 	})
 
 	t.Run("no mirror configured is recoverable", func(t *testing.T) {
-		if _, err := (&Client{HTTP: http.DefaultClient}).pipe(ctx, "config", nil); !errors.Is(err, ErrUpstream) {
-			t.Fatalf("err = %v, want ErrUpstream", err)
+		if _, err := (&Client{HTTP: http.DefaultClient}).pipe(ctx, "config", nil); !errors.Is(err, miruro.ErrUpstream) {
+			t.Fatalf("err = %v, want miruro.ErrUpstream", err)
 		}
 	})
 }

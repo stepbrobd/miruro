@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"ysun.co/miruro"
+	"ysun.co/miruro/backend/mirurotv"
 	"ysun.co/miruro/play"
 )
 
@@ -106,8 +107,8 @@ func served(cat *miruro.Catalog, b miruro.Backend) *miruro.Catalog {
 }
 
 // pipe is a miruro client against a fake pipe server
-func pipe(srv *httptest.Server) *miruro.Client {
-	return &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+func pipe(srv *httptest.Server) *mirurotv.Client {
+	return &mirurotv.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 }
 
 // deadCDN serves an episode body except under prefix, which 404s, so a test can

@@ -1,10 +1,12 @@
-package miruro
+package mirurotv
 
 import (
 	"context"
 	"errors"
 	"net/http"
 	"testing"
+
+	"ysun.co/miruro"
 )
 
 // the api names hardsub "sub" and softsub "ssub", so a swapped mapping would
@@ -25,7 +27,7 @@ func TestConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Capabilities{
+		want := miruro.Capabilities{
 			"bee":  {Soft: true},
 			"kiwi": {Hard: true},
 			"bonk": {Hard: true, Soft: true},
@@ -62,8 +64,8 @@ func TestConfig(t *testing.T) {
 		})
 		c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 		for range 3 {
-			if _, err := c.Capabilities(ctx); !errors.Is(err, ErrUpstream) {
-				t.Fatalf("err = %v, want ErrUpstream", err)
+			if _, err := c.Capabilities(ctx); !errors.Is(err, miruro.ErrUpstream) {
+				t.Fatalf("err = %v, want miruro.ErrUpstream", err)
 			}
 		}
 		if got := srv.hits.Load(); got != 1 {
