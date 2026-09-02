@@ -101,7 +101,7 @@ func (m downloads) View() string {
 	}
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
-	writeLines(&b, m.seen)
+	writeLines(&b, m.seen, m.term)
 	return b.String()
 }
 

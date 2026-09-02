@@ -126,6 +126,19 @@ func TestControlShowsTheLog(t *testing.T) {
 	}
 }
 
+// a record wider than the terminal wraps, and a wrapped row is what makes the
+// renderer paint the next frame over the wrong rows
+func TestControlCutsTheLogToTheTerminal(t *testing.T) {
+	var m tea.Model = fixture()
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
+	m, _ = m.Update(logMsg("WARN backend refused the run, skipping its providers backend=allanime err=\"cloudflare blocked request\""))
+	for line := range strings.SplitSeq(m.(control).View(), "\n") {
+		if strings.HasPrefix(line, "WARN") && (len(line) > 40 || !strings.HasSuffix(line, ellipsis)) {
+			t.Errorf("log line not cut to the terminal: %q", line)
+		}
+	}
+}
+
 // a walk across every provider writes more records than belong under a prompt
 func TestControlKeepsTheLastLines(t *testing.T) {
 	var m tea.Model = fixture()

@@ -15,7 +15,9 @@ type control struct {
 	wait func() bool
 	logs <-chan string
 	// seen holds the last keptLines written, oldest first
-	seen      []string
+	seen []string
+	// term is the terminal width, which bounds the log lines under the menu
+	term      int
 	ended     bool
 	dismissed bool
 }
@@ -36,6 +38,9 @@ func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logMsg:
 		m.seen = keep(m.seen, string(msg))
 		return m, listenLog(m.logs)
+	case tea.WindowSizeMsg:
+		// the form needs the size too, so it is not consumed here
+		m.term = msg.Width
 	}
 	f, cmd := m.form.Update(msg)
 	m.form = f.(*huh.Form)
@@ -55,7 +60,7 @@ func (m control) View() string {
 	if !strings.HasSuffix(view, "\n") {
 		b.WriteByte('\n')
 	}
-	writeLines(&b, m.seen)
+	writeLines(&b, m.seen, m.term)
 	return b.String()
 }
 
