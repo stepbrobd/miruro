@@ -211,6 +211,19 @@ func TestResolvePlaylistRejectsByterange(t *testing.T) {
 	}
 }
 
+// a master naming no bandwidth is still a master, and losing the resumable
+// path over a missing label would be losing it for no reason
+func TestBestVariantTakesAnUnlabelledVariant(t *testing.T) {
+	master := "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n720/index.m3u8\n"
+	got, err := bestVariant([]byte(master), "https://cdn.example/master.m3u8")
+	if err != nil || got != "https://cdn.example/720/index.m3u8" {
+		t.Errorf("bestVariant = %q, %v", got, err)
+	}
+	if _, err := bestVariant([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n"), "https://cdn.example/m.m3u8"); err == nil {
+		t.Error("a master naming no variant resolved")
+	}
+}
+
 func TestResolvePlaylistFollowsHighestBandwidth(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

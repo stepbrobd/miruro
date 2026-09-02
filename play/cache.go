@@ -237,6 +237,8 @@ func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, erro
 }
 
 // bestVariant picks the highest bandwidth rendition of a master playlist
+// a master labelling no bandwidth still names its variants, and the first of
+// them is taken rather than none
 func bestVariant(body []byte, base string) (string, error) {
 	var (
 		best     string
@@ -256,7 +258,7 @@ func bestVariant(body []byte, base string) (string, error) {
 		case line == "" || strings.HasPrefix(line, "#"):
 			continue
 		default:
-			if rate > bestRate {
+			if best == "" || rate > bestRate {
 				bestRate, best = rate, line
 			}
 			rate = -1
