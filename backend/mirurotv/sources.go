@@ -43,9 +43,15 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 
 	res := &miruro.Result{}
 	for _, s := range raw.Streams {
+		// the kind is a closed set, so a container nothing here plays is dropped
+		// where it arrives rather than carried as a free string
+		kind, ok := kinds[s.Type]
+		if !ok {
+			continue
+		}
 		res.Streams = append(res.Streams, miruro.Stream{
 			URL:     s.URL,
-			Kind:    miruro.Kind(s.Type),
+			Kind:    kind,
 			Quality: s.Quality,
 			Referer: s.Referer,
 			Server:  s.Server,
@@ -65,6 +71,13 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 		})
 	}
 	return res, nil
+}
+
+// kinds maps the api's stream type to the closed set
+var kinds = map[string]miruro.Kind{
+	"hls":   miruro.HLS,
+	"mp4":   miruro.MP4,
+	"embed": miruro.Embed,
 }
 
 // attachable reports whether a subtitle entry carries dialogue

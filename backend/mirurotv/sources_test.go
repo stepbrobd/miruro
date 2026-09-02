@@ -36,6 +36,22 @@ func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
 	}
 }
 
+// a container the closed set does not name is dropped where it arrives
+func TestSourcesDropUnknownKinds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"streams":[{"url":"d","type":"dash"},{"url":"h","type":"hls"},{"url":"","type":""}]}`)
+	}))
+	defer srv.Close()
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	res, err := c.Sources(context.Background(), "e", "p", miruro.Sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Streams) != 1 || res.Streams[0].Kind != miruro.HLS {
+		t.Errorf("streams = %+v, want only the hls one", res.Streams)
+	}
+}
+
 func TestAbsentActiveFlagStaysPlayable(t *testing.T) {
 	srv := mirror(t, serves(`{"streams":[{"url":"u","type":"hls"},{"url":"v","type":"hls","isActive":false}]}`))
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
