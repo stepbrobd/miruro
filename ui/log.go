@@ -41,10 +41,17 @@ func (s sink) Write(b []byte) (int, error) {
 
 // captureLog points the log at a fresh sink and returns it with its undo
 // nothing else sets the output, so stderr is where it came from
+// the undo closes the sink, which releases the listener the view left parked
+// on it, and it is safe to close because the logger holds its own mutex
+// across the output swap and every write, so no write is in flight once the
+// swap has returned
 func captureLog() (sink, func()) {
 	lines := make(sink, 64)
 	log.SetOutput(lines)
-	return lines, func() { log.SetOutput(os.Stderr) }
+	return lines, func() {
+		log.SetOutput(os.Stderr)
+		close(lines)
+	}
 }
 
 func listenLog(ch <-chan string) tea.Cmd {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -147,6 +148,24 @@ func TestControlDismissedShowsNoLog(t *testing.T) {
 	m, _ = m.Update(endMsg{dismiss: true})
 	if got := m.(control).View(); got != "" {
 		t.Errorf("dismissed menu rendered %q", got)
+	}
+}
+
+// a view leaves its listener parked on the sink, and one that stays parked
+// after the view is gone is a goroutine per episode watched
+func TestCaptureLogReleasesTheListener(t *testing.T) {
+	lines, restore := captureLog()
+	listen := listenLog(lines)
+	restore()
+	done := make(chan tea.Msg, 1)
+	go func() { done <- listen() }()
+	select {
+	case msg := <-done:
+		if msg != nil {
+			t.Errorf("listener returned %v, want nothing", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("listener still parked after the view ended")
 	}
 }
 
