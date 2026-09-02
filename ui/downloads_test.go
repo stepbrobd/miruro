@@ -111,6 +111,18 @@ func TestErrLineNarrowTerm(t *testing.T) {
 // starting tea here would have it open /dev/tty, whose cancel reader races its
 // own shutdown under the race detector whenever a terminal is nearby
 
+// a view with no rows would wait on a completion that never comes
+func TestDownloadsWithNothingToDraw(t *testing.T) {
+	ran := false
+	errs := Downloads(context.Background(), nil, 1, func(context.Context, int, func(int64, int64)) error {
+		ran = true
+		return nil
+	})
+	if errs != nil || ran {
+		t.Errorf("Downloads over nothing = %v, task ran %v", errs, ran)
+	}
+}
+
 func TestDownloadsCompletion(t *testing.T) {
 	want := []error{nil, errors.New("boom"), nil, errors.New("split")}
 	labels := []string{"a", "b", "c", "d"}

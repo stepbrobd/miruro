@@ -114,6 +114,10 @@ func (m downloads) View() string {
 // every child process a task started has been reaped
 func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
 	n := len(labels)
+	// a view with no rows would wait for a completion that never arrives
+	if n == 0 {
+		return nil
+	}
 
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
