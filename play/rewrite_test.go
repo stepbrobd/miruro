@@ -8,7 +8,7 @@ import (
 )
 
 func fakeProxy() *Proxy {
-	return &Proxy{base: "http://127.0.0.1:9999/tok"}
+	return &Proxy{base: "http://127.0.0.1:9999/tok", token: "tok"}
 }
 
 func rewritten(p *Proxy, body, base string) string {
@@ -21,6 +21,33 @@ func rewritten(p *Proxy, body, base string) string {
 		panic(err)
 	}
 	return string(out)
+}
+
+// a byterange playlist slices one resource, and a segment fetched whole for
+// every slice would hand the player the wrong offset each time
+func TestRewriteRelaysByterangeEntries(t *testing.T) {
+	body := "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n#EXT-X-BYTERANGE:14852@0\nep.ts\n#EXTINF:4.0,\n#EXT-X-BYTERANGE:12345@14852\nep.ts\n#EXT-X-ENDLIST\n"
+	out := rewritten(fakeProxy(), body, "https://cdn.example/ep.m3u8")
+	if strings.Contains(out, ".ts\n") {
+		t.Errorf("byterange entries were rewritten as segments:\n%s", out)
+	}
+	p := fakeProxy()
+	target, err := p.decode(strings.TrimPrefix(firstLine(out, "http://"), "http://127.0.0.1:9999"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Kind != media || target.URL != "https://cdn.example/ep.ts" {
+		t.Errorf("entry = %+v, want a media relay of the resource", target)
+	}
+}
+
+func firstLine(body, prefix string) string {
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }
 
 func filtered(t *testing.T, body string, height int) []byte {

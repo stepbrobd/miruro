@@ -120,10 +120,16 @@ func variantHeight(line string) int {
 	return h
 }
 
+// childKind decides how the entries of a playlist are treated
+// a byterange playlist addresses slices of one resource, so its entries are
+// relayed with the range the player asks for rather than fetched whole, which
+// forgoes the decoy strip on a shape no decoyed provider uses
 func childKind(body []byte) kind {
 	switch {
 	case bytes.Contains(body, []byte("#EXT-X-STREAM-INF")):
 		return playlist
+	case bytes.Contains(body, []byte("#EXT-X-BYTERANGE")):
+		return media
 	case encrypted(body):
 		return cipher
 	default:
