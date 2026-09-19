@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/log"
 )
 
 func fixture() control {
@@ -201,5 +203,49 @@ func TestSinkNeverBlocks(t *testing.T) {
 	}
 	if len(drained) != 2 {
 		t.Errorf("a two-line record produced %d messages, want 2 with the blank dropped", len(drained))
+	}
+}
+
+// a record carries the keys it was written for, and a wall clock that costs a
+// quarter of a narrow terminal is what pushes them off the end
+func TestCaptureLogDropsTheTimestamp(t *testing.T) {
+	lines, restore := captureLog()
+	log.Warn("stream refused before it played, abandoning it", "server", "stream", "refused", 30)
+	restore()
+
+	line, ok := <-lines
+	if !ok {
+		t.Fatal("the record never reached the sink")
+	}
+	if strings.Contains(line, "/") {
+		t.Errorf("record carries a date: %q", line)
+	}
+	if lipgloss.Width(line) > defaultTerm {
+		t.Errorf("record is %d columns, wider than the %d assumed: %q", lipgloss.Width(line), defaultTerm, line)
+	}
+	for _, want := range []string{"server=stream", "refused=30"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("record lost %q: %q", want, line)
+		}
+	}
+}
+
+// the menu and the log under it share the terminal, so no row of either may
+// exceed it at any width, since a row that wraps is counted once and painted
+// twice
+func TestControlFitsEveryWidth(t *testing.T) {
+	long := "WARN no provider left to try provider=hop err=\"exit status 4: Exiting... (Quit)\" resolve=\"ally: upstream unreachable: miruro status 444\""
+	cjk := "WARN 鬼滅の刃 無限列車編 " + strings.Repeat("漫画", 40)
+	for _, width := range []int{20, 40, 60, 80, 120, 200} {
+		var m tea.Model = fixture()
+		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		for _, rec := range []string{long, cjk} {
+			m, _ = m.Update(logMsg(rec))
+		}
+		for i, line := range strings.Split(m.(control).View(), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("at width %d row %d is %d columns: %q", width, i, w, line)
+			}
+		}
 	}
 }
