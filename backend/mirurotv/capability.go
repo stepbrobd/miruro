@@ -8,7 +8,7 @@ import (
 )
 
 // Capabilities fetches the capability table, once per client
-// A failure is remembered, so a run that cannot reach the resource treats every
+// a failure is remembered, so a run that cannot reach the resource treats every
 // provider as undeclared instead of refetching per episode
 // a canceled run is not remembered, since the next one would inherit a verdict
 // about nothing that was ever attempted

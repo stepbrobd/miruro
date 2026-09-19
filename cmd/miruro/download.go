@@ -37,7 +37,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	// worker i alone writes swapped[i], published by Downloads joining them
 	swapped := make([]bool, len(eps))
 
-	sv := saver{runState: s, px: px, hc: hc, pin: pin}
+	sv := saver{runState: s, px: px, media: hc, pin: pin}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		src, missed, err := sv.save(dctx, eps[i], report)
@@ -96,11 +96,14 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 }
 
 // saver holds what every episode of one download run shares
+// media is named apart from runState.hc because the two clients differ on
+// purpose: this one drops the whole-request timeout so a long episode is not
+// cut mid-body, and a field called hc here would shadow the other silently
 type saver struct {
 	*runState
-	px  *play.Proxy
-	hc  *http.Client
-	pin Pin
+	px    *play.Proxy
+	media *http.Client
+	pin   Pin
 }
 
 // save writes one episode, dropping to the next provider when a download fails
@@ -124,7 +127,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 
 		// one provider serves an episode from several hosts, so a dead default
 		// stream is not a dead provider
-		for _, stream := range miruro.Rank(ctx, s.hc, res, s.cfg.Quality) {
+		for _, stream := range miruro.Rank(ctx, s.media, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
 				return src, missed, nil
@@ -164,5 +167,5 @@ func (s saver) from(ctx context.Context, res *miruro.Result, src source, stream 
 	}
 	name := fmt.Sprintf("%s - E%s", s.title, num(ep))
 	cache := cacheDir(s.anilistID, ep, src.Category, src.Code, s.cfg.Quality)
-	return play.Download(ctx, s.hc, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
+	return play.Download(ctx, s.media, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
 }

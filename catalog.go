@@ -2,6 +2,7 @@ package miruro
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 )
 
@@ -76,12 +77,7 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 			seen[e.Number] = struct{}{}
 		}
 	}
-	out := make([]float64, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	slices.Sort(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // order is the provider preference, an author-owned default
@@ -140,11 +136,8 @@ func (c *Catalog) Details(cat Category) map[float64]Episode {
 func (c *Catalog) Available(number float64, cat Category) []Provider {
 	var out []Provider
 	for _, p := range c.Providers {
-		for _, e := range p.Episodes(cat) {
-			if e.Number == number {
-				out = append(out, p)
-				break
-			}
+		if slices.ContainsFunc(p.Episodes(cat), func(e Episode) bool { return e.Number == number }) {
+			out = append(out, p)
 		}
 	}
 	slices.SortFunc(out, func(a, b Provider) int { return byPreference(a.Code, b.Code) })

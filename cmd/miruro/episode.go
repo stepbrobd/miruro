@@ -72,23 +72,20 @@ func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
 }
 
 func find(eps []miruro.Episode, n float64) *miruro.Episode {
-	for i := range eps {
-		if eps[i].Number == n {
-			return &eps[i]
-		}
+	i := slices.IndexFunc(eps, func(e miruro.Episode) bool { return e.Number == n })
+	if i < 0 {
+		return nil
 	}
-	return nil
+	return &eps[i]
 }
 
 func neighbor(numbers []float64, ep float64, dir int) (float64, bool) {
-	for i, n := range numbers {
-		if n == ep {
-			j := i + dir
-			if j >= 0 && j < len(numbers) {
-				return numbers[j], true
-			}
-			return 0, false
-		}
+	i := slices.Index(numbers, ep)
+	if i < 0 {
+		return 0, false
+	}
+	if j := i + dir; j >= 0 && j < len(numbers) {
+		return numbers[j], true
 	}
 	return 0, false
 }

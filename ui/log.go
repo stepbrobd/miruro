@@ -9,11 +9,7 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-// a live view owns the terminal while it runs, so a log record written straight
-// to stderr lands in the middle of a redraw
-// captureLog routes the log into the view instead, and the view shows the last
-// keptLines of it underneath itself
-
+// logMsg carries one captured record into a running view
 type logMsg string
 
 // keptLines bounds how many log lines stay under a live view
@@ -41,6 +37,9 @@ func (s sink) Write(b []byte) (int, error) {
 }
 
 // captureLog points the log at a fresh sink and returns it with its undo
+// a live view owns the terminal while it runs, so a record written straight to
+// stderr lands in the middle of a redraw, and this routes it into the view
+// instead, which shows the last keptLines of it underneath itself
 // nothing else sets the output, so stderr is where it came from
 // the undo closes the sink, which releases the listener the view left parked
 // on it, and it is safe to close because the logger holds its own mutex

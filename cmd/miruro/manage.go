@@ -168,18 +168,11 @@ func cachedEpisodes() ([]cached, error) {
 // only the leading id is parsed back, because a provider code or a quality
 // label may itself carry a '-'
 func cutKey(name string) (id, rest string, found bool) {
-	for i, r := range name {
-		if r == '-' {
-			if i == 0 {
-				return "", "", false
-			}
-			return name[:i], name[i+1:], true
-		}
-		if r < '0' || r > '9' {
-			return "", "", false
-		}
+	id, rest, found = strings.Cut(name, "-")
+	if !found || id == "" || strings.ContainsFunc(id, func(r rune) bool { return r < '0' || r > '9' }) {
+		return "", "", false
 	}
-	return "", "", false
+	return id, rest, true
 }
 
 func runCacheList(*cobra.Command, []string) error {
@@ -196,11 +189,7 @@ func runCacheList(*cobra.Command, []string) error {
 	// holds interrupted ones, and the title is what names them for a reader
 	titles := historyTitles()
 	for i, c := range episodes {
-		if name := titles[c.id]; name != "" {
-			episodes[i].name = name
-		} else {
-			episodes[i].name = c.id
-		}
+		episodes[i].name = or(titles[c.id], c.id)
 	}
 	// the directory order is lexicographic by anilist id, which means nothing to
 	// a reader deciding what to drop

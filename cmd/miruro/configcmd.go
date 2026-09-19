@@ -227,9 +227,10 @@ func check(md toml.MetaData, c config) []string {
 		out = append(out, "no mirror is usable, so the built-in origins are used")
 	}
 	known := 0
+	names := backendNames()
 	for _, b := range c.Backends {
-		if !slices.Contains(backendNames, strings.TrimSpace(b)) {
-			out = append(out, fmt.Sprintf("backend %q is not one of %s", b, strings.Join(backendNames, ", ")))
+		if !slices.Contains(names, strings.TrimSpace(b)) {
+			out = append(out, fmt.Sprintf("backend %q is not one of %s", b, strings.Join(names, ", ")))
 			continue
 		}
 		known++
@@ -241,10 +242,13 @@ func check(md toml.MetaData, c config) []string {
 }
 
 // backendNames is what the backends key may name
-var backendNames = func() []string {
+// it is a function rather than a package var because building the list clones a
+// transport to read a constant, and as a var every run paid for it, including
+// one that only printed help
+func backendNames() []string {
 	var out []string
 	for _, b := range all(mirurotv.New()) {
 		out = append(out, b.Name())
 	}
 	return out
-}()
+}

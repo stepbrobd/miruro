@@ -150,7 +150,7 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 		category: miruro.Sub,
 		cfg:      config{Quality: "best", DownloadDir: dir},
 	}
-	return saver{runState: state, px: px, hc: http.DefaultClient}, dir
+	return saver{runState: state, px: px, media: http.DefaultClient}, dir
 }
 
 // savedEpisode asserts the episode landed whole under dir
@@ -399,8 +399,6 @@ func TestOutcome(t *testing.T) {
 	}
 }
 
-// a retried episode must move past the providers it already burned, or the
-// fallback loop would resolve the same dead source forever
 // fakeBackend answers one provider from memory, or refuses every request
 type fakeBackend struct {
 	name string
@@ -490,6 +488,8 @@ func TestEnabled(t *testing.T) {
 	}
 }
 
+// a retried episode must move past the providers it already burned, or the
+// fallback loop would resolve the same dead source forever
 func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	srv := sourcesServer(t, map[string]http.HandlerFunc{
 		"bonk": serveJSON(hlsPayload),

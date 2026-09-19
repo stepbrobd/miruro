@@ -270,5 +270,3 @@ func TestDeadStreamsAreSkipped(t *testing.T) {
 		t.Errorf("Rank = %v, want nothing", got)
 	}
 }
-
-// an absent flag is not a dead stream, and most streams carry no flag at all

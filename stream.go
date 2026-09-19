@@ -73,11 +73,11 @@ func (r *Result) Playable() bool {
 // order the api returned, and the sort is stable so equal ranks keep that order
 func Order(subs []Subtitle, lang string) []Subtitle {
 	out := slices.Clone(subs)
-	slices.SortStableFunc(out, func(a, b Subtitle) int { return rank(a, lang) - rank(b, lang) })
+	slices.SortStableFunc(out, func(a, b Subtitle) int { return subRank(a, lang) - subRank(b, lang) })
 	return out
 }
 
-func rank(s Subtitle, lang string) int {
+func subRank(s Subtitle, lang string) int {
 	switch {
 	case s.speaks(lang):
 		return 0
