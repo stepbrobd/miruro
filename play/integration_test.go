@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -30,20 +31,21 @@ var titles = []int{
 	16498,  // Shingeki no Kyojin
 }
 
-// providerMatrix is every provider the live catalogs carry, each mapped to the
-// first title that has it
-func providerMatrix(ctx context.Context, t *testing.T, client *mirurotv.Client) map[string]miruro.Provider {
+// providerMatrix is every provider the live catalogs carry, mapped to every
+// title that has it
+// one provider serves different hosts on different titles, so binding it to the
+// first title found lets one dead host stand in for the provider and take the
+// whole path down with it
+func providerMatrix(ctx context.Context, t *testing.T, client *mirurotv.Client) map[string][]miruro.Provider {
 	t.Helper()
-	out := map[string]miruro.Provider{}
+	out := map[string][]miruro.Provider{}
 	for _, id := range titles {
 		cat, err := client.Episodes(ctx, miruro.Media{ID: id})
 		if err != nil {
 			t.Fatalf("catalog %d: %v", id, err)
 		}
 		for code, p := range cat.Providers {
-			if _, seen := out[code]; !seen {
-				out[code] = p
-			}
+			out[code] = append(out[code], p)
 		}
 	}
 	if len(out) == 0 {
@@ -77,6 +79,43 @@ func capabilities(ctx context.Context, t *testing.T, client *mirurotv.Client) mi
 	return caps
 }
 
+// cacheable walks the titles a provider carries and returns the first playlist
+// the cache path can take apart, with why nothing did when none can
+// a provider is only excused once every title it carries has been tried, since
+// each names its own host and one dead host is not a dead provider
+func cacheable(ctx context.Context, t *testing.T, client *mirurotv.Client, px *Proxy, carried []miruro.Provider, code string, cat miruro.Category) (*mediaPlaylist, string) {
+	t.Helper()
+	why := "no title carries it"
+	for _, provider := range carried {
+		eps := provider.Episodes(cat)
+		if len(eps) == 0 {
+			why = "carries no " + string(cat) + " episodes"
+			continue
+		}
+		res, err := client.Sources(ctx, eps[0].ID, code, cat)
+		if err != nil {
+			why = fmt.Sprintf("did not resolve %s: %v", cat, err)
+			continue
+		}
+		ranked := miruro.Rank(ctx, client.HTTP, res, "")
+		if len(ranked) == 0 {
+			why = "no selectable stream"
+			continue
+		}
+		if ranked[0].Kind != miruro.HLS {
+			why = fmt.Sprintf("kind %s does not exercise the segment cache", ranked[0].Kind)
+			continue
+		}
+		pl, err := resolvePlaylist(ctx, px.hc, px.Stream(ranked[0]).URL)
+		if err != nil {
+			why = fmt.Sprintf("playlist not reachable: %v", err)
+			continue
+		}
+		return pl, ""
+	}
+	return nil, why
+}
+
 // segmentSample bounds how much of an episode the integration run fetches
 // the cache logic is per segment, so a handful proves the path without pulling
 // a whole episode
@@ -107,29 +146,12 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 
 	var covered int
 	caps := capabilities(ctx, t, client)
-	for code, provider := range providerMatrix(ctx, t, client) {
+	for code, carried := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
 			cat := rendition(caps, code)
-			eps := provider.Episodes(cat)
-			if len(eps) == 0 {
-				t.Skip("provider carries no sub episodes")
-			}
-			res, err := client.Sources(ctx, eps[0].ID, code, cat)
-			if err != nil {
-				t.Skipf("provider did not resolve %s, an upstream condition rather than a defect: %v", cat, err)
-			}
-			ranked := miruro.Rank(ctx, client.HTTP, res, "")
-			if len(ranked) == 0 {
-				t.Skip("no selectable stream")
-			}
-			stream := ranked[0]
-			if stream.Kind != miruro.HLS {
-				t.Skipf("kind %s does not exercise the segment cache", stream.Kind)
-			}
-
-			pl, err := resolvePlaylist(ctx, px.hc, px.Stream(stream).URL)
-			if err != nil {
-				t.Skipf("playlist not reachable, an upstream condition: %v", err)
+			pl, why := cacheable(ctx, t, client, px, carried, code, cat)
+			if pl == nil {
+				t.Skipf("no title reached the cache path on this provider: %s", why)
 			}
 			t.Logf("segments=%d encrypted=%v", len(pl.segAt), pl.encrypted)
 			pl = head(pl, segmentSample)
@@ -254,6 +276,31 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 	return out
 }
 
+// shipped walks the titles a provider carries and returns the first result that
+// ships a subtitle, with why none did when none do
+func shipped(ctx context.Context, t *testing.T, client *mirurotv.Client, carried []miruro.Provider, code string, cat miruro.Category) (*miruro.Result, string) {
+	t.Helper()
+	why := "no title carries it"
+	for _, provider := range carried {
+		eps := provider.Episodes(cat)
+		if len(eps) == 0 {
+			why = "carries no " + string(cat) + " episodes"
+			continue
+		}
+		res, err := client.Sources(ctx, eps[0].ID, code, cat)
+		if err != nil {
+			why = fmt.Sprintf("did not resolve %s: %v", cat, err)
+			continue
+		}
+		if len(res.Subtitles) == 0 {
+			why = "ships no subtitles"
+			continue
+		}
+		return res, ""
+	}
+	return nil, why
+}
+
 // TestIntegrationSubtitleTracks checks that every sidecar a live provider ships
 // reaches a player under a readable name and with a body a player can parse
 // it is skipped unless MIRURO_INTEGRATION is set because it needs the network
@@ -275,19 +322,12 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 
 	caps := capabilities(ctx, t, client)
 	var covered int
-	for code, provider := range providerMatrix(ctx, t, client) {
+	for code, carried := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
 			cat := rendition(caps, code)
-			eps := provider.Episodes(cat)
-			if len(eps) == 0 {
-				t.Skip("provider carries no sub episodes")
-			}
-			res, err := client.Sources(ctx, eps[0].ID, code, cat)
-			if err != nil {
-				t.Skipf("provider did not resolve %s, an upstream condition rather than a defect: %v", cat, err)
-			}
-			if len(res.Subtitles) == 0 {
-				t.Skip("provider ships no subtitles")
+			res, why := shipped(ctx, t, client, carried, code, cat)
+			if res == nil {
+				t.Skipf("no title shipped a sidecar on this provider: %s", why)
 			}
 			ranked := miruro.Rank(ctx, client.HTTP, res, "")
 			if len(ranked) == 0 {
