@@ -104,7 +104,14 @@ var screen = os.Stderr
 // the renderer is pointed at the same stream the views use, and Downloads hands
 // the matching profile to each bar, which captures it at construction
 func init() {
-	lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(screen))
+	r := lipgloss.NewRenderer(screen)
+	// bubbletea primes its own renderer in an init for exactly this reason: the
+	// background query must not run while a program owns the terminal, or it
+	// waits out the whole termenv timeout
+	// replacing that renderer discards the priming, so this one pays the query
+	// here instead, before any program is running
+	r.HasDarkBackground()
+	lipgloss.SetDefaultRenderer(r)
 }
 
 // profile is the color capability of the stream the views are drawn to

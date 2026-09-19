@@ -323,3 +323,30 @@ func TestParsePinReportsAnUnusableValue(t *testing.T) {
 		}
 	}
 }
+
+// ParsePin reports an unusable value as it goes, so parsing one twice reports
+// it twice, which a resumed run used to do for every bad --provider
+func TestPinForReportsABadValueOnce(t *testing.T) {
+	for _, tc := range []struct{ name, config, flag, history string }{
+		{"a bad flag while resuming", "", ":hard", "bonk"},
+		{"a bad flag with no history", "", ":hard", ""},
+		{"a bad config while resuming", "bonk:medium", "", "bonk"},
+		{"a bad flag and a bad config", "bonk:medium", ":soft", "bonk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			pinFor(tc.config, tc.flag, tc.history, false)
+			log.SetOutput(os.Stderr)
+
+			for _, value := range []string{tc.config, tc.flag} {
+				if value == "" {
+					continue
+				}
+				if n := strings.Count(buf.String(), "provider="+value+"\n"); n > 1 {
+					t.Errorf("%q reported %d times:\n%s", value, n, buf.String())
+				}
+			}
+		})
+	}
+}

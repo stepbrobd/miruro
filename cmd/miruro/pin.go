@@ -77,17 +77,19 @@ func pinFor(config, flag, history string, widen bool) (Pin, bool) {
 	// stated follows whichever source supplied the pin, and it is the provider
 	// that counts rather than the string: a value naming a variant and no
 	// provider states nothing, since the run prompts for one either way
-	cfg := ParsePin(config)
+	// each value is parsed once, since ParsePin reports an unusable one as it
+	// goes and parsing twice would report it twice
+	cfg, f := ParsePin(config), ParsePin(flag)
 	pin, stated := cfg, cfg.Code != ""
 	// a flag naming no provider states nothing, so it must not displace the
 	// entry a resume is carrying either
-	if history != "" && ParsePin(flag).Code == "" {
+	if history != "" && f.Code == "" {
 		// an entry resuming the provider the config already names is that same
 		// stated choice, and any other is one the menu picked once
 		h := ParsePin(history)
 		pin, stated = h, stated && h.Code == cfg.Code
 	}
-	if f := ParsePin(flag); f.Code != "" {
+	if f.Code != "" {
 		pin, stated = f, true
 	}
 	return pin, widen || !stated
