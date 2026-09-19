@@ -275,3 +275,20 @@ func TestChooseEpisodes(t *testing.T) {
 		}
 	})
 }
+
+// a listing of one thing reports it as one, since "1 interrupted downloads"
+// reads as a bug in the tool rather than a count
+func TestPlural(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{
+		{0, "0 entries"},
+		{1, "1 entry"},
+		{2, "2 entries"},
+	} {
+		if got := plural(tc.n, "entry", "entries"); got != tc.want {
+			t.Errorf("plural(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}

@@ -103,7 +103,7 @@ func runHistoryClear(*cobra.Command, []string) error {
 		fmt.Println("history already empty")
 		return nil
 	}
-	fmt.Printf("cleared %d history entries\n", n)
+	fmt.Printf("cleared %s\n", plural(n, "history entry", "history entries"))
 	return nil
 }
 
@@ -217,7 +217,7 @@ func runCacheList(*cobra.Command, []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%d interrupted downloads, %s\n", len(episodes), ui.Bytes(total))
+	fmt.Printf("%s, %s\n", plural(len(episodes), "interrupted download", "interrupted downloads"), ui.Bytes(total))
 	return nil
 }
 
@@ -267,6 +267,14 @@ func runCacheClear(*cobra.Command, []string) error {
 	}
 	fmt.Printf("removed %s of cached segments\n", ui.Bytes(total))
 	return nil
+}
+
+// plural counts a thing, so a listing of one does not report it as several
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // table writes aligned columns, so a listing stays readable whatever the widest
