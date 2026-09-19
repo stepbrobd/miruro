@@ -169,8 +169,8 @@ func TestDownloadsCancellation(t *testing.T) {
 	select {
 	case errs := <-res:
 		for i, err := range errs {
-			if !errors.Is(err, ErrCancelled) {
-				t.Errorf("task %d: got %v, want ErrCancelled", i, err)
+			if !errors.Is(err, ErrCanceled) {
+				t.Errorf("task %d: got %v, want ErrCanceled", i, err)
 			}
 		}
 	case <-time.After(5 * time.Second):

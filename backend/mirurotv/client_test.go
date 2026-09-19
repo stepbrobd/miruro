@@ -107,7 +107,7 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			wantErr: miruro.ErrUpstream,
 		},
 		{
-			name:    "a cancelled context surfaces as such",
+			name:    "a canceled context surfaces as such",
 			status:  http.StatusOK,
 			cancel:  true,
 			wantErr: context.Canceled,

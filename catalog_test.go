@@ -53,7 +53,7 @@ func TestAvailableOrdersByPreference(t *testing.T) {
 	}
 }
 
-// a mislabelled row can outvote the real one, so position decides first
+// a mislabeled row can outvote the real one, so position decides first
 // this is real payload shape, an "ed" starting at 0.9s of a 1470s episode
 // the picker shows one row per number while the records come from whichever
 // provider carries them, so the merge has to be deterministic and has to keep

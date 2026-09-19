@@ -194,7 +194,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			}
 
 			local := filepath.Join(cache, "local.m3u8")
-			if err := os.WriteFile(local, []byte(pl.localise(cache, key)), 0o644); err != nil {
+			if err := os.WriteFile(local, []byte(pl.localize(cache, key)), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := remux(ctx, local, dest); err != nil {

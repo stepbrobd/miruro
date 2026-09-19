@@ -385,12 +385,12 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 		return nil
 	})
 
-	var failed, cancelled int
+	var failed, canceled int
 	for i, err := range errs {
 		switch {
 		case err == nil:
-		case errors.Is(err, ui.ErrCancelled):
-			cancelled++
+		case errors.Is(err, ui.ErrCanceled):
+			canceled++
 		default:
 			failed++
 			// the TUI shows each failure on its task row, but a piped or scripted
@@ -401,7 +401,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	if failed > 0 {
 		return fmt.Errorf("%d of %d downloads failed", failed, len(eps))
 	}
-	if cancelled > 0 {
+	if canceled > 0 {
 		// map an interrupt onto the same silent 130 exit every other abort takes
 		return context.Canceled
 	}

@@ -16,7 +16,7 @@ import (
 // the constants below are minted by the site's obfuscator on every deploy, so
 // a shape change is the expected way for this backend to break, and the
 // failure names it rather than signing requests with a guess
-var errBundle = errors.New("allanime bundle shape not recognised")
+var errBundle = errors.New("allanime bundle shape not recognized")
 
 // build is what the site's bundle pins a client to
 // the mask, the bootstrap signature, and the request token all derive from
@@ -223,6 +223,41 @@ func (ev *evaluator) fn(name, region string) (params []string, body string, ok b
 	return nil, "", false
 }
 
+// constant finds an object literal bound to name, preferring the region a use
+// sits in, since an obfuscator scope reuses short names
+// a binding whose value is not an object this evaluator can read, such as one
+// holding function expressions, is passed over rather than failing the walk,
+// because a further binding of the same name may be the one meant
+func (ev *evaluator) constant(name, region string, depth int) (map[string]value, bool) {
+	for _, src := range []string{region, ev.js} {
+		for at := 0; ; {
+			i := strings.Index(src[at:], name+"={")
+			if i < 0 {
+				break
+			}
+			bound := at + i
+			open := bound + len(name) + 1
+			at = open
+			// the match must be the whole name, not the tail of a longer one
+			if bound > 0 && identByte(src[bound-1]) {
+				continue
+			}
+			end, err := matching(src, open)
+			if err != nil {
+				continue
+			}
+			v, err := ev.evalDepth(src[open:end+1], region, nil, depth+1)
+			if err != nil {
+				continue
+			}
+			if obj, ok := v.(map[string]value); ok {
+				return obj, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // call evaluates a wrapper call, following the chain down to the string table
 func (ev *evaluator) call(name string, args []value, region string, depth int) (value, error) {
 	switch name {
@@ -332,21 +367,41 @@ func (ev *evaluator) rotate(name string, t *table) error {
 	if m == nil {
 		return fmt.Errorf("%w: rotation for %s has no checksum", errBundle, name)
 	}
-	rest := ev.js[callAt+len("})("+name+","):]
-	digits := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
-	if digits <= 0 {
-		return fmt.Errorf("%w: rotation for %s has no target", errBundle, name)
-	}
-	target, err := strconv.ParseFloat(rest[:digits], 64)
+	// the obfuscator writes the target as arithmetic over literals as readily
+	// as it writes a bare number, so the argument is evaluated rather than read
+	// a leading digit at a time, which took the first factor of a product and
+	// rotated against a target the loop could never reach
+	open := callAt + len("})")
+	end, err := matching(ev.js, open)
 	if err != nil {
-		return fmt.Errorf("%w: rotation target %q", errBundle, rest[:digits])
+		return err
 	}
+	args := splitTop(ev.js[open+1:end], ',')
+	if len(args) != 2 {
+		return fmt.Errorf("%w: rotation for %s takes %d arguments", errBundle, name, len(args))
+	}
+	v, err := ev.eval(args[1], ev.js, nil)
+	if err != nil {
+		return err
+	}
+	target, ok := v.(float64)
+	if !ok {
+		return fmt.Errorf("%w: rotation target %q", errBundle, args[1])
+	}
+	// a checksum the evaluator cannot read fails on every rotation, which is a
+	// shape change rather than a table in the wrong order, so the cause is
+	// carried out instead of being spent one shift at a time in silence
+	var last error
 	for range t.entries {
 		v, err := ev.eval(m[1], region, map[string]value{m[2]: target})
 		if f, ok := v.(float64); err == nil && ok && f == target {
 			return nil
 		}
+		last = err
 		t.entries = append(t.entries[1:], t.entries[0])
+	}
+	if last != nil {
+		return fmt.Errorf("%w: rotation for %s: %v", errBundle, name, last)
 	}
 	return fmt.Errorf("%w: rotation for %s never settles", errBundle, name)
 }
@@ -549,16 +604,10 @@ func (p *parser) number() (value, error) {
 }
 
 func (p *parser) ident() (value, error) {
-	start := p.pos
-	for p.pos < len(p.src) {
-		c := p.src[p.pos]
-		if c == '_' || c == '$' || c >= '0' && c <= '9' || unicode.IsLetter(rune(c)) {
-			p.pos++
-			continue
-		}
-		break
+	name := p.word()
+	if p.peek() == '.' {
+		return p.member(name)
 	}
-	name := p.src[start:p.pos]
 	if p.peek() != '(' {
 		if v, ok := p.env[name]; ok {
 			return v, nil
@@ -581,6 +630,40 @@ func (p *parser) ident() (value, error) {
 	}
 	p.pos++
 	return p.ev.call(name, args, p.region, p.depth)
+}
+
+// word reads one identifier
+func (p *parser) word() string {
+	p.skip()
+	start := p.pos
+	for p.pos < len(p.src) && identByte(p.src[p.pos]) {
+		p.pos++
+	}
+	return p.src[start:p.pos]
+}
+
+func identByte(c byte) bool {
+	return c == '_' || c == '$' || c >= '0' && c <= '9' || unicode.IsLetter(rune(c))
+}
+
+// member reads a property off a constant object
+// the obfuscator hoists the arguments of an expression into one such object and
+// refers to them by member access, so the object has to be found and evaluated
+// where the name is bound rather than where it is used
+func (p *parser) member(name string) (value, error) {
+	p.pos++
+	field := p.word()
+	obj, ok := p.env[name].(map[string]value)
+	if !ok {
+		if obj, ok = p.ev.constant(name, p.region, p.depth); !ok {
+			return nil, fmt.Errorf("%w: unbound %s", errBundle, name)
+		}
+	}
+	v, ok := obj[field]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s has no %s", errBundle, name, field)
+	}
+	return v, nil
 }
 
 func (p *parser) array() (value, error) {

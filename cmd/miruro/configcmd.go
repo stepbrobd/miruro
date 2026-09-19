@@ -50,7 +50,7 @@ func init() {
 }
 
 // template is what init writes, every key commented out at its default so the
-// file documents the surface without changing any behaviour
+// file documents the surface without changing any behavior
 const template = `# miruro configuration
 # every key is optional, and the value shown is the default
 

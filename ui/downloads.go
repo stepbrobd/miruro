@@ -15,9 +15,9 @@ import (
 	"github.com/charmbracelet/x/term"
 )
 
-// ErrCancelled marks a download the user interrupted before it finished, so
+// ErrCanceled marks a download the user interrupted before it finished, so
 // the caller counts it as a failure and never as a silent success
-var ErrCancelled = errors.New("cancelled")
+var ErrCanceled = errors.New("canceled")
 
 type progressMsg struct {
 	i           int
@@ -105,11 +105,11 @@ func (m downloads) View() string {
 	return b.String()
 }
 
-// Downloads runs labelled tasks with a worker limit, rendering one live progress
+// Downloads runs labeled tasks with a worker limit, rendering one live progress
 // bar per line when stdout is a terminal
-// each task receives a context that is cancelled when the user quits and a
+// each task receives a context that is canceled when the user quits and a
 // reporter for bytes done and total
-// a task the user interrupts before it finishes is returned as ErrCancelled
+// a task the user interrupts before it finishes is returned as ErrCanceled
 // by the time Downloads returns no goroutine it spawned is still running and
 // every child process a task started has been reaped
 func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
@@ -218,9 +218,9 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 				}
 			}
 			err := task(ctx, i, report)
-			// a failure that raced the cancellation reads as cancelled
+			// a failure that raced the cancellation reads as canceled
 			if err != nil && ctx.Err() != nil {
-				err = ErrCancelled
+				err = ErrCanceled
 			}
 			results[i] = err
 			// a dropped doneMsg is fine, results carries the truth
@@ -245,7 +245,7 @@ var flatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 
 // errLine renders one failed task as a single line that fits the terminal
 // marker and label may carry ANSI styling, so only the plain message is cut and
-// the head is composed afterwards
+// the head is composed afterward
 func errLine(marker, label, msg string, term int) string {
 	if term <= 0 {
 		term = defaultTerm

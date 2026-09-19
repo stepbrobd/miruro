@@ -68,7 +68,7 @@ func providers(codes ...string) []miruro.Provider {
 
 // a provider declaring one variant leaves no choice, so it must not be shown as
 // one
-// a provider the table omits must not be labelled with a claim it never made
+// a provider the table omits must not be labeled with a claim it never made
 func TestOffers(t *testing.T) {
 	rows := offers(providers("kiwi", "bee", "bonk", "void", "ANIMEDUNYA"), testCaps, miruro.Sub, Pin{})
 	var got []string
@@ -178,7 +178,7 @@ func TestOfferSource(t *testing.T) {
 			source{Pin: Pin{"bonk", Hard}, Category: miruro.Dub, Attach: true},
 		},
 		{
-			"an undeclared provider honours an explicit hard pin",
+			"an undeclared provider honors an explicit hard pin",
 			offer{Pin: Pin{"ANIMEDUNYA", Hard}}, miruro.Sub,
 			source{Pin: Pin{"ANIMEDUNYA", Hard}, Category: miruro.Sub},
 		},

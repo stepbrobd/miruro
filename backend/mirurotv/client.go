@@ -180,7 +180,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		// keep a cancelled context as a context error so callers can match it
+		// keep a canceled context as a context error so callers can match it
 		// otherwise the fallback loop treats Ctrl-C as a recoverable failure
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()

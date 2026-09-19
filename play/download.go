@@ -29,7 +29,7 @@ type Progress func(done, total int64)
 // fetched together with a fresh video download
 // cache names a directory for hls segments, so an interrupted episode resumes
 // from what it already fetched, and an empty cache disables that
-// it reports how many sidecars failed so the caller can summarise the run, and
+// it reports how many sidecars failed so the caller can summarize the run, and
 // a failure is warned rather than returned because the video is the deliverable
 // and an episode already on disk must not be discarded over a missing sidecar
 func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name, cache string, prog Progress) (int, error) {
@@ -72,7 +72,7 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 		if err == nil {
 			continue
 		}
-		// a cancelled run is not a missing subtitle, so report it as cancellation
+		// a canceled run is not a missing subtitle, so report it as cancellation
 		if ctx.Err() != nil {
 			return missed, ctx.Err()
 		}
@@ -190,7 +190,7 @@ func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog 
 // ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
 // and exits zero on the result
 // a missing ffprobe or an unreadable report skips the check rather than failing
-// a download the old behaviour would have kept
+// a download the old behavior would have kept
 func audible(ctx context.Context, dest string) error {
 	ffprobe, err := exec.LookPath("ffprobe")
 	if err != nil {

@@ -136,14 +136,14 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	}
 
 	local := filepath.Join(dir, "local.m3u8")
-	if err := os.WriteFile(local, []byte(pl.localise(dir, key)), 0o644); err != nil {
+	if err := os.WriteFile(local, []byte(pl.localize(dir, key)), 0o644); err != nil {
 		return err
 	}
 	// the remux reports its own output size, which would send the bar backwards
 	// after the fetch already counted every segment
 	if err := remux(ctx, local, dest); err != nil {
 		// a failed remux with a live context means the cached bytes are bad
-		// a cancelled one keeps the cache for resume
+		// a canceled one keeps the cache for resume
 		if ctx.Err() == nil {
 			if werr := wipe(dir); werr != nil {
 				log.Warn("bad cache not removed", "dir", dir, "err", werr)
@@ -236,7 +236,7 @@ func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, erro
 }
 
 // bestVariant picks the highest bandwidth rendition of a master playlist
-// a master labelling no bandwidth still names its variants, and the first of
+// a master labeling no bandwidth still names its variants, and the first of
 // them is taken rather than none
 func bestVariant(body []byte, base string) (string, error) {
 	var (
@@ -353,10 +353,10 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 // replays, and a signed URL is not stable across runs
 func segName(i int) string { return fmt.Sprintf("%05d.ts", i) }
 
-// localise renders the playlist against the cache directory
+// localize renders the playlist against the cache directory
 // every tag is reproduced untouched so EXT-X-MEDIA-SEQUENCE still lines up with
 // the segments, which is what the AES-128 IV derivation depends on
-func (p *mediaPlaylist) localise(dir, key string) string {
+func (p *mediaPlaylist) localize(dir, key string) string {
 	lines := make([]string, len(p.lines))
 	copy(lines, p.lines)
 	for n, at := range p.segAt {

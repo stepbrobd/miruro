@@ -17,7 +17,7 @@ import (
 	"ysun.co/miruro"
 )
 
-// sampleSegment synthesises one transport stream segment, with audio unless the test
+// sampleSegment synthesizes one transport stream segment, with audio unless the test
 // needs the silent case
 func sampleSegment(t *testing.T, audio bool) string {
 	t.Helper()
@@ -32,7 +32,7 @@ func sampleSegment(t *testing.T, audio bool) string {
 	}
 	args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", seg)
 	if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
+		t.Skipf("cannot synthesize a segment: %v: %s", err, out)
 	}
 	return seg
 }

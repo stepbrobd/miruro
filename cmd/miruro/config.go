@@ -151,7 +151,7 @@ func origins(mirrors []string) []string {
 	return out
 }
 
-// origin normalises one configured mirror, empty when it names no http host
+// origin normalizes one configured mirror, empty when it names no http host
 func origin(mirror string) string {
 	mirror = strings.TrimRight(strings.TrimSpace(mirror), "/")
 	u, err := url.Parse(mirror)

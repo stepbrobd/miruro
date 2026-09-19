@@ -25,7 +25,7 @@ type Pin struct {
 }
 
 // ParsePin reads a "code" or "code:variant" pin
-// a bare code and an unrecognised variant both leave the variant unstated
+// a bare code and an unrecognized variant both leave the variant unstated
 func ParsePin(s string) Pin {
 	code, variant, _ := strings.Cut(s, ":")
 	switch v := Variant(variant); v {
@@ -46,7 +46,7 @@ func (p Pin) String() string {
 
 // offer is one row of the provider prompt, a pin plus whether the capability
 // table declared a subtitle variant for that provider
-// an undeclared provider is offered bare, since labelling it with a variant it
+// an undeclared provider is offered bare, since labeling it with a variant it
 // never promised would state more than is known
 type offer struct {
 	Pin
@@ -101,7 +101,7 @@ type source struct {
 // the burned-in rendition still ships a subtitle file on some providers, so
 // whether to attach it follows the rendition that was asked for rather than
 // whether one arrived
-// an undeclared provider keeps the pre-table behaviour, the sub rendition with
+// an undeclared provider keeps the pre-table behavior, the sub rendition with
 // whatever subtitle file comes back, unless the pin said hard
 func (o offer) source(category miruro.Category) source {
 	switch {

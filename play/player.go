@@ -30,7 +30,7 @@ type Player struct {
 	Bin  string
 }
 
-// Detect resolves a player, honouring prefer when it names a supported player
+// Detect resolves a player, honoring prefer when it names a supported player
 // that is installed, otherwise preferring IINA on macOS and falling back to mpv
 // a stale prefer such as vlc is ignored rather than launched with mpv's flags
 // it errors when nothing supported is installed, so a run fails before any

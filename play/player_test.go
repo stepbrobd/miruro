@@ -54,7 +54,7 @@ func TestDetectErrorsWithoutPlayers(t *testing.T) {
 	}
 }
 
-func TestDetectHonoursPreference(t *testing.T) {
+func TestDetectHonorsPreference(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script players")
 	}

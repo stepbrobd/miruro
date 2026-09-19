@@ -36,7 +36,7 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
 		"-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts", seg)
 	if out, err := gen.CombinedOutput(); err != nil {
-		t.Skipf("cannot synthesise a segment: %v: %s", err, out)
+		t.Skipf("cannot synthesize a segment: %v: %s", err, out)
 	}
 	raw, err := os.ReadFile(seg)
 	if err != nil {
@@ -148,7 +148,7 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Range") != "" {
-			// a cdn honouring the range would drop the leading framing
+			// a cdn honoring the range would drop the leading framing
 			w.WriteHeader(http.StatusPartialContent)
 		}
 		w.Write(append([]byte("\x89PNG-decoy-bytes"), tsBlob(12)...))

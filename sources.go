@@ -223,7 +223,7 @@ func preferred(ctx context.Context, hc *http.Client, hls, mp4 []Stream, quality 
 }
 
 // pickQuality selects a stream by request
-// "best" or "" takes the tallest labelled height, "worst" the shortest, and an
+// "best" or "" takes the tallest labeled height, "worst" the shortest, and an
 // explicit "NNNp" an exact match
 // it reports false when no stream carries a usable height, so the caller can
 // expand a master or fall back to best
@@ -278,9 +278,9 @@ var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 const maxMaster = 16 << 20
 
 // expandMaster fetches an hls master playlist and returns its variant streams
-// labelled by height
+// labeled by height
 // it errors on a non-200, on a non-master body, or on a master with no
-// height-labelled variants, so a media playlist or an error page never becomes
+// height-labeled variants, so a media playlist or an error page never becomes
 // fabricated variants
 func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, error) {
 	req, err := newGet(ctx, s.URL, s.Referer)

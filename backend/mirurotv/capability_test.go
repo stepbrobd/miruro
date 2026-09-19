@@ -73,8 +73,8 @@ func TestConfig(t *testing.T) {
 		}
 	})
 
-	// a run cancelled before the table arrives says nothing about the resource
-	t.Run("a cancelled fetch is not remembered", func(t *testing.T) {
+	// a run canceled before the table arrives says nothing about the resource
+	t.Run("a canceled fetch is not remembered", func(t *testing.T) {
 		srv := mirror(t, serves(configBody))
 		c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 

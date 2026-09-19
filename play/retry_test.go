@@ -83,7 +83,7 @@ func TestRetryStopsEarly(t *testing.T) {
 	}
 }
 
-func TestRetryHonoursCancellation(t *testing.T) {
+func TestRetryHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	err := retry(ctx, func() error {
@@ -95,7 +95,7 @@ func TestRetryHonoursCancellation(t *testing.T) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 	if calls != 1 {
-		t.Errorf("a cancelled retry ran %d attempts, want 1", calls)
+		t.Errorf("a canceled retry ran %d attempts, want 1", calls)
 	}
 }
 

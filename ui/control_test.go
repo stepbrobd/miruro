@@ -97,7 +97,7 @@ func TestControlCtxCancel(t *testing.T) {
 	_, _, err := Control(ctx, "t", []string{"quit"}, wait,
 		tea.WithInput(strings.NewReader("")), tea.WithoutRenderer())
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cancelled Control returned %v, want context.Canceled", err)
+		t.Errorf("canceled Control returned %v, want context.Canceled", err)
 	}
 }
 

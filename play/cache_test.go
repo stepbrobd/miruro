@@ -22,7 +22,7 @@ type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) { return len(p), nil }
 
-// hlsFixture synthesises a short multi-segment stream and serves it
+// hlsFixture synthesizes a short multi-segment stream and serves it
 // counting requests is what lets a test prove a resumed run refetched only what
 // it was missing
 type hlsFixture struct {
@@ -63,7 +63,7 @@ func newHLSFixture(t *testing.T) *hlsFixture {
 		"-hls_segment_filename", filepath.Join(dir, "seg%d.ts"),
 		filepath.Join(dir, "media.m3u8"))
 	if out, err := gen.CombinedOutput(); err != nil {
-		t.Skipf("cannot synthesise an hls stream: %v: %s", err, out)
+		t.Skipf("cannot synthesize an hls stream: %v: %s", err, out)
 	}
 
 	f := &hlsFixture{dir: dir, hits: map[string]int{}}
@@ -226,7 +226,7 @@ func TestResolvePlaylistRejectsByterange(t *testing.T) {
 
 // a master naming no bandwidth is still a master, and losing the resumable
 // path over a missing label would be losing it for no reason
-func TestBestVariantTakesAnUnlabelledVariant(t *testing.T) {
+func TestBestVariantTakesAnUnlabeledVariant(t *testing.T) {
 	master := "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n720/index.m3u8\n"
 	got, err := bestVariant([]byte(master), "https://cdn.example/master.m3u8")
 	if err != nil || got != "https://cdn.example/720/index.m3u8" {
@@ -269,7 +269,7 @@ func TestResolvePlaylistFollowsHighestBandwidth(t *testing.T) {
 
 // the local playlist must keep every tag so EXT-X-MEDIA-SEQUENCE still lines up
 // with the segments, which is what AES-128 derives its IV from
-func TestLocalisePreservesTagsAndRewritesKey(t *testing.T) {
+func TestLocalizePreservesTagsAndRewritesKey(t *testing.T) {
 	pl := &mediaPlaylist{
 		lines: []string{
 			"#EXTM3U",
@@ -284,15 +284,15 @@ func TestLocalisePreservesTagsAndRewritesKey(t *testing.T) {
 		keyAt:     2,
 		keyURI:    "https://cdn/mon.key",
 	}
-	got := pl.localise("/cache", "/cache/key.bin")
+	got := pl.localize("/cache", "/cache/key.bin")
 
 	for _, want := range []string{"#EXT-X-MEDIA-SEQUENCE:7", "#EXTINF:10.0,", "#EXT-X-ENDLIST", "METHOD=AES-128"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("localised playlist dropped %q:\n%s", want, got)
+			t.Errorf("localized playlist dropped %q:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "https://cdn/") {
-		t.Errorf("localised playlist still points upstream:\n%s", got)
+		t.Errorf("localized playlist still points upstream:\n%s", got)
 	}
 	if !strings.Contains(got, filepath.Join("/cache", segName(0))) {
 		t.Errorf("segment not rewritten to its cached file:\n%s", got)
@@ -344,7 +344,7 @@ func TestParsePlaylistLeavesDataKeyAlone(t *testing.T) {
 	if !pl.encrypted {
 		t.Error("a data key did not mark the stream encrypted")
 	}
-	if got := pl.localise("/cache", ""); !strings.Contains(got, "data:text/plain;base64,YWJjZA==") {
+	if got := pl.localize("/cache", ""); !strings.Contains(got, "data:text/plain;base64,YWJjZA==") {
 		t.Errorf("data key did not survive:\n%s", got)
 	}
 }
@@ -606,7 +606,7 @@ func TestResolvePlaylistUsesTheVariantBase(t *testing.T) {
 
 // a cache path is a file name, so a '$' in it must survive into the playlist
 // rather than read as a capture group reference
-func TestLocaliseKeepsADollarInTheKeyPath(t *testing.T) {
+func TestLocalizeKeepsADollarInTheKeyPath(t *testing.T) {
 	pl := &mediaPlaylist{
 		lines:  []string{"#EXTM3U", `#EXT-X-KEY:METHOD=AES-128,URI="https://cdn/key"`, "seg0.ts"},
 		segAt:  []int{2},
@@ -614,7 +614,7 @@ func TestLocaliseKeepsADollarInTheKeyPath(t *testing.T) {
 		keyURI: "https://cdn/key",
 	}
 	key := filepath.Join("/tmp/a$name", "key.bin")
-	if got := pl.localise("/tmp/a$name", key); !strings.Contains(got, `URI="`+key+`"`) {
-		t.Errorf("localise dropped part of the key path:\n%s", got)
+	if got := pl.localize("/tmp/a$name", key); !strings.Contains(got, `URI="`+key+`"`) {
+		t.Errorf("localize dropped part of the key path:\n%s", got)
 	}
 }

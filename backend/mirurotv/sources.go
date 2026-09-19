@@ -82,7 +82,7 @@ var kinds = map[string]miruro.Kind{
 
 // attachable reports whether a subtitle entry carries dialogue
 // the api mirrors the html5 track kinds, where "thumbnails" is a sprite index a
-// player must never load as subtitles, so an unrecognised kind is refused rather
+// player must never load as subtitles, so an unrecognized kind is refused rather
 // than attached
 func attachable(kind string) bool {
 	switch strings.ToLower(kind) {

@@ -35,7 +35,7 @@ func (s status) Error() string { return fmt.Sprintf("status %d", int(s)) }
 func retry(ctx context.Context, op func() error) error {
 	var err error
 	for n := range attempts {
-		// a cancelled run must not start another attempt
+		// a canceled run must not start another attempt
 		// the select below cannot promise that on its own, since a fired timer
 		// and a done context are both ready and the choice between them is random
 		if ctx.Err() != nil {
@@ -58,7 +58,7 @@ func retry(ctx context.Context, op func() error) error {
 // transient reports whether another attempt could plausibly succeed
 // a retryable status, a dropped connection, and a body that failed its
 // plausibility check are all worth another go
-// a cancelled context, a filesystem error, and a permanent status are not
+// a canceled context, a filesystem error, and a permanent status are not
 func transient(err error) bool {
 	switch {
 	case err == nil:

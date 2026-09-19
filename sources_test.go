@@ -29,7 +29,7 @@ func TestPickQuality(t *testing.T) {
 		{URL: "1080", Quality: "1080p"},
 		{URL: "720", Quality: "720p"},
 		{URL: "1440", Quality: "1440p"},
-		{URL: "raw", Quality: ""}, // unlabelled, ignored
+		{URL: "raw", Quality: ""}, // unlabeled, ignored
 	}
 	check := func(q, wantURL string, wantOK bool) {
 		t.Helper()
@@ -52,7 +52,7 @@ func TestPickQuality(t *testing.T) {
 }
 
 // failTransport fails the test on any network use
-// a labelled request must be satisfied without touching the wire
+// a labeled request must be satisfied without touching the wire
 type failTransport struct{ t *testing.T }
 
 func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -73,7 +73,7 @@ func top(t *testing.T, hc *http.Client, r *Result, quality string) Stream {
 func TestRankHead(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("labelled hls match needs no network", func(t *testing.T) {
+	t.Run("labeled hls match needs no network", func(t *testing.T) {
 		hc := &http.Client{Transport: failTransport{t}}
 		r := &Result{Streams: []Stream{
 			{URL: "u1080", Kind: HLS, Quality: "1080p"},
@@ -85,7 +85,7 @@ func TestRankHead(t *testing.T) {
 		}
 	})
 
-	t.Run("unlabelled hls restricts the master to the expanded height", func(t *testing.T) {
+	t.Run("unlabeled hls restricts the master to the expanded height", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, "#EXTM3U\n"+
 				"#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080\nindex-1080.m3u8\n"+

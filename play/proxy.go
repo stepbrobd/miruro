@@ -61,7 +61,7 @@ func (k kind) relayed() bool { return k == media || k == opaque }
 func (k kind) picture() bool { return k == segment || k == cipher || k == media }
 
 // suffix keeps a real extension on the path because ffmpeg's hls demuxer rejects
-// segments whose extension it does not recognise
+// segments whose extension it does not recognize
 // base64url has no '.', so stripping the suffix back off is unambiguous
 func (k kind) suffix() string {
 	switch k {
@@ -101,7 +101,7 @@ type Proxy struct {
 }
 
 // StartProxy binds a relay on an ephemeral localhost port
-// it serves until ctx is cancelled or Close is called
+// it serves until ctx is canceled or Close is called
 func StartProxy(ctx context.Context) (*Proxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

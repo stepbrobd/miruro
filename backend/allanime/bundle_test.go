@@ -111,3 +111,33 @@ func TestEvalArithmetic(t *testing.T) {
 		t.Errorf("not = %v, %v", v, err)
 	}
 }
+
+// the obfuscator writes a rotation target as arithmetic as readily as it writes
+// a literal, and hoists a checksum argument into a const object it reaches by
+// member access
+// both shapes appeared on the live site after the fixture was taken, and the
+// first read as a target the loop could never reach because only the leading
+// digits were taken
+func TestParseBuildReadsOtherRotationShapes(t *testing.T) {
+	js := fixture(t)
+	hoisted := strings.Replace(js,
+		"(function(e,t){function r(i,s){return hi(i- -769)}",
+		"(function(e,t){const c={_0xa1:-345};function r(i,s){return hi(i- -769)}", 1)
+	hoisted = strings.Replace(hoisted,
+		"if(parseInt(r(-345,-425))/1", "if(parseInt(r(c._0xa1,-425))/1", 1)
+
+	for name, mangled := range map[string]string{
+		"negated target":   strings.ReplaceAll(js, "})(Bc,986495)", "})(Bc,-1*-328831*3+2)"),
+		"product target":   strings.ReplaceAll(js, "})(Bc,986495)", "})(Bc,3*328831+2)"),
+		"hoisted argument": hoisted,
+	} {
+		b, err := parseBuild(mangled)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if b.ID != "153" {
+			t.Errorf("%s: id = %q, want 153", name, b.ID)
+		}
+	}
+}
