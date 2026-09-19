@@ -45,8 +45,7 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 // the terminal
 // huh's own Run gives no way to touch the view, and its key legend keeps a
 // width the terminal may not have: it trims the legend at some widths and not
-// at others, and a row wider than the terminal wraps, which the renderer counts
-// as one row while it occupies two
+// at others, which wraps the row for the reason width.go opens with
 func drive(form *huh.Form, opts ...tea.ProgramOption) error {
 	// huh wires these in the Run this replaces, and NewForm leaves them nil, so
 	// a form that reaches them never quits: the state goes to completed, the

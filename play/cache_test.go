@@ -677,16 +677,9 @@ func TestCachedHLSRefusesAnEmptyCacheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the working directory is what an empty root resolves to
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(wd) })
+	t.Chdir(dir)
 
-	err = cachedHLS(context.Background(), http.DefaultClient, "http://127.0.0.1:1/x.m3u8",
+	err := cachedHLS(context.Background(), http.DefaultClient, "http://127.0.0.1:1/x.m3u8",
 		filepath.Join(dir, "out.mp4"), "", nil)
 	if !errors.Is(err, errNoCache) {
 		t.Errorf("err = %v, want the empty cache root refused as uncacheable", err)

@@ -63,10 +63,9 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 // a height no variant carries filters nothing, since a master emptied of
 // variants would play nothing at all where the full master still plays
 func filterMaster(body []byte, height int) ([]byte, error) {
-	if height <= 0 || !isMaster(body) {
-		return body, nil
-	}
-	if !hasVariant(body, height) {
+	// hasVariant matches only EXT-X-STREAM-INF lines, so a body that is not a
+	// master carries none and needs no separate check
+	if height <= 0 || !hasVariant(body, height) {
 		return body, nil
 	}
 

@@ -260,7 +260,7 @@ func TestDownloadsRenderEveryRowState(t *testing.T) {
 	view := m.View()
 	for _, want := range []string{
 		"E1", "1.0 MB / 4.0 MB", // running with a total
-		"E2", "0 B", // running with none
+		"E2 0 B\n",   // running with none, and no bar drawn from a zero total
 		"E3", "done", // finished clean
 		"E4", "status 404", // finished with a failure
 	} {

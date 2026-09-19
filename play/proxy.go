@@ -458,6 +458,10 @@ func normalizeSegment(data []byte) []byte {
 	return data
 }
 
+// synced reports whether data carries a run of aligned sync bytes from at
+// it is the stricter twin of the cache path's looksTS, since it is looking for
+// a sync point inside a body that may open with a decoy rather than judging a
+// segment it already has whole
 func synced(data []byte, at int) bool {
 	runs := 0
 	for i := at; i < len(data) && runs < syncRun; i += tsPacket {

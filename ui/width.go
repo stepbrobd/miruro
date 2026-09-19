@@ -67,6 +67,15 @@ func cut(s string, w int) string {
 	return s
 }
 
+// left is how many rows the terminal has under what a view has drawn so far
+// zero rows means the terminal was never measured, so nothing is held back
+func left(drawn string, rows, held int) int {
+	if rows <= 0 {
+		return held
+	}
+	return rows - strings.Count(drawn, "\n")
+}
+
 // tail is the newest records that fit in the rows a view has left
 // bound cuts from the bottom, so without this the record naming the failure is
 // the one dropped while the oldest survives
@@ -81,11 +90,9 @@ func tail(seen []string, room int) []string {
 }
 
 // bound cuts a rendered view to the terminal it is drawn into, in both
-// directions
-// too wide and the row wraps, which the renderer counts as one row while it
-// occupies two, so the next frame paints over the wrong lines
-// too tall and the top of the view scrolls off, which is where the menu and the
-// task rows are, leaving the log where the prompt should be
+// directions, for the reason this file opens with
+// too tall scrolls the top off, which is where the menu and the task rows are,
+// leaving the log where the prompt should be
 // the width cut is ansi aware because a row carries the styling huh put in it,
 // and cutting one mid escape would leak the sequence into the rows below
 func bound(view string, width, rows int) string {

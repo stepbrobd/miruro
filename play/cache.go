@@ -19,7 +19,8 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-// errNoCache marks a playlist this package cannot take apart safely, so the
+// errNoCache marks a download this package cannot cache, either a playlist it
+// cannot take apart safely or a run that named no cache root, so the
 // caller hands the original URL to ffmpeg in one shot and gives up resuming
 var errNoCache = errors.New("playlist not cacheable")
 
@@ -44,7 +45,7 @@ var (
 	durationAttr  = regexp.MustCompile(`^#EXTINF:\s*([0-9.]+)`)
 )
 
-// playlist is a media playlist split into the lines to reproduce and the
+// mediaPlaylist is a media playlist split into the lines to reproduce and the
 // segments to fetch
 // line indices are kept so the local copy preserves every tag verbatim, which
 // is what makes EXT-X-KEY and EXT-X-MEDIA-SEQUENCE still describe the segments
@@ -606,6 +607,9 @@ func plausibleSegment(head []byte, n, announced int64, plain bool) error {
 // the proxy strips any decoy prefix, so a real segment starts on a sync byte
 // a transport stream is whole packets, so anything shorter than one is an error
 // body that happened to open with 0x47 rather than a short segment
+// the proxy's synced is the stricter twin: it demands eight aligned packets
+// because it scans for a sync point inside a decoyed body, where this one has
+// the whole segment and only has to tell it from an error page
 func looksTS(data []byte) bool {
 	if len(data) < tsPacket {
 		return false

@@ -110,17 +110,8 @@ func (m downloads) View() string {
 	}
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
-	writeLines(&b, tail(m.seen, m.left(b.String())), m.term)
+	writeLines(&b, tail(m.seen, left(b.String(), m.rows, len(m.seen))), m.term)
 	return bound(b.String(), m.term, m.rows)
-}
-
-// left is how many rows the terminal has under what is drawn so far
-// zero rows means the terminal was never measured, so nothing is held back
-func (m downloads) left(drawn string) int {
-	if m.rows <= 0 {
-		return len(m.seen)
-	}
-	return m.rows - strings.Count(drawn, "\n")
 }
 
 // fit is how many task rows there is room for, and how many that leaves over

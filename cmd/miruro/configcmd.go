@@ -144,16 +144,14 @@ func runConfigShow(*cobra.Command, []string) error {
 	})
 }
 
-// fallbackRow says whether a run would walk past the configured provider, since
-// pinning one is what turns the walk off and the config names no such key
 // enabledNames is the backends a run would keep, since one it cannot resolve is
 // dropped and a list of only those falls back to every backend
 func enabledNames(named []string) []string {
 	var out []string
 	known := backendNames()
 	for _, b := range named {
-		if slices.Contains(known, strings.TrimSpace(b)) {
-			out = append(out, strings.TrimSpace(b))
+		if slices.Contains(known, b) {
+			out = append(out, b)
 		}
 	}
 	return out
@@ -168,6 +166,8 @@ func qualityRow(q string) string {
 	return or(q, "best")
 }
 
+// fallbackRow says whether a run would walk past the configured provider, since
+// pinning one is what turns the walk off and the config names no such key
 func fallbackRow(pin Pin) string {
 	if pin.Code == "" {
 		return "on, nothing is pinned"

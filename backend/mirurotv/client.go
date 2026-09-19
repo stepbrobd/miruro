@@ -90,7 +90,9 @@ type envelope struct {
 	Path   string            `json:"path"`
 	Method string            `json:"method"`
 	Query  map[string]string `json:"query"`
-	Body   any               `json:"body"`
+	// Body is never set and is not dead: the pipe requires the key, so it is
+	// here to be marshalled as null
+	Body any `json:"body"`
 }
 
 // pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body

@@ -79,8 +79,8 @@ func keep(seen []string, line string) []string {
 }
 
 // writeLines draws the kept log lines, each cut to the terminal width
-// a line that wraps throws the renderer's row count off and the next frame
-// paints over the wrong rows, which is how a menu ends up drawn twice
+// a line that wraps is how a menu ends up drawn twice, for the reason width.go
+// opens with
 func writeLines(b *strings.Builder, seen []string, width int) {
 	term := columns(width)
 	for _, line := range seen {

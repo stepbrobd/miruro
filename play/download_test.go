@@ -288,7 +288,7 @@ func TestAudibleCatchesAnAudioTrackThatEndsEarly(t *testing.T) {
 	dir := t.TempDir()
 
 	// make one file per case, the audio as long as the case wants it
-	build := func(name string, video, audio float64) string {
+	build := func(t *testing.T, name string, video, audio float64) string {
 		t.Helper()
 		dest := filepath.Join(dir, name)
 		cmd := exec.Command("ffmpeg", "-loglevel", "error", "-y",
@@ -318,7 +318,7 @@ func TestAudibleCatchesAnAudioTrackThatEndsEarly(t *testing.T) {
 		{"audio minutes short", 30, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := audible(context.Background(), build(tc.name+".mp4", tc.video, tc.audio))
+			err := audible(context.Background(), build(t, tc.name+".mp4", tc.video, tc.audio))
 			if tc.wantRefused && err == nil {
 				t.Error("an episode whose audio dies early was accepted as whole")
 			}

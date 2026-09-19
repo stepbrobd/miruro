@@ -191,7 +191,7 @@ func run(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	if flagFallback && fallback && pin.Code == "" {
+	if flagFallback && pin.Code == "" {
 		log.Warn("flag ignored", "flag", "--fallback", "because", "no provider is pinned, so the walk is already on")
 	}
 	if !flagDownload && flagParallel > 1 {
