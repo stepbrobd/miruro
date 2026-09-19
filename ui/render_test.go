@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -178,5 +179,34 @@ func TestBoundedFormReportsAnAbort(t *testing.T) {
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if got := model.(bounded).form.State; got == huh.StateCompleted {
 		t.Errorf("an interrupted form reported state %v, want anything but completed", got)
+	}
+}
+
+// the view above sizes itself to the terminal, so the log lines added under it
+// are what pushes the whole thing past the bottom and scrolls the menu away
+func TestViewsFitTheScreenHeight(t *testing.T) {
+	records := make([]string, keptLines)
+	for i := range records {
+		records[i] = fmt.Sprintf("WARN record %d", i)
+	}
+	for _, rows := range []int{6, 10, 16, 24, 50} {
+		var c tea.Model = control{
+			form: menu("Episode 3 of Show", []string{"next", "replay", "previous", "select", "change provider", "quit"}, func(s string) string { return s }, new(int)),
+			seen: records,
+		}
+		c, _ = c.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
+		if got := strings.Count(c.(control).View(), "\n") + 1; got > rows {
+			t.Errorf("control menu drew %d rows on a %d row terminal", got, rows)
+		}
+
+		var d tea.Model = downloads{
+			labels: []string{"E1", "E2", "E3"}, width: 2, bars: bars(3),
+			done: []int64{1, 2, 3}, total: []int64{9, 9, 9},
+			errs: make([]error, 3), fin: make([]bool, 3), seen: records,
+		}
+		d, _ = d.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
+		if got := strings.Count(d.(downloads).View(), "\n"); got > rows {
+			t.Errorf("download view drew %d rows on a %d row terminal", got, rows)
+		}
 	}
 }

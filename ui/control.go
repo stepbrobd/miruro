@@ -16,8 +16,10 @@ type control struct {
 	logs <-chan string
 	// seen holds the last keptLines written, oldest first
 	seen []string
-	// term is the terminal width, which bounds the log lines under the menu
+	// term is the terminal width, which bounds the log lines under the menu, and
+	// rows is its height, which bounds how many of them there is room for
 	term      int
+	rows      int
 	ended     bool
 	dismissed bool
 }
@@ -40,7 +42,7 @@ func (m control) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenLog(m.logs)
 	case tea.WindowSizeMsg:
 		// the form needs the size too, so it is not consumed here
-		m.term = msg.Width
+		m.term, m.rows = msg.Width, msg.Height
 	}
 	f, cmd := m.form.Update(msg)
 	m.form = f.(*huh.Form)
@@ -53,7 +55,7 @@ func (m control) View() string {
 	}
 	view := m.form.View()
 	if len(m.seen) == 0 {
-		return bound(view, m.term)
+		return bound(view, m.term, m.rows)
 	}
 	var b strings.Builder
 	b.WriteString(view)
@@ -61,7 +63,7 @@ func (m control) View() string {
 		b.WriteByte('\n')
 	}
 	writeLines(&b, m.seen, m.term)
-	return bound(b.String(), m.term)
+	return bound(b.String(), m.term, m.rows)
 }
 
 // Control shows the action menu while playback runs

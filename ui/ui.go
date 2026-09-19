@@ -60,20 +60,21 @@ func drive(form *huh.Form) error {
 type bounded struct {
 	form *huh.Form
 	term int
+	rows int
 }
 
 func (m bounded) Init() tea.Cmd { return m.form.Init() }
 
 func (m bounded) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if w, ok := msg.(tea.WindowSizeMsg); ok {
-		m.term = w.Width
+		m.term, m.rows = w.Width, w.Height
 	}
 	f, cmd := m.form.Update(msg)
 	m.form = f.(*huh.Form)
 	return m, cmd
 }
 
-func (m bounded) View() string { return bound(m.form.View(), m.term) }
+func (m bounded) View() string { return bound(m.form.View(), m.term, m.rows) }
 
 const (
 	// blindRows bounds a list when there is no terminal to measure

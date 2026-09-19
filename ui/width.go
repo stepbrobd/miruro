@@ -67,14 +67,20 @@ func cut(s string, w int) string {
 	return s
 }
 
-// bound cuts every row of a rendered view to the terminal it is drawn for
-// huh sizes its own rows to the width it is given, except its key legend, which
-// keeps a fixed width whatever the terminal is, so a narrow terminal wraps it
-// the cut is ansi aware because a row carries the styling huh put in it, and
-// cutting a row mid escape would leak the sequence into the rows below
-func bound(view string, width int) string {
+// bound cuts a rendered view to the terminal it is drawn into, in both
+// directions
+// too wide and the row wraps, which the renderer counts as one row while it
+// occupies two, so the next frame paints over the wrong lines
+// too tall and the top of the view scrolls off, which is where the menu and the
+// task rows are, leaving the log where the prompt should be
+// the width cut is ansi aware because a row carries the styling huh put in it,
+// and cutting one mid escape would leak the sequence into the rows below
+func bound(view string, width, rows int) string {
 	term := columns(width)
 	lines := strings.Split(view, "\n")
+	if rows > 0 && len(lines) > rows {
+		lines = lines[:rows]
+	}
 	for i, line := range lines {
 		if lipgloss.Width(line) > term {
 			lines[i] = ansi.Truncate(line, term, "")

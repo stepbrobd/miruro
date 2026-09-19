@@ -32,9 +32,10 @@ type doneMsg struct {
 type downloads struct {
 	labels []string
 	// width sizes the label column
-	// term is the full terminal width
+	// term is the full terminal width and rows its height
 	width  int
 	term   int
+	rows   int
 	bars   []progress.Model
 	done   []int64
 	total  []int64
@@ -74,7 +75,7 @@ func (m downloads) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		// a resize arrives outside the ch stream, so it must not re-arm listen
 		// and start a second reader
-		m.term = msg.Width
+		m.term, m.rows = msg.Width, msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -104,7 +105,7 @@ func (m downloads) View() string {
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
 	writeLines(&b, m.seen, m.term)
-	return bound(b.String(), m.term)
+	return bound(b.String(), m.term, m.rows)
 }
 
 // Downloads runs labeled tasks with a worker limit, rendering one live progress
@@ -140,9 +141,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 	if term.IsTerminal(os.Stdout.Fd()) {
 		width := 0
 		for _, l := range labels {
-			if len(l) > width {
-				width = len(l)
-			}
+			width = max(width, lipgloss.Width(l))
 		}
 		lines, restore := captureLog()
 		defer restore()

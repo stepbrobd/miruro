@@ -32,7 +32,7 @@ func episodeLabel(details map[float64]miruro.Episode) func(float64) string {
 func chooseEpisodes(numbers []float64, start float64, label func(float64) string) ([]float64, error) {
 	if flagAll {
 		if flagEpisode != "" {
-			log.Warn("--all overrides --episode")
+			log.Warn("flag ignored", "flag", "--episode", "because", "--all selects every episode")
 		}
 		return numbers, nil
 	}

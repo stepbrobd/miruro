@@ -112,7 +112,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	if flagContinue {
 		if len(args) > 0 {
-			log.Warn("--continue ignores the query")
+			log.Warn("flag ignored", "flag", "the query", "because", "--continue resumes from history")
 		}
 		e, err := resume(st)
 		if err != nil {
@@ -186,10 +186,10 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !flagDownload && flagParallel > 1 {
-		log.Warn("--parallel applies only with --download")
+		log.Warn("flag ignored", "flag", "--parallel", "because", "it applies only with --download")
 	}
 	if flagDownload && flagSkip {
-		log.Warn("--skip applies only to playback")
+		log.Warn("flag ignored", "flag", "--skip", "because", "it applies only to playback")
 	}
 
 	state := &runState{

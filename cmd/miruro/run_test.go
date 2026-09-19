@@ -1133,3 +1133,23 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		}
 	})
 }
+
+// a provider that names no host still has to be told apart from its own other
+// streams, and "stream" reads as the name of a thing rather than the absence
+// of one
+func TestServerNamesAnUnnamedStream(t *testing.T) {
+	for _, tc := range []struct {
+		stream miruro.Stream
+		want   string
+	}{
+		{miruro.Stream{Server: "HD-1", URL: "https://cdn.example/a.m3u8"}, "HD-1"},
+		{miruro.Stream{URL: "https://hls.krussdomi.com/manifest/x/master.m3u8"}, "hls.krussdomi.com"},
+		{miruro.Stream{URL: "https://bl.krussdomi.com/manifest/x/master.m3u8"}, "bl.krussdomi.com"},
+		{miruro.Stream{URL: "not a url"}, "unnamed"},
+		{miruro.Stream{}, "unnamed"},
+	} {
+		if got := server(tc.stream); got != tc.want {
+			t.Errorf("server(%+v) = %q, want %q", tc.stream, got, tc.want)
+		}
+	}
+}

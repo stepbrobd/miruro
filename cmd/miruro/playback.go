@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -98,11 +99,16 @@ func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, pl
 
 // server names a stream for the log, since a provider does not always name its
 // own host
+// the url's host is what tells one unnamed stream of a provider from another,
+// where a placeholder reads as the provider serving a thing called "stream"
 func server(s miruro.Stream) string {
-	if s.Server == "" {
-		return "stream"
+	if s.Server != "" {
+		return s.Server
 	}
-	return s.Server
+	if u, err := url.Parse(s.URL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "unnamed"
 }
 
 // startGrace is how long a stream has to relay its first media body
