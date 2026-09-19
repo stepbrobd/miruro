@@ -8,7 +8,7 @@ import (
 	"ysun.co/miruro"
 )
 
-// Sources resolves an episode on a provider to playable streams and subtitles.
+// Sources resolves an episode on a provider to playable streams and subtitles
 func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat miruro.Category) (*miruro.Result, error) {
 	body, err := c.pipe(ctx, "sources", map[string]string{
 		"episodeId": episodeID,

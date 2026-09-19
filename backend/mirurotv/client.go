@@ -93,8 +93,8 @@ type envelope struct {
 	Body   any               `json:"body"`
 }
 
-// pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body.
-// It walks the mirrors from the one that answered last, and only a failure a
+// pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body
+// it walks the mirrors from the one that answered last, and only a failure a
 // different mirror could answer moves it along
 func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
 	if query == nil {
@@ -157,9 +157,8 @@ const (
 	aborted
 )
 
-// attempt runs the pipe against one mirror and reports what pipe should do
-// next.
-// A transport failure and a WAF rejection are what another mirror could answer
+// attempt runs the pipe against one mirror and reports what pipe should do next
+// a transport failure and a WAF rejection are what another mirror could answer
 // every mirror fronts the same backend, so walking them all on a backend status
 // would multiply the requests a provider outage already costs
 func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, verdict, error) {

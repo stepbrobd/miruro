@@ -189,7 +189,7 @@ type Caps struct {
 	Embed bool
 }
 
-// Capabilities is the provider capability table, keyed by provider code.
-// A code the table does not name is undeclared rather than incapable, since the
+// Capabilities is the provider capability table, keyed by provider code
+// a code the table does not name is undeclared rather than incapable, since the
 // episodes resource serves providers the config resource omits
 type Capabilities map[string]Caps
