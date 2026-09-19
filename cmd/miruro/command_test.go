@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -364,5 +365,24 @@ func TestConfigShowReportsWhatARunWouldUse(t *testing.T) {
 	}
 	if got := enabledNames([]string{"allanime", "miruro"}); len(got) != 1 || got[0] != "miruro" {
 		t.Errorf("enabledNames = %v, want only the backends a run resolves against", got)
+	}
+}
+
+// help is read on an eighty column terminal as often as any other width, and a
+// line past it wraps into the next, which is what makes a flag table hard to
+// scan
+func TestHelpFitsAnEightyColumnTerminal(t *testing.T) {
+	for _, cmd := range []*cobra.Command{root, configCmd, historyCmd, cacheCmd} {
+		var b bytes.Buffer
+		cmd.SetOut(&b)
+		if err := cmd.Help(); err != nil {
+			t.Fatal(err)
+		}
+		cmd.SetOut(nil)
+		for line := range strings.SplitSeq(b.String(), "\n") {
+			if len(line) > 80 {
+				t.Errorf("%s help: %d columns\n%s", cmd.Name(), len(line), line)
+			}
+		}
 	}
 }

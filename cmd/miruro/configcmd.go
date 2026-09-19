@@ -34,7 +34,7 @@ var configInitCmd = &cobra.Command{
 
 var configShowCmd = &cobra.Command{
 	Use:   "show",
-	Short: "Show the settings a run would use, after the file and the environment",
+	Short: "Show the settings a run would use, file and environment",
 	Args:  cobra.NoArgs,
 	RunE:  runConfigShow,
 }
