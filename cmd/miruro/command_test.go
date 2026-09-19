@@ -363,7 +363,7 @@ func TestConfigShowReportsWhatARunWouldUse(t *testing.T) {
 	if got := fallbackRow(ParsePin("hop:soft")); !strings.Contains(got, "off unless") {
 		t.Errorf("a pinned provider showed as unpinned: %q", got)
 	}
-	if got := enabledNames([]string{"allanime", "miruro"}); len(got) != 1 || got[0] != "miruro" {
+	if got := enabledNames([]string{"nothing-implements-this", "miruro"}); len(got) != 1 || got[0] != "miruro" {
 		t.Errorf("enabledNames = %v, want only the backends a run resolves against", got)
 	}
 }
