@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/charmbracelet/log"
 
@@ -13,7 +14,8 @@ import (
 
 // resolve resolves an episode and returns the source that served it and the pin
 // to carry forward
-// with a pinned provider it resolves with fallback and carries the pin unchanged
+// with a pinned provider it resolves without prompting and carries the pin
+// unchanged
 // with no pin it asks once, for a provider and its subtitle rendition together,
 // and the pick is the pin whether or not that provider ends up serving
 func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Result, source, Pin, error) {
@@ -43,14 +45,23 @@ func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Re
 // a backend that refuses this client takes its other providers out of the walk
 // with it for the rest of the run, since each would cost a request against the
 // same refusal, and the refusal is what is reported when nothing else served
+// a provider named in the config or on the command line holds the run to
+// itself, since trading a stated choice for another provider without being
+// asked is what --fallback exists to allow
 func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*miruro.Result, source, error) {
 	avail, err := candidates(s.cat, ep, s.category, s.caps)
 	if err != nil {
 		return nil, source{}, err
 	}
 
+	rows := orderPinned(offers(avail, s.caps, s.category, pin), pin)
+	if !s.fallback && pin.Code != "" {
+		// both renditions of the pinned provider stay, since either is still it
+		rows = slices.DeleteFunc(rows, func(o offer) bool { return o.Code != pin.Code })
+	}
+
 	var last, blocked error
-	for _, o := range orderPinned(offers(avail, s.caps, s.category, pin), pin) {
+	for _, o := range rows {
 		p := s.cat.Providers[o.Code]
 		if skip[o.Code] {
 			continue
@@ -98,6 +109,11 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 	switch {
 	case blocked != nil:
 		return nil, source{}, blocked
+	case !s.fallback && pin.Code != "":
+		if last == nil {
+			last = fmt.Errorf("%s carries no source for episode %s", pin.Code, num(ep))
+		}
+		return nil, source{}, fmt.Errorf("%w (pass --fallback to try another provider)", last)
 	case last == nil:
 		last = fmt.Errorf("no source resolved for episode %s", num(ep))
 	}

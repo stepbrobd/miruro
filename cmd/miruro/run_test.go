@@ -92,8 +92,10 @@ func twoProviderCatalog(b miruro.Backend) *miruro.Catalog {
 }
 
 // resolver is the state one resolution needs
+// fallback is on because these exercise the walk past a provider, and the
+// pinned run that refuses to walk has its own test
 func resolver(cat *miruro.Catalog, category miruro.Category, caps miruro.Capabilities) *runState {
-	return &runState{cat: cat, category: category, caps: caps}
+	return &runState{cat: cat, category: category, caps: caps, fallback: true}
 }
 
 // served points every provider of a hand-written catalog at one backend, the
@@ -854,6 +856,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 			title:    "Grow Up Show",
 			category: miruro.Sub,
 			cfg:      config{Quality: "best"},
+			fallback: true,
 		},
 		px:  px,
 		pin: Pin{Code: "ally", Variant: Hard},
@@ -1074,5 +1077,59 @@ func TestAbandonStalled(t *testing.T) {
 		// before the restore runs
 		cancel()
 		<-played
+	})
+}
+
+// a provider named in the config or on the command line is a stated choice, so
+// the walk stops at it and says how to widen it, rather than quietly serving
+// the episode from somewhere the run was never told to use
+func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no fallback stops at the pin", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := sourcesServer(t, map[string]http.HandlerFunc{
+			"bonk": serveStatus(http.StatusInternalServerError),
+			"ally": serveJSON(hlsPayload),
+		}, &hits)
+		defer srv.Close()
+
+		st := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil)
+		st.fallback = false
+		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		if err == nil {
+			t.Fatal("the run served an episode from a provider it was not told to use")
+		}
+		if !strings.Contains(err.Error(), "--fallback") {
+			t.Errorf("err = %v, want it to name the flag that widens the walk", err)
+		}
+		if n := hits.Load(); n != 1 {
+			t.Errorf("asked %d providers, want only the pinned one", n)
+		}
+	})
+
+	t.Run("a pin nothing carries names itself", func(t *testing.T) {
+		srv := sourcesServer(t, map[string]http.HandlerFunc{"ally": serveJSON(hlsPayload)}, nil)
+		defer srv.Close()
+
+		st := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil)
+		st.fallback = false
+		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "gone"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "gone") {
+			t.Fatalf("err = %v, want it to name the pinned provider", err)
+		}
+	})
+
+	t.Run("fallback restores the walk", func(t *testing.T) {
+		srv := sourcesServer(t, map[string]http.HandlerFunc{
+			"bonk": serveStatus(http.StatusInternalServerError),
+			"ally": serveJSON(hlsPayload),
+		}, nil)
+		defer srv.Close()
+
+		_, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		if err != nil || src.Code != "ally" {
+			t.Fatalf("served = %q, %v, want ally", src.Code, err)
+		}
 	})
 }

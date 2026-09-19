@@ -28,6 +28,10 @@ type runState struct {
 	category  miruro.Category
 	caps      miruro.Capabilities
 	cfg       config
+	// fallback allows the walk past the pinned provider
+	// a provider named in the config or on the command line is a stated choice,
+	// so only --fallback trades it for another
+	fallback bool
 	// refused remembers the backends that refused the run
 	refused refusals
 }
@@ -176,10 +180,16 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "backend", f.Backend, "err", f.Err)
 	}
 
+	// a pin the run was given rather than picked holds the walk to that provider
+	fallback := flagFallback || pinned == ""
 	pin := ParsePin(pinned)
 	if pin.Code != "" {
 		if _, ok := cat.Providers[pin.Code]; !ok {
-			log.Warn("pinned provider not in catalog, using fallback order", "provider", pin.Code)
+			if fallback {
+				log.Warn("pinned provider not in catalog, using fallback order", "provider", pin.Code)
+			} else {
+				log.Warn("pinned provider not in catalog, pass --fallback to try another", "provider", pin.Code)
+			}
 		}
 	}
 	if !flagDownload && flagParallel > 1 {
@@ -191,7 +201,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	state := &runState{
 		hc: client.HTTP, cat: cat, anilistID: media.ID, title: title,
-		category: category, caps: caps, cfg: cfg,
+		category: category, caps: caps, cfg: cfg, fallback: fallback,
 	}
 	if flagDownload {
 		return state.download(ctx, eps, pin)
