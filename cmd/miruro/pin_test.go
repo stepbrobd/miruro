@@ -343,7 +343,13 @@ func TestPinForReportsABadValueOnce(t *testing.T) {
 				if value == "" {
 					continue
 				}
-				if n := strings.Count(buf.String(), "provider="+value+"\n"); n > 1 {
+				// an unrecognized variant logs further keys after the value, so
+				// anchoring on the end of the record counts nothing at all
+				n := strings.Count(buf.String(), "provider="+value)
+				if n == 0 {
+					t.Errorf("%q was not reported at all:\n%s", value, buf.String())
+				}
+				if n > 1 {
 					t.Errorf("%q reported %d times:\n%s", value, n, buf.String())
 				}
 			}
