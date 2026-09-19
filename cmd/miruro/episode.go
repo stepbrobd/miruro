@@ -107,6 +107,12 @@ func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
 		if len(out) == 0 {
 			return nil, fmt.Errorf("no episodes in range %s", spec)
 		}
+		// a range wider than the catalog is clamped, and saying so is what tells
+		// a short season from a provider that carries less than the rest
+		if out[0] != lo || out[len(out)-1] != hi {
+			log.Warn("range clamped to what the catalog carries", "asked", spec,
+				"played", num(out[0])+"-"+num(out[len(out)-1]))
+		}
 		return out, nil
 	}
 	n, err := strconv.ParseFloat(spec, 64)

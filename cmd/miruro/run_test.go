@@ -506,8 +506,8 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	}
 
 	_, _, err = resolver(cat, miruro.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
-	if err == nil || !strings.Contains(err.Error(), "no source resolved") {
-		t.Fatalf("err = %v, want the no-source error once every provider is spent", err)
+	if err == nil || !strings.Contains(err.Error(), "no provider resolved a stream") {
+		t.Fatalf("err = %v, want the spent-walk error once every provider is tried", err)
 	}
 }
 

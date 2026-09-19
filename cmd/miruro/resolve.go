@@ -124,12 +124,12 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 			} else if _, ok := s.cat.Providers[pin.Code]; !ok {
 				last = fmt.Errorf("%s is not in the catalog for this title", pin.Code)
 			} else {
-				last = fmt.Errorf("%s carries no source for episode %s", pin.Code, num(ep))
+				last = fmt.Errorf("%s carries no stream for episode %s", pin.Code, num(ep))
 			}
 		}
 		return nil, source{}, fmt.Errorf("%w (pass --fallback to try the rest)", last)
 	case last == nil:
-		last = fmt.Errorf("no source resolved for episode %s", num(ep))
+		last = fmt.Errorf("no provider resolved a stream for episode %s", num(ep))
 	}
 	return nil, source{}, last
 }
