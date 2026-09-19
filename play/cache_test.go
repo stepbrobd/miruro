@@ -664,3 +664,34 @@ func TestReconcileComparesDurationsWithinATolerance(t *testing.T) {
 		})
 	}
 }
+
+// cachedHLS removes its cache directory once the episode is on disk, and
+// filepath.Abs turns an empty one into the working directory
+// a caller that passes no cache root would therefore delete the directory the
+// run was started from, so the refusal belongs here rather than only at the
+// call site
+func TestCachedHLSRefusesAnEmptyCacheRoot(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "a-file-the-run-must-not-delete")
+	if err := os.WriteFile(keep, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// the working directory is what an empty root resolves to
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+
+	err = cachedHLS(context.Background(), http.DefaultClient, "http://127.0.0.1:1/x.m3u8",
+		filepath.Join(dir, "out.mp4"), "", nil)
+	if !errors.Is(err, errNoCache) {
+		t.Errorf("err = %v, want the empty cache root refused as uncacheable", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("the working directory was wiped: %v", err)
+	}
+}

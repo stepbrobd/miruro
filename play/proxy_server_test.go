@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -686,5 +687,90 @@ func TestProxyRefusesAWrongToken(t *testing.T) {
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the valid token was refused with status %d", resp.StatusCode)
+	}
+}
+
+// a segment must arrive whole, since the decoy strip and any decryption line up
+// against the start of the body, so a Range from the player is answered by the
+// proxy's own buffered copy rather than forwarded upstream
+// a relayed body such as an mp4 or a sidecar has no such constraint and must
+// forward it, or seeking an episode would refetch it from the beginning
+func TestProxyForwardsARangeOnlyForARelayedBody(t *testing.T) {
+	var ranges sync.Map
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ranges.Store(r.URL.Path, r.Header.Get("Range"))
+		http.ServeContent(w, r, "x", time.Time{}, bytes.NewReader(bytes.Repeat(tsPacket188(), 8)))
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for _, tc := range []struct {
+		kind      kind
+		path      string
+		forwarded bool
+	}{
+		{segment, "/seg.ts", false},
+		{cipher, "/enc.ts", false},
+		{playlist, "/list.m3u8", false},
+		{media, "/ep.mp4", true},
+		{opaque, "/subs.vtt", true},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, px.proxied(cdn.URL+tc.path, "", tc.kind), nil)
+			req.Header.Set("Range", "bytes=10-19")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+
+			got, _ := ranges.Load(tc.path)
+			sent, _ := got.(string)
+			if tc.forwarded && sent == "" {
+				t.Error("a relayed body did not carry the range upstream, so a seek refetches from the start")
+			}
+			if !tc.forwarded && sent != "" {
+				t.Errorf("a buffered body carried %q upstream, so it can arrive cut and the decoy strip misaligns", sent)
+			}
+		})
+	}
+}
+
+// Served counts media bodies, not writes, since it is what tells a stream that
+// never produced picture from one the user quit
+// a body the relay copies in several chunks is still one body
+func TestProxyCountsARelayedBodyOnce(t *testing.T) {
+	// larger than the relay's 32k copy buffer, so the body reaches the player in
+	// several writes
+	body := bytes.Repeat([]byte("v"), 200<<10)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Write(body)
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.URL(miruro.Stream{URL: cdn.URL + "/ep.mp4", Kind: miruro.MP4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if len(got) != len(body) {
+		t.Fatalf("relayed %d bytes, want %d", len(got), len(body))
+	}
+	if n := px.Served(); n != 1 {
+		t.Errorf("served = %d for one body written in %d chunks, want 1", n, len(body)/(32<<10))
 	}
 }

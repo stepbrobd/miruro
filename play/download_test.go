@@ -274,3 +274,57 @@ func TestSidecarNames(t *testing.T) {
 		}
 	}
 }
+
+// a dead audio rendition remuxes into a file ffmpeg exits zero on, and the only
+// sign is an audio track that ends well before the picture
+// the two thresholds are what separate that from the fractions of a second real
+// renditions drift by, so both have to be driven
+func TestAudibleCatchesAnAudioTrackThatEndsEarly(t *testing.T) {
+	for _, bin := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not installed", bin)
+		}
+	}
+	dir := t.TempDir()
+
+	// make one file per case, the audio as long as the case wants it
+	build := func(name string, video, audio float64) string {
+		t.Helper()
+		dest := filepath.Join(dir, name)
+		cmd := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+			"-f", "lavfi", "-i", fmt.Sprintf("testsrc=size=64x64:rate=10:duration=%g", video),
+			"-f", "lavfi", "-i", fmt.Sprintf("sine=duration=%g", audio),
+			"-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+			"-map", "0:v", "-map", "1:a", dest)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("cannot synthesize a clip: %v: %s", err, out)
+		}
+		return dest
+	}
+
+	for _, tc := range []struct {
+		name         string
+		video, audio float64
+		wantRefused  bool
+	}{
+		// the drift a real rendition has, well inside both thresholds
+		{"audio a moment short", 20, 19.6, false},
+		// longer than five seconds but under a tenth of the video
+		{"audio short but proportional", 120, 114, false},
+		// past a tenth of the video but under the five second floor, which is
+		// what keeps a short clip's ordinary drift from reading as a dead track
+		{"audio short on a short clip", 20, 16, false},
+		// a dead rendition: past both thresholds
+		{"audio minutes short", 30, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := audible(context.Background(), build(tc.name+".mp4", tc.video, tc.audio))
+			if tc.wantRefused && err == nil {
+				t.Error("an episode whose audio dies early was accepted as whole")
+			}
+			if !tc.wantRefused && err != nil {
+				t.Errorf("ordinary drift was refused: %v", err)
+			}
+		})
+	}
+}

@@ -109,6 +109,14 @@ func Cached(dir string) (Cache, error) {
 // a segment is renamed into place only once it is whole, so an interrupted run
 // resumes with just the segments it still lacks
 func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, prog Progress) error {
+	// this function removes dir once the episode is on disk, and filepath.Abs
+	// turns an empty one into the working directory, so an empty dir would take
+	// the working directory with it
+	// the caller guards this too, and the guard belongs here as well because the
+	// hazard is this function's, not the caller's
+	if dir == "" {
+		return errNoCache
+	}
 	// ffmpeg resolves the local playlist's segments against the playlist's own
 	// directory, so a relative dir would remux dir/dir/00000.ts and the failure
 	// would wipe a fully fetched cache

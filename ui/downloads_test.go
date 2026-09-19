@@ -243,3 +243,32 @@ func TestBytes(t *testing.T) {
 		}
 	}
 }
+
+// every task row renders, and a finished one has no progress to draw, so the
+// branches that never ran in a test are the ones a completed run is made of
+func TestDownloadsRenderEveryRowState(t *testing.T) {
+	m := downloads{
+		labels: []string{"E1", "E2", "E3", "E4"},
+		width:  2,
+		bars:   bars(4),
+		done:   []int64{1 << 20, 0, 0, 0},
+		total:  []int64{1 << 22, 0, 0, 0},
+		errs:   []error{nil, nil, nil, errors.New("download refused: status 404")},
+		fin:    []bool{false, false, true, true},
+		term:   80,
+	}
+	view := m.View()
+	for _, want := range []string{
+		"E1", "1.0 MB / 4.0 MB", // running with a total
+		"E2", "0 B", // running with none
+		"E3", "done", // finished clean
+		"E4", "status 404", // finished with a failure
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view does not carry %q:\n%s", want, view)
+		}
+	}
+	if rows := strings.Count(view, "\n"); rows != len(m.labels) {
+		t.Errorf("drew %d rows for %d tasks", rows, len(m.labels))
+	}
+}

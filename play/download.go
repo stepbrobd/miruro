@@ -173,10 +173,8 @@ func hls(ctx context.Context, hc *http.Client, srcURL, dest, cache string, prog 
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return errors.New("ffmpeg is required to download hls streams")
 	}
-	err := errNoCache
-	if cache != "" {
-		err = cachedHLS(ctx, hc, srcURL, dest, cache, prog)
-	}
+	// cachedHLS refuses an empty cache root itself, so the one guard is there
+	err := cachedHLS(ctx, hc, srcURL, dest, cache, prog)
 	if errors.Is(err, errNoCache) {
 		if cache != "" {
 			log.Debug("playlist is not cacheable, downloading without resume", "dest", dest)

@@ -222,3 +222,31 @@ func TestRewriteExtensionlessRendition(t *testing.T) {
 		t.Errorf("rendition uri was not marked as a playlist:\n%s", out)
 	}
 }
+
+// a stream restricted to no height is every height, so a master must pass
+// through whole rather than be filtered down to the variants that happen to
+// carry no resolution
+func TestFilterMasterKeepsEverythingWithoutAHeight(t *testing.T) {
+	master := "#EXTM3U\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=800000\nplain.m3u8\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1920x1080\nhd.m3u8\n"
+
+	for _, height := range []int{0, -1} {
+		got, err := filterMaster([]byte(master), height)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != master {
+			t.Errorf("height %d filtered the master instead of passing it through:\n%s", height, got)
+		}
+	}
+
+	// a height the master does carry keeps only those variants
+	got, err := filterMaster([]byte(master), 1080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "plain.m3u8") || !strings.Contains(string(got), "hd.m3u8") {
+		t.Errorf("height 1080 kept the wrong variants:\n%s", got)
+	}
+}
