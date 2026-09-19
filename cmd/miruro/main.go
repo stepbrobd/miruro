@@ -55,7 +55,14 @@ func init() {
 	root.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "Log resolution and playback detail")
 
 	// keep routine progress quiet by default, warnings and errors still show
+	// the wall clock goes with them: a record here is read as it happens, and
+	// under a live view it costs twenty of the eighty columns a narrow terminal
+	// has and pushes the keys the record was written for off the end
+	// it is set once here rather than around each view because the logger reads
+	// the setting outside the mutex it takes for the output, so moving it while
+	// a download worker logs is a race
 	root.PersistentPreRun = func(*cobra.Command, []string) {
+		log.SetReportTimestamp(false)
 		if flagVerbose {
 			log.SetLevel(log.DebugLevel)
 		} else {

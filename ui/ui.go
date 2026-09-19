@@ -19,7 +19,7 @@ func Prompt(title string) (string, error) {
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title(title).Value(&s),
 	)).WithTheme(theme())
-	if err := form.Run(); err != nil {
+	if err := drive(form); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(s), nil
@@ -33,11 +33,47 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 		return zero, errors.New("nothing to select")
 	}
 	idx := 0
-	if err := menu(title, items, label, &idx).Run(); err != nil {
+	if err := drive(menu(title, items, label, &idx)); err != nil {
 		return zero, err
 	}
 	return items[idx], nil
 }
+
+// drive runs a form as its own program, so every row it paints can be cut to
+// the terminal
+// huh's own Run gives no way to touch the view, and its key legend keeps a
+// width the terminal may not have: it trims the legend at some widths and not
+// at others, and a row wider than the terminal wraps, which the renderer counts
+// as one row while it occupies two
+func drive(form *huh.Form) error {
+	final, err := tea.NewProgram(bounded{form: form}).Run()
+	if err != nil {
+		return err
+	}
+	if final.(bounded).form.State != huh.StateCompleted {
+		return ErrAborted
+	}
+	return nil
+}
+
+// bounded is one huh form with its view cut to the terminal it is drawn into
+type bounded struct {
+	form *huh.Form
+	term int
+}
+
+func (m bounded) Init() tea.Cmd { return m.form.Init() }
+
+func (m bounded) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if w, ok := msg.(tea.WindowSizeMsg); ok {
+		m.term = w.Width
+	}
+	f, cmd := m.form.Update(msg)
+	m.form = f.(*huh.Form)
+	return m, cmd
+}
+
+func (m bounded) View() string { return bound(m.form.View(), m.term) }
 
 const (
 	// blindRows bounds a list when there is no terminal to measure

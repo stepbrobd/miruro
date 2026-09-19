@@ -104,7 +104,7 @@ func (m downloads) View() string {
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
 	writeLines(&b, m.seen, m.term)
-	return b.String()
+	return bound(b.String(), m.term)
 }
 
 // Downloads runs labeled tasks with a worker limit, rendering one live progress
@@ -235,38 +235,6 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 	wg.Wait()
 }
 
-// columns is the width to draw for, the assumed one until a size message
-// arrives
-func columns(w int) int {
-	if w <= 0 {
-		return defaultTerm
-	}
-	return w
-}
-
-const (
-	// minBar is the narrowest bar worth drawing, under which the row carries
-	// its byte counter alone
-	minBar = 8
-	// maxBar is what a bar takes once the terminal has room to spare
-	maxBar = 30
-	// counterRoom is the widest byte counter a row can carry, two sizes and
-	// their separator
-	counterRoom = len("1023.9 TB / 1023.9 TB")
-	// gutters are the two leading spaces, the one after the label, and the two
-	// before the counter
-	gutters = 5
-)
-
-// barRoom is what the terminal leaves a progress bar once the label and the
-// byte counter beside it have theirs, zero when it leaves too little
-// a bar that keeps its full width on a narrow terminal pushes the row past the
-// edge, and a row that wraps is drawn once and counted once while occupying
-// two, which is what makes the bars paint over each other
-func barRoom(width, label int) int {
-	return min(columns(width)-label-gutters-counterRoom, maxBar)
-}
-
 // progressRow draws one running download, sized to the terminal it is drawn for
 func (m downloads) progressRow(i int, name string) string {
 	head := "  " + name + " "
@@ -280,16 +248,6 @@ func (m downloads) progressRow(i int, name string) string {
 	bar.Width = room
 	return head + bar.ViewAs(float64(m.done[i])/float64(m.total[i])) + "  " + tail
 }
-
-// defaultTerm is assumed until the first tea.WindowSizeMsg reports the real width
-const defaultTerm = 80
-
-const ellipsis = "..."
-
-// flatten keeps a multi-line error on one row
-// ffmpeg reports its failures across several lines, which would otherwise push
-// the still-live rows below out of place
-var flatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 
 // errLine renders one failed task as a single line that fits the terminal
 // marker and label may carry ANSI styling, so only the plain message is cut and
@@ -308,19 +266,6 @@ func errLine(marker, label, msg string, width int) string {
 		return head + ellipsis[:max(room, 0)]
 	}
 	return head + cut(msg, room-len(ellipsis)) + ellipsis
-}
-
-// cut returns the longest prefix of a plain string fitting w display columns
-func cut(s string, w int) string {
-	used := 0
-	for i, r := range s {
-		rw := lipgloss.Width(string(r))
-		if used+rw > w {
-			return s[:i]
-		}
-		used += rw
-	}
-	return s
 }
 
 func ok(good bool) string {

@@ -41,22 +41,17 @@ func (s sink) Write(b []byte) (int, error) {
 }
 
 // captureLog points the log at a fresh sink and returns it with its undo
-// nothing else sets the output or the timestamp, so stderr and on is where
-// they came from
-// the timestamp goes because a record read under the prompt it explains is
-// already in the present, while the wall clock costs twenty of the eighty
-// columns a narrow terminal has and pushes the keys the record was written for
-// off the end
+// nothing else sets the output, so stderr is where it came from
 // the undo closes the sink, which releases the listener the view left parked
 // on it, and it is safe to close because the logger holds its own mutex
 // across the output swap and every write, so no write is in flight once the
 // swap has returned
+// only the output is swapped here, because a live view runs with workers
+// already logging and the logger reads its other settings outside that mutex
 func captureLog() (sink, func()) {
 	lines := make(sink, 64)
 	log.SetOutput(lines)
-	log.SetReportTimestamp(false)
 	return lines, func() {
-		log.SetReportTimestamp(true)
 		log.SetOutput(os.Stderr)
 		close(lines)
 	}

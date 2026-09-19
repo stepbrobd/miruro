@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -19,9 +20,16 @@ func bars(n int) []progress.Model {
 	return out
 }
 
-// widths span a narrow split pane through a wide terminal, since a view is
-// only correct when every row of it fits whatever it is given
-var widths = []int{40, 60, 80, 100, 120}
+// widths span every terminal a view might be drawn into
+// sampling a handful misses the overflows, since huh truncates its own rows at
+// some widths and not others
+func widths() []int {
+	var out []int
+	for w := 10; w <= 200; w++ {
+		out = append(out, w)
+	}
+	return out
+}
 
 // the catalog carries titles this long, and an episode label carries the
 // episode name after the number
@@ -47,10 +55,10 @@ func fits(t *testing.T, what string, view string, width int) {
 
 func TestSelectFitsEveryWidth(t *testing.T) {
 	titles := []string{longTitle, cjkTitle, "Short", strings.Repeat("x", 300)}
-	for _, width := range widths {
+	for _, width := range widths() {
 		idx := 0
-		f := menu("Select anime", titles, func(s string) string { return s }, &idx)
-		m, _ := f.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		var m tea.Model = bounded{form: menu("Select anime", titles, func(s string) string { return s }, &idx)}
+		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 		fits(t, "anime select", m.View(), width)
 	}
 }
@@ -63,10 +71,10 @@ func TestProviderRowsFitEveryWidth(t *testing.T) {
 		"vidstreaming-beta-2  softsub",
 		strings.Repeat("provider", 20) + "  softsub",
 	}
-	for _, width := range widths {
+	for _, width := range widths() {
 		idx := 0
-		f := menu("Select provider", rows, func(s string) string { return s }, &idx)
-		m, _ := f.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		var m tea.Model = bounded{form: menu("Select provider", rows, func(s string) string { return s }, &idx)}
+		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 		fits(t, "provider select", m.View(), width)
 	}
 }
@@ -75,7 +83,7 @@ func TestProviderRowsFitEveryWidth(t *testing.T) {
 // failed row draws the whole upstream error
 func TestDownloadsFitEveryWidth(t *testing.T) {
 	labels := []string{"E1", "E2", "E3"}
-	for _, width := range widths {
+	for _, width := range widths() {
 		m := downloads{
 			labels: labels,
 			width:  2,
@@ -102,8 +110,8 @@ func TestCaptureViews(t *testing.T) {
 	const width = 80
 
 	idx := 0
-	f := menu("Select anime", []string{longTitle, cjkTitle, "Short"}, func(s string) string { return s }, &idx)
-	m, _ := f.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+	var m tea.Model = bounded{form: menu("Select anime", []string{longTitle, cjkTitle, "Short"}, func(s string) string { return s }, &idx)}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 	t.Logf("anime select:\n%s", m.View())
 
 	var c tea.Model = fixture()
@@ -125,4 +133,50 @@ func TestCaptureViews(t *testing.T) {
 	var dm tea.Model = d
 	dm, _ = dm.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 	t.Logf("downloads:\n%s", dm.(downloads).View())
+}
+
+// the control menu is the view a user reads while playback runs, and huh's key
+// legend keeps a fixed width whatever the terminal is, so it is the row that
+// overflows a narrow one
+func TestControlFitsEveryWidthScanned(t *testing.T) {
+	actions := []string{"next", "replay", "previous", "select", "change provider", "quit"}
+	for _, width := range widths() {
+		idx := 0
+		m := control{
+			form: menu("Episode 3 of "+longTitle, actions, func(s string) string { return s }, &idx),
+			term: width,
+			seen: []string{"WARN stream refused before it played, abandoning it server=stream refused=30"},
+		}
+		var model tea.Model = m
+		model, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		fits(t, "control menu", model.(control).View(), width)
+	}
+}
+
+// Select and Prompt run their form through the same bounding wrapper, so the
+// rows a user sees are the wrapper's, not huh's
+func TestBoundedFormFitsEveryWidth(t *testing.T) {
+	for _, width := range widths() {
+		idx := 0
+		var model tea.Model = bounded{form: menu("Select provider", []string{"ally  hardsub", "hop  softsub"}, func(s string) string { return s }, &idx)}
+		model, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		fits(t, "bounded select", model.View(), width)
+
+		var long tea.Model = bounded{form: menu("Select anime", []string{longTitle, cjkTitle}, func(s string) string { return s }, &idx)}
+		long, _ = long.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		fits(t, "bounded anime select", long.View(), width)
+	}
+}
+
+// an aborted form is what Ctrl-C does, and it must reach the caller as
+// ErrAborted rather than as a pick the user never made
+func TestBoundedFormReportsAnAbort(t *testing.T) {
+	idx := 0
+	f := menu("Select anime", []string{"a", "b"}, func(s string) string { return s }, &idx)
+	var model tea.Model = bounded{form: f}
+	model.Init()
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if got := model.(bounded).form.State; got == huh.StateCompleted {
+		t.Errorf("an interrupted form reported state %v, want anything but completed", got)
+	}
 }

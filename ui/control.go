@@ -53,7 +53,7 @@ func (m control) View() string {
 	}
 	view := m.form.View()
 	if len(m.seen) == 0 {
-		return view
+		return bound(view, m.term)
 	}
 	var b strings.Builder
 	b.WriteString(view)
@@ -61,7 +61,7 @@ func (m control) View() string {
 		b.WriteByte('\n')
 	}
 	writeLines(&b, m.seen, m.term)
-	return b.String()
+	return bound(b.String(), m.term)
 }
 
 // Control shows the action menu while playback runs

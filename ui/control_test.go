@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/log"
 )
 
 func fixture() control {
@@ -203,30 +202,6 @@ func TestSinkNeverBlocks(t *testing.T) {
 	}
 	if len(drained) != 2 {
 		t.Errorf("a two-line record produced %d messages, want 2 with the blank dropped", len(drained))
-	}
-}
-
-// a record carries the keys it was written for, and a wall clock that costs a
-// quarter of a narrow terminal is what pushes them off the end
-func TestCaptureLogDropsTheTimestamp(t *testing.T) {
-	lines, restore := captureLog()
-	log.Warn("stream refused before it played, abandoning it", "server", "stream", "refused", 30)
-	restore()
-
-	line, ok := <-lines
-	if !ok {
-		t.Fatal("the record never reached the sink")
-	}
-	if strings.Contains(line, "/") {
-		t.Errorf("record carries a date: %q", line)
-	}
-	if lipgloss.Width(line) > defaultTerm {
-		t.Errorf("record is %d columns, wider than the %d assumed: %q", lipgloss.Width(line), defaultTerm, line)
-	}
-	for _, want := range []string{"server=stream", "refused=30"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("record lost %q: %q", want, line)
-		}
 	}
 }
 
