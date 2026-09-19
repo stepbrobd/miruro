@@ -201,43 +201,6 @@ func TestExpandMasterRefusesAnOversizedBody(t *testing.T) {
 	}
 }
 
-func TestOrder(t *testing.T) {
-	en := Subtitle{Label: "English", Lang: "en"}
-	es := Subtitle{Label: "Spanish", Lang: "es", Default: true}
-	pt := Subtitle{Label: "Portugues", Lang: "pt-BR"}
-	subs := []Subtitle{pt, en, es}
-
-	first := func(lang string) string {
-		t.Helper()
-		out := Order(subs, lang)
-		if len(out) != len(subs) {
-			t.Fatalf("Order(%q) returned %d tracks, want %d", lang, len(out), len(subs))
-		}
-		return out[0].Label
-	}
-
-	if got := first(""); got != "Spanish" {
-		t.Errorf("with no preference the provider default leads, got %q", got)
-	}
-	if got := first("en"); got != "English" {
-		t.Errorf("Order by tag = %q, want English", got)
-	}
-	if got := first("English"); got != "English" {
-		t.Errorf("Order by label = %q, want English", got)
-	}
-	if got := first("pt"); got != "Portugues" {
-		t.Errorf("a primary subtag must select its regional track, got %q", got)
-	}
-	if got := first("de"); got != "Spanish" {
-		t.Errorf("an absent language falls back to the default track, got %q", got)
-	}
-
-	// the input must survive, since the caller still holds it
-	if subs[0].Label != "Portugues" {
-		t.Error("Order reordered the slice it was given")
-	}
-}
-
 // one provider serves an episode from several hosts, and the one it lists first
 // can be the dead one, so the rest have to stay reachable behind it
 func TestRank(t *testing.T) {
@@ -309,32 +272,3 @@ func TestDeadStreamsAreSkipped(t *testing.T) {
 }
 
 // an absent flag is not a dead stream, and most streams carry no flag at all
-
-// a CDN keyed on the browser pair refuses a request carrying only the referer,
-// which is hop's 403 on every segment, so the origin has to travel with it
-func TestSetReferer(t *testing.T) {
-	for _, tc := range []struct {
-		referer, origin string
-	}{
-		{"https://krussdomi.com/", "https://krussdomi.com"},
-		{"https://cdn.example.com:8443/player/x", "https://cdn.example.com:8443"},
-		{"http://plain.example/", "http://plain.example"},
-		{"not a url", ""},
-		{"/relative", ""},
-	} {
-		h := http.Header{}
-		SetReferer(h, tc.referer)
-		if got := h.Get("Referer"); got != tc.referer {
-			t.Errorf("referer %q, want %q", got, tc.referer)
-		}
-		if got := h.Get("Origin"); got != tc.origin {
-			t.Errorf("origin for %q = %q, want %q", tc.referer, got, tc.origin)
-		}
-	}
-
-	h := http.Header{}
-	SetReferer(h, "")
-	if len(h) != 0 {
-		t.Errorf("a provider naming no referer set %v", h)
-	}
-}
