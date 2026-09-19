@@ -18,7 +18,7 @@ import (
 func bars(n int) []progress.Model {
 	out := make([]progress.Model, n)
 	for i := range out {
-		out[i] = progress.New(progress.WithWidth(maxBar), progress.WithoutPercentage())
+		out[i] = progress.New(progress.WithWidth(maxBar), progress.WithoutPercentage(), progress.WithColorProfile(profile()))
 	}
 	return out
 }
@@ -254,5 +254,37 @@ func TestEveryViewDrawsToOneStream(t *testing.T) {
 	// into, or a redirected stdout silently falls back to the blind height
 	if _, _, err := term.GetSize(screen.Fd()); err == nil {
 		t.Log("measured the terminal on the stream the views use")
+	}
+}
+
+// bound cuts from the bottom, so a view shorter than its log window dropped the
+// newest record and kept the oldest, which is backwards: the newest is the one
+// naming what just failed
+func TestTheNewestRecordSurvivesAShortTerminal(t *testing.T) {
+	records := make([]string, keptLines)
+	for i := range records {
+		records[i] = fmt.Sprintf("WARN record %d", i)
+	}
+	newest := records[len(records)-1]
+
+	for _, rows := range []int{4, 6, 8, 9, 10, 24} {
+		var c tea.Model = control{
+			form: menu("Episode 3 of Show", []string{"next", "quit"}, func(s string) string { return s }, new(int)),
+			seen: records,
+		}
+		c, _ = c.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
+		if v := c.(control).View(); strings.Contains(v, "record 0") && !strings.Contains(v, newest) {
+			t.Errorf("control menu at %d rows kept the oldest record and dropped the newest:\n%s", rows, v)
+		}
+
+		var d tea.Model = downloads{
+			labels: []string{"E1", "E2", "E3"}, width: 2, bars: bars(3),
+			done: []int64{1, 2, 3}, total: []int64{9, 9, 9},
+			errs: make([]error, 3), fin: make([]bool, 3), seen: records,
+		}
+		d, _ = d.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
+		if v := d.(downloads).View(); strings.Contains(v, "record 0") && !strings.Contains(v, newest) {
+			t.Errorf("download view at %d rows kept the oldest record and dropped the newest:\n%s", rows, v)
+		}
 	}
 }

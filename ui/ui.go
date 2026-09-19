@@ -8,7 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
+	"github.com/muesli/termenv"
 )
 
 // ErrAborted is returned when the user cancels a selection
@@ -95,6 +97,18 @@ func (m bounded) View() string { return bound(m.form.View(), m.term, m.rows) }
 // stderr is the one both can use, since stdout is what a run might legitimately
 // be piped for
 var screen = os.Stderr
+
+// lipgloss and bubbles read the terminal's color capability from their own
+// default output, which is stdout, so a redirected stdout stripped every style
+// from views this package draws to stderr
+// the renderer is pointed at the same stream the views use, and Downloads hands
+// the matching profile to each bar, which captures it at construction
+func init() {
+	lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(screen))
+}
+
+// profile is the color capability of the stream the views are drawn to
+func profile() termenv.Profile { return lipgloss.DefaultRenderer().ColorProfile() }
 
 const (
 	// blindRows bounds a list when there is no terminal to measure

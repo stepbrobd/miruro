@@ -40,6 +40,9 @@ func ParsePin(s string) Pin {
 	default:
 		log.Warn("provider variant is not soft or hard, so the rendition is unstated", "provider", s, "variant", variant)
 	}
+	if code == "" && named {
+		log.Warn("provider names a variant and no provider, so nothing is pinned", "provider", s)
+	}
 	return Pin{Code: code}
 }
 
@@ -73,15 +76,16 @@ func pinFor(config, flag, history string, widen bool) (Pin, bool) {
 	// provider states nothing, since the run prompts for one either way
 	cfg := ParsePin(config)
 	pin, stated := cfg, cfg.Code != ""
-	if history != "" && flag == "" {
+	// a flag naming no provider states nothing, so it must not displace the
+	// entry a resume is carrying either
+	if history != "" && ParsePin(flag).Code == "" {
 		// an entry resuming the provider the config already names is that same
 		// stated choice, and any other is one the menu picked once
 		h := ParsePin(history)
 		pin, stated = h, stated && h.Code == cfg.Code
 	}
-	if flag != "" {
-		pin = ParsePin(flag)
-		stated = pin.Code != ""
+	if f := ParsePin(flag); f.Code != "" {
+		pin, stated = f, true
 	}
 	return pin, widen || !stated
 }

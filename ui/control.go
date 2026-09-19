@@ -62,8 +62,17 @@ func (m control) View() string {
 	if !strings.HasSuffix(view, "\n") {
 		b.WriteByte('\n')
 	}
-	writeLines(&b, m.seen, m.term)
+	writeLines(&b, tail(m.seen, m.left(b.String())), m.term)
 	return bound(b.String(), m.term, m.rows)
+}
+
+// left is how many rows the terminal has under the menu
+// zero rows means the terminal was never measured, so nothing is held back
+func (m control) left(drawn string) int {
+	if m.rows <= 0 {
+		return len(m.seen)
+	}
+	return m.rows - strings.Count(drawn, "\n")
 }
 
 // Control shows the action menu while playback runs

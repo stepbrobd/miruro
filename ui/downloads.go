@@ -110,8 +110,17 @@ func (m downloads) View() string {
 	}
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
-	writeLines(&b, m.seen, m.term)
+	writeLines(&b, tail(m.seen, m.left(b.String())), m.term)
 	return bound(b.String(), m.term, m.rows)
+}
+
+// left is how many rows the terminal has under what is drawn so far
+// zero rows means the terminal was never measured, so nothing is held back
+func (m downloads) left(drawn string) int {
+	if m.rows <= 0 {
+		return len(m.seen)
+	}
+	return m.rows - strings.Count(drawn, "\n")
 }
 
 // fit is how many task rows there is room for, and how many that leaves over
@@ -194,7 +203,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 			logs:   lines,
 		}
 		for i := range m.bars {
-			m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
+			m.bars[i] = progress.New(progress.WithWidth(maxBar), progress.WithoutPercentage(), progress.WithColorProfile(profile()))
 		}
 
 		_, err := tea.NewProgram(m, tea.WithContext(dctx), tea.WithOutput(screen)).Run()

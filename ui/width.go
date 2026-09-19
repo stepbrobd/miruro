@@ -67,6 +67,19 @@ func cut(s string, w int) string {
 	return s
 }
 
+// tail is the newest records that fit in the rows a view has left
+// bound cuts from the bottom, so without this the record naming the failure is
+// the one dropped while the oldest survives
+func tail(seen []string, room int) []string {
+	switch {
+	case room <= 0:
+		return nil
+	case len(seen) > room:
+		return seen[len(seen)-room:]
+	}
+	return seen
+}
+
 // bound cuts a rendered view to the terminal it is drawn into, in both
 // directions
 // too wide and the row wraps, which the renderer counts as one row while it
