@@ -356,3 +356,26 @@ func TestPinForReportsABadValueOnce(t *testing.T) {
 		})
 	}
 }
+
+// the --fallback warning fires only when the flag changed nothing, which holds
+// because pinFor returns widen || !stated, so the flag alone forces fallback on
+// nothing asserted that before, so simplifying the guard rested on the proof
+// rather than on the suite
+func TestFallbackFlagImpliesFallback(t *testing.T) {
+	values := []string{"", "bonk", "bonk:soft", ":hard", "pewe"}
+	for _, config := range values {
+		for _, flag := range values {
+			for _, history := range values {
+				if _, fallback := pinFor(config, flag, history, true); !fallback {
+					t.Fatalf("pinFor(%q, %q, %q, widen) held the walk although --fallback was passed",
+						config, flag, history)
+				}
+				// and without the flag it is the pin that decides
+				pin, fallback := pinFor(config, flag, history, false)
+				if !fallback && pin.Code == "" {
+					t.Fatalf("pinFor(%q, %q, %q) held the walk with nothing pinned", config, flag, history)
+				}
+			}
+		}
+	}
+}

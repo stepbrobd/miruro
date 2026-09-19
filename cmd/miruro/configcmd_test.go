@@ -96,3 +96,20 @@ func TestConfigInitWritesAValidFile(t *testing.T) {
 		t.Errorf("the file init wrote does not validate: %v", err)
 	}
 }
+
+// config validate decodes the file itself rather than going through loadConfig,
+// so it is the only path where a value still carries the spacing it was written
+// with, and its own trim is what keeps that from reading as unknown
+func TestCheckTrimsWhatItDecodesItself(t *testing.T) {
+	var c config
+	md, err := toml.Decode("backends = [\" miruro \"]\n", &c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Backends[0] != " miruro " {
+		t.Fatalf("the decode trimmed for us, so this test guards nothing: %q", c.Backends[0])
+	}
+	if got := strings.Join(check(md, c), "\n"); got != "" {
+		t.Errorf("a backend written with spacing was refused:\n%s", got)
+	}
+}

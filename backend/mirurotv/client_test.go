@@ -439,3 +439,25 @@ func TestPipeOriginFollowsTheMirror(t *testing.T) {
 		t.Errorf("origin = %q referer = %q, want them on %q", origin, referer, srv.URL)
 	}
 }
+
+// the pipe wants a body key on every envelope, and Body is the field that puts
+// one there
+// it is never assigned, so nothing but this stops it being read as dead and
+// deleted, which would drop the key and change what the api is sent
+func TestEnvelopeCarriesANullBody(t *testing.T) {
+	out, err := json.Marshal(envelope{Path: "sources", Method: http.MethodGet, Query: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen map[string]json.RawMessage
+	if err := json.Unmarshal(out, &seen); err != nil {
+		t.Fatal(err)
+	}
+	body, ok := seen["body"]
+	if !ok {
+		t.Fatalf("the envelope carries no body key: %s", out)
+	}
+	if string(body) != "null" {
+		t.Errorf("body = %s, want null", body)
+	}
+}
