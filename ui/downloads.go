@@ -94,9 +94,11 @@ func (m downloads) View() string {
 		case m.fin[i]:
 			b.WriteString(fmt.Sprintf("  %s %s  done\n", ok(true), name))
 		case m.total[i] > 0:
-			b.WriteString(fmt.Sprintf("  %s %s  %s\n", name, m.bars[i].ViewAs(float64(m.done[i])/float64(m.total[i])), size(m.done[i], m.total[i])))
+			b.WriteString(m.progressRow(i, name))
+			b.WriteByte('\n')
 		default:
-			b.WriteString(fmt.Sprintf("  %s %s\n", name, Bytes(m.done[i])))
+			b.WriteString(cut(fmt.Sprintf("  %s %s", name, Bytes(m.done[i])), columns(m.term)))
+			b.WriteByte('\n')
 		}
 	}
 	// a retry or a dropped stream writes to the log while the bars are up, so it
@@ -233,6 +235,52 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 	wg.Wait()
 }
 
+// columns is the width to draw for, the assumed one until a size message
+// arrives
+func columns(w int) int {
+	if w <= 0 {
+		return defaultTerm
+	}
+	return w
+}
+
+const (
+	// minBar is the narrowest bar worth drawing, under which the row carries
+	// its byte counter alone
+	minBar = 8
+	// maxBar is what a bar takes once the terminal has room to spare
+	maxBar = 30
+	// counterRoom is the widest byte counter a row can carry, two sizes and
+	// their separator
+	counterRoom = len("1023.9 TB / 1023.9 TB")
+	// gutters are the two leading spaces, the one after the label, and the two
+	// before the counter
+	gutters = 5
+)
+
+// barRoom is what the terminal leaves a progress bar once the label and the
+// byte counter beside it have theirs, zero when it leaves too little
+// a bar that keeps its full width on a narrow terminal pushes the row past the
+// edge, and a row that wraps is drawn once and counted once while occupying
+// two, which is what makes the bars paint over each other
+func barRoom(width, label int) int {
+	return min(columns(width)-label-gutters-counterRoom, maxBar)
+}
+
+// progressRow draws one running download, sized to the terminal it is drawn for
+func (m downloads) progressRow(i int, name string) string {
+	head := "  " + name + " "
+	tail := size(m.done[i], m.total[i])
+	room := barRoom(m.term, m.width)
+	if room < minBar {
+		// with no bar the row carries no styling, so it can simply be cut
+		return cut(head+tail, columns(m.term))
+	}
+	bar := m.bars[i]
+	bar.Width = room
+	return head + bar.ViewAs(float64(m.done[i])/float64(m.total[i])) + "  " + tail
+}
+
 // defaultTerm is assumed until the first tea.WindowSizeMsg reports the real width
 const defaultTerm = 80
 
@@ -246,10 +294,8 @@ var flatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 // errLine renders one failed task as a single line that fits the terminal
 // marker and label may carry ANSI styling, so only the plain message is cut and
 // the head is composed afterward
-func errLine(marker, label, msg string, term int) string {
-	if term <= 0 {
-		term = defaultTerm
-	}
+func errLine(marker, label, msg string, width int) string {
+	term := columns(width)
 	head := fmt.Sprintf("  %s %s  ", marker, label)
 	msg = flatten.Replace(msg)
 
