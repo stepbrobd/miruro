@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"os"
+
+	"github.com/charmbracelet/log"
 	"slices"
 	"strings"
 	"testing"
@@ -284,5 +288,38 @@ func TestPinFor(t *testing.T) {
 				t.Errorf("fallback = %v, want %v", fallback, tc.fallback)
 			}
 		})
+	}
+}
+
+// a value that named a colon and got nothing usable from it is a mistake
+// wherever it came from, since config validate only ever reads the file
+// exactly one line reports it, because two for one value is noise
+func TestParsePinReportsAnUnusableValue(t *testing.T) {
+	for _, tc := range []struct {
+		in    string
+		warns int
+		says  string
+	}{
+		{"", 0, ""},
+		{"bonk", 0, ""},
+		{"bonk:soft", 0, ""},
+		{"bonk:hard", 0, ""},
+		{":hard", 1, "no provider"},
+		{":", 1, "no provider"},
+		{"bonk:", 1, "variant is empty"},
+		{"bonk:medium", 1, "not soft or hard"},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		ParsePin(tc.in)
+		log.SetOutput(os.Stderr)
+
+		got := strings.Count(buf.String(), "\n")
+		if got != tc.warns {
+			t.Errorf("ParsePin(%q) reported %d lines, want %d:\n%s", tc.in, got, tc.warns, buf.String())
+		}
+		if tc.says != "" && !strings.Contains(buf.String(), tc.says) {
+			t.Errorf("ParsePin(%q) reported %q, want it to mention %q", tc.in, buf.String(), tc.says)
+		}
 	}
 }

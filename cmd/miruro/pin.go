@@ -30,18 +30,21 @@ type Pin struct {
 // a bare code and an unrecognized variant both leave the variant unstated
 func ParsePin(s string) Pin {
 	code, variant, named := strings.Cut(s, ":")
-	switch v := Variant(variant); v {
-	case Soft, Hard:
-		return Pin{Code: code, Variant: v}
-	case "":
-		if named {
-			log.Warn("provider variant is empty, so the rendition is unstated", "provider", s)
-		}
-	default:
+	v := Variant(variant)
+	// a value that named a colon and got nothing usable from it is a mistake
+	// wherever it came from, and config validate only ever reads the file
+	// exactly one of these is reported, since two lines for one value is noise
+	switch {
+	case !named:
+	case code == "":
+		log.Warn("provider names a variant and no provider, so nothing is pinned", "provider", s)
+	case v == "":
+		log.Warn("provider variant is empty, so the rendition is unstated", "provider", s)
+	case v != Soft && v != Hard:
 		log.Warn("provider variant is not soft or hard, so the rendition is unstated", "provider", s, "variant", variant)
 	}
-	if code == "" && named {
-		log.Warn("provider names a variant and no provider, so nothing is pinned", "provider", s)
+	if v == Soft || v == Hard {
+		return Pin{Code: code, Variant: v}
 	}
 	return Pin{Code: code}
 }
