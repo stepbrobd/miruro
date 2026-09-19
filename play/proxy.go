@@ -384,9 +384,7 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 		return nil, fmt.Errorf("unsupported scheme %q", req.URL.Scheme)
 	}
 	req.Header.Set("User-Agent", miruro.UserAgent)
-	if t.Referer != "" {
-		req.Header.Set("Referer", t.Referer)
-	}
+	miruro.SetReferer(req.Header, t.Referer)
 	// forward a range only for a relayed body such as an mp4 or a .vtt
 	// a segment must arrive whole so the decoy strip and any decryption line up
 	if rng := r.Header.Get("Range"); rng != "" && t.Kind.relayed() {

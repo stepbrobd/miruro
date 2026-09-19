@@ -591,3 +591,40 @@ func TestProxyRefused(t *testing.T) {
 			px.Served(), px.Refused())
 	}
 }
+
+// a segment CDN that keys on the browser pair sees only what the proxy sends,
+// so the origin the referer belongs to has to arrive with it
+// hop answers 403 to every segment without it, which reads as a stream that
+// resolves, lists its segments, and never relays one
+func TestProxySendsTheOriginWithTheReferer(t *testing.T) {
+	seg := bytes.Repeat(tsPacket188(), 8)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "https://provider.example" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		w.Write(seg)
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.proxied(cdn.URL+"/000.ts", "https://provider.example/player", segment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the CDN refused the fetch with status %d", resp.StatusCode)
+	}
+	if got, _ := io.ReadAll(resp.Body); len(got) != len(seg) {
+		t.Errorf("relayed %d bytes, want %d", len(got), len(seg))
+	}
+	if px.Served() != 1 {
+		t.Errorf("served = %d, want the segment counted", px.Served())
+	}
+}

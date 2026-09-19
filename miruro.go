@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 )
 
 // UserAgent is the one browser identity shared by every backend, the quality
@@ -25,14 +26,29 @@ var (
 	ErrUpstream = errors.New("upstream unreachable")
 )
 
+// SetReferer attaches the referer a provider named and the origin it belongs to
+// a browser player sends both on every cross-origin media fetch, and a CDN that
+// keys on the pair answers 403 to a request carrying only the referer
+// hop's segment hosts do exactly that, so without the origin its streams
+// resolve, list their segments, and never relay one
+func SetReferer(h http.Header, referer string) {
+	if referer == "" {
+		return
+	}
+	h.Set("Referer", referer)
+	u, err := url.Parse(referer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return
+	}
+	h.Set("Origin", u.Scheme+"://"+u.Host)
+}
+
 func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", UserAgent)
-	if referer != "" {
-		req.Header.Set("Referer", referer)
-	}
+	SetReferer(req.Header, referer)
 	return req, nil
 }
