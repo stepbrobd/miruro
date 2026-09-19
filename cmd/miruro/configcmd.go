@@ -132,7 +132,7 @@ func runConfigShow(*cobra.Command, []string) error {
 			player = "auto"
 		}
 		fmt.Fprintf(w, "player\t%s\n", player)
-		fmt.Fprintf(w, "quality\t%s\n", c.Quality)
+		fmt.Fprintf(w, "quality\t%s\n", qualityRow(c.Quality))
 		pin := ParsePin(c.Provider)
 		fmt.Fprintf(w, "provider\t%s\n", or(pin.String(), "ask"))
 		fmt.Fprintf(w, "fallback\t%s\n", fallbackRow(pin))
@@ -157,6 +157,15 @@ func enabledNames(named []string) []string {
 		}
 	}
 	return out
+}
+
+// qualityRow reports the quality a run would use, and says so when a run would
+// refuse to start on it instead, since the environment reaches here unchecked
+func qualityRow(q string) string {
+	if !miruro.ValidQuality(q) {
+		return q + " (a run refuses this)"
+	}
+	return or(q, "best")
 }
 
 func fallbackRow(pin Pin) string {

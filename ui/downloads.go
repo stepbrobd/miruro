@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -174,7 +173,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 	// workers run to completion under the caller's context
 	// handing tea a non-terminal stdin would have it open /dev/tty itself, which
 	// puts a terminal that is merely nearby into raw mode under a piped run
-	if term.IsTerminal(os.Stdout.Fd()) {
+	if term.IsTerminal(screen.Fd()) {
 		width := 0
 		for _, l := range labels {
 			width = max(width, lipgloss.Width(l))
@@ -198,7 +197,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 			m.bars[i] = progress.New(progress.WithWidth(30), progress.WithoutPercentage())
 		}
 
-		_, err := tea.NewProgram(m, tea.WithContext(dctx)).Run()
+		_, err := tea.NewProgram(m, tea.WithContext(dctx), tea.WithOutput(screen)).Run()
 
 		// a finish, quit key, or interrupt stops the workers
 		// any other error leaves them running to completion

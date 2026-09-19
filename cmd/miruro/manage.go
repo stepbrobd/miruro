@@ -273,7 +273,7 @@ func unknown(cmd *cobra.Command, args []string) error {
 	for _, c := range cmd.Commands() {
 		have = append(have, c.Name())
 	}
-	return fmt.Errorf("%q is not one of %s %s", args[0], cmd.Name(), strings.Join(have, ", "))
+	return fmt.Errorf("%q is not a %s subcommand, try %s", args[0], cmd.Name(), strings.Join(have, ", "))
 }
 
 // plural counts a thing, so a listing of one does not report it as several

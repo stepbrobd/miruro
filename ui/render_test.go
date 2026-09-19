@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 // bars are what Downloads builds, so a test measures the row a user sees
@@ -238,5 +240,19 @@ func TestDownloadsKeepTheLogWhenTasksOverflow(t *testing.T) {
 		if n > 20 && !strings.Contains(view, "more episode") {
 			t.Errorf("%d tasks hid rows without saying so:\n%s", n, view)
 		}
+	}
+}
+
+// huh draws a form on stderr and bubbletea defaults to stdout, which put one
+// run's three views on two streams: muting the log with 2>/dev/null threw the
+// pickers away while redirecting stdout wrote the playback menu into the file
+func TestEveryViewDrawsToOneStream(t *testing.T) {
+	if screen != os.Stderr {
+		t.Fatalf("views draw to %v, want stderr", screen)
+	}
+	// the height a list is sized to must be measured on the stream it is drawn
+	// into, or a redirected stdout silently falls back to the blind height
+	if _, _, err := term.GetSize(screen.Fd()); err == nil {
+		t.Log("measured the terminal on the stream the views use")
 	}
 }

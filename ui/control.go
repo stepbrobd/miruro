@@ -81,7 +81,7 @@ func Control(ctx context.Context, title string, actions []string, wait func() bo
 	// the caller's context owns signal handling
 	// bubbletea's own handler would swallow a SIGTERM and end the program with
 	// no error, indistinguishable from a dismissal
-	opts = append([]tea.ProgramOption{tea.WithContext(ctx), tea.WithoutSignalHandler()}, opts...)
+	opts = append([]tea.ProgramOption{tea.WithContext(ctx), tea.WithoutSignalHandler(), tea.WithOutput(screen)}, opts...)
 	final, err := tea.NewProgram(m, opts...).Run()
 	if err != nil {
 		if ctx.Err() != nil {

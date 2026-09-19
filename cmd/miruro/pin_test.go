@@ -266,6 +266,14 @@ func TestPinFor(t *testing.T) {
 		{name: "history beats config and does not hold", config: "hop:soft", history: "pewe", code: "pewe", fallback: true},
 		{name: "flag beats history", flag: "bee:hard", history: "pewe", code: "bee"},
 		{name: "fallback widens a stated one", config: "hop:soft", widen: true, code: "hop", fallback: true},
+		// a resumed entry naming the provider the config already states is that
+		// same stated choice, so it still holds
+		{name: "history resuming the stated provider still holds", config: "bonk", history: "bonk", code: "bonk"},
+		{name: "history resuming it with a variant still holds", config: "bonk", history: "bonk:soft", code: "bonk"},
+		// a value naming a variant and no provider states nothing, since the run
+		// prompts for one either way
+		{name: "a variant with no provider states nothing", config: ":hard", fallback: true},
+		{name: "a flag variant with no provider states nothing", flag: ":soft", fallback: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pin, fallback := pinFor(tc.config, tc.flag, tc.history, tc.widen)

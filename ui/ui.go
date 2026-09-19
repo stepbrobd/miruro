@@ -52,7 +52,7 @@ func drive(form *huh.Form, opts ...tea.ProgramOption) error {
 	form.SubmitCmd, form.CancelCmd = tea.Quit, tea.Quit
 	// the picker belongs on stderr, where huh puts it, so a run whose stdout is
 	// redirected still shows it and does not write it into the file
-	opts = append([]tea.ProgramOption{tea.WithOutput(os.Stderr)}, opts...)
+	opts = append([]tea.ProgramOption{tea.WithOutput(screen)}, opts...)
 	final, err := tea.NewProgram(bounded{form: form}, opts...).Run()
 	switch {
 	case errors.Is(err, tea.ErrInterrupted):
@@ -87,6 +87,15 @@ func (m bounded) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m bounded) View() string { return bound(m.form.View(), m.term, m.rows) }
 
+// screen is where every view here is drawn
+// huh draws a form on stderr and bubbletea defaults to stdout, which put the
+// three views of one run on two streams: muting the log with 2>/dev/null threw
+// the pickers away while redirecting stdout wrote the playback menu into the
+// file
+// stderr is the one both can use, since stdout is what a run might legitimately
+// be piped for
+var screen = os.Stderr
+
 const (
 	// blindRows bounds a list when there is no terminal to measure
 	blindRows = 16
@@ -94,9 +103,10 @@ const (
 	spareRows = 4
 )
 
-// screen is the row count of the attached terminal, zero when there is none
-func screen() int {
-	_, h, err := term.GetSize(os.Stdout.Fd())
+// rows is the row count of the terminal the views are drawn into, zero when
+// there is none
+func rows() int {
+	_, h, err := term.GetSize(screen.Fd())
 	if err != nil {
 		return 0
 	}
@@ -128,7 +138,7 @@ func menu[T any](title string, items []T, label func(T) string, idx *int) *huh.F
 			Title(title).
 			Options(opts...).
 			Value(idx).
-			Height(fit(len(items), screen())).
+			Height(fit(len(items), rows())).
 			Filtering(true),
 	)).WithTheme(theme())
 	// only Run wires these, an embedded form must quit the host program itself

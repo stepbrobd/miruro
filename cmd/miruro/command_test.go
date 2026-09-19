@@ -306,6 +306,12 @@ func TestUnknownSubcommand(t *testing.T) {
 		if !strings.Contains(err.Error(), "clean") || !strings.Contains(err.Error(), cmd.Name()) {
 			t.Errorf("%s: err = %v, want it to name the group and the typo", cmd.Name(), err)
 		}
+		// a refusal that lists nothing valid leaves the user guessing
+		for _, sub := range cmd.Commands() {
+			if !strings.Contains(err.Error(), sub.Name()) {
+				t.Errorf("%s: err = %v, want it to offer %q", cmd.Name(), err, sub.Name())
+			}
+		}
 	}
 	// the group with no argument is a request for its help, not a mistake
 	if err := unknown(historyCmd, nil); err != nil {

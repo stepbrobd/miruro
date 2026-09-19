@@ -68,17 +68,22 @@ type offer struct {
 // was picked from the menu once, and holding a later run to that would honor a
 // choice the user never stated
 func pinFor(config, flag, history string, widen bool) (Pin, bool) {
-	// stated follows whichever source supplied the pin, not whether any of them
-	// named one: a config naming hop and a history carrying pewe pins pewe, and
-	// holding the run to pewe would honor a choice made for a different provider
-	pinned, stated := config, config != ""
+	// stated follows whichever source supplied the pin, and it is the provider
+	// that counts rather than the string: a value naming a variant and no
+	// provider states nothing, since the run prompts for one either way
+	cfg := ParsePin(config)
+	pin, stated := cfg, cfg.Code != ""
 	if history != "" && flag == "" {
-		pinned, stated = history, false
+		// an entry resuming the provider the config already names is that same
+		// stated choice, and any other is one the menu picked once
+		h := ParsePin(history)
+		pin, stated = h, stated && h.Code == cfg.Code
 	}
 	if flag != "" {
-		pinned, stated = flag, true
+		pin = ParsePin(flag)
+		stated = pin.Code != ""
 	}
-	return ParsePin(pinned), widen || !stated
+	return pin, widen || !stated
 }
 
 // offers expands the available providers into the rows worth showing, one per
