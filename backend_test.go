@@ -55,7 +55,7 @@ func TestBackendsMergeCatalogs(t *testing.T) {
 	ctx := context.Background()
 	first := &fake{name: "first", cat: catalog("Frieren", "ally")}
 	first.cat.Aniskip = []SkipRange{{Episode: 1, Kind: Intro, Start: 0, End: 90}}
-	second := &fake{name: "second", cat: catalog("Sousou no Frieren", "allanime")}
+	second := &fake{name: "second", cat: catalog("Sousou no Frieren", "other")}
 
 	cat, failed := Backends{first, second}.Episodes(ctx, Media{ID: 154587})
 	if len(failed) != 0 {
@@ -68,18 +68,18 @@ func TestBackendsMergeCatalogs(t *testing.T) {
 		t.Errorf("aniskip = %v, want the first backend's", cat.Aniskip)
 	}
 	codes := slices.Sorted(maps.Keys(cat.Providers))
-	if strings.Join(codes, ",") != "allanime,ally" {
+	if strings.Join(codes, ",") != "ally,other" {
 		t.Errorf("providers = %v, want the union", codes)
 	}
 
 	// a resolution routes to the backend that listed the provider
-	if _, err := cat.Sources(ctx, "allanime-1", "allanime", Sub); err != nil {
+	if _, err := cat.Sources(ctx, "other-1", "other", Sub); err != nil {
 		t.Fatal(err)
 	}
 	if len(first.asked) != 0 {
 		t.Errorf("first backend asked %v, want nothing", first.asked)
 	}
-	if strings.Join(second.asked, ",") != "allanime/allanime-1/sub" {
+	if strings.Join(second.asked, ",") != "other/other-1/sub" {
 		t.Errorf("second backend asked %v", second.asked)
 	}
 }
@@ -88,7 +88,7 @@ func TestBackendsMergeCatalogs(t *testing.T) {
 // one merged last, so the second is refused and named
 func TestBackendsRefuseADuplicateProvider(t *testing.T) {
 	first := &fake{name: "first", cat: catalog("Frieren", "ally")}
-	second := &fake{name: "second", cat: catalog("Frieren", "ally", "allanime")}
+	second := &fake{name: "second", cat: catalog("Frieren", "ally", "other")}
 
 	cat, failed := Backends{first, second}.Episodes(context.Background(), Media{})
 	if len(failed) != 1 || failed[0].Backend != "second" || !strings.Contains(failed[0].Error(), "already served by first") {
@@ -97,7 +97,7 @@ func TestBackendsRefuseADuplicateProvider(t *testing.T) {
 	if cat.Providers["ally"].Backend != first {
 		t.Error("the duplicate provider was overwritten")
 	}
-	if _, ok := cat.Providers["allanime"]; !ok {
+	if _, ok := cat.Providers["other"]; !ok {
 		t.Error("the rest of the second backend was dropped with the duplicate")
 	}
 }
@@ -106,13 +106,13 @@ func TestBackendsRefuseADuplicateProvider(t *testing.T) {
 func TestBackendsReportOneFailure(t *testing.T) {
 	dead := errors.New("upstream down")
 	first := &fake{name: "first", err: dead}
-	second := &fake{name: "second", cat: catalog("Frieren", "allanime"), caps: Capabilities{"allanime": {Hard: true}}}
+	second := &fake{name: "second", cat: catalog("Frieren", "other"), caps: Capabilities{"other": {Hard: true}}}
 
 	cat, failed := Backends{first, second}.Episodes(context.Background(), Media{})
 	if len(failed) != 1 || !errors.Is(failed[0], dead) {
 		t.Fatalf("failures = %v", failed)
 	}
-	if _, ok := cat.Providers["allanime"]; !ok {
+	if _, ok := cat.Providers["other"]; !ok {
 		t.Error("the healthy backend's providers were lost")
 	}
 
@@ -120,7 +120,7 @@ func TestBackendsReportOneFailure(t *testing.T) {
 	if len(failed) != 1 || !errors.Is(failed[0], dead) {
 		t.Fatalf("capability failures = %v", failed)
 	}
-	if !caps["allanime"].Hard {
+	if !caps["other"].Hard {
 		t.Errorf("capabilities = %v, want the healthy backend's", caps)
 	}
 }

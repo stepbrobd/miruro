@@ -83,14 +83,14 @@ func TestLoadConfig(t *testing.T) {
 	})
 
 	t.Run("backends come from the file and the environment, trimmed", func(t *testing.T) {
-		if err := os.WriteFile(path, []byte("backends = [\"allanime\"]\n"), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte("backends = [\"other\"]\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"allanime"}) {
-			t.Errorf("Backends = %v, want allanime", c.Backends)
+		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"other"}) {
+			t.Errorf("Backends = %v, want other", c.Backends)
 		}
-		t.Setenv("MIRURO_BACKENDS", "miruro, allanime")
-		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"miruro", "allanime"}) {
+		t.Setenv("MIRURO_BACKENDS", "miruro, other")
+		if c := loadConfig(); !reflect.DeepEqual(c.Backends, []string{"miruro", "other"}) {
 			t.Errorf("Backends = %v, want both", c.Backends)
 		}
 	})

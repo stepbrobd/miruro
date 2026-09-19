@@ -84,22 +84,19 @@ func (c *Catalog) Numbers(cat Category) []float64 {
 	return out
 }
 
-// order is the provider preference across every backend, an author-owned
-// default
+// order is the provider preference, an author-owned default
 // ally and pewe lead because they are the two the 2026-08-23 integration run
 // watched carry a whole episode end to end, and kiwi follows on AnimeTV-Fork's
 // note that it is the best quality of the set
-// allanime is the AllAnime site reached directly rather than through miruro,
-// which served a whole episode from its own storage on 2026-09-02, and it sits
-// behind the three measured miruro providers because one run is thin evidence
 // the tail is what the same run saw fail, in the order it sits in below: bonk
-// refused a segment partway through, hop was unreachable across every mirror
-// and title, bee's playlist answered 502, and AnimeTV-Fork annotates moo lowest
-// quality
+// refused a segment partway through, hop relayed no segment, bee's playlist
+// answered 502, and AnimeTV-Fork annotates moo lowest quality
+// hop's failure was this client omitting the origin header rather than the
+// provider, so its place here is the one entry the evidence no longer supports
 // miruro publishes its own order in the config resource and rewrites it between
 // deploys, which would move the default provider under a resumed history entry
 // and a filled segment cache, so this list stays here instead
-var order = []string{"ally", "pewe", "kiwi", "allanime", "bonk", "hop", "bee", "moo"}
+var order = []string{"ally", "pewe", "kiwi", "bonk", "hop", "bee", "moo"}
 
 // preference places a provider in order, with an unnamed code after every named
 // one rather than interleaved, since nothing is known about it

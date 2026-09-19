@@ -131,7 +131,7 @@ func TestControlShowsTheLog(t *testing.T) {
 func TestControlCutsTheLogToTheTerminal(t *testing.T) {
 	var m tea.Model = fixture()
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
-	m, _ = m.Update(logMsg("WARN backend refused the run, skipping its providers backend=allanime err=\"cloudflare blocked request\""))
+	m, _ = m.Update(logMsg("WARN backend refused the run, skipping its providers backend=miruro err=\"cloudflare blocked request\""))
 	for line := range strings.SplitSeq(m.(control).View(), "\n") {
 		if strings.HasPrefix(line, "WARN") && (len(line) > 40 || !strings.HasSuffix(line, ellipsis)) {
 			t.Errorf("log line not cut to the terminal: %q", line)

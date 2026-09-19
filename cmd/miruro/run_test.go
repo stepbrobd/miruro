@@ -429,41 +429,41 @@ func (f *fakeBackend) Capabilities(context.Context) (miruro.Capabilities, error)
 // and only when nothing else served is the refusal what comes back
 func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
 	blocked := &fakeBackend{name: "miruro", err: miruro.ErrBlocked}
-	open := &fakeBackend{name: "allanime"}
+	open := &fakeBackend{name: "other"}
 	ep := []miruro.Episode{{ID: "e1", Number: 1}}
 	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
-		"ally":     {Code: "ally", Backend: blocked, Sub: ep},
-		"pewe":     {Code: "pewe", Backend: blocked, Sub: ep},
-		"allanime": {Code: "allanime", Backend: open, Sub: ep},
+		"ally":  {Code: "ally", Backend: blocked, Sub: ep},
+		"pewe":  {Code: "pewe", Backend: blocked, Sub: ep},
+		"other": {Code: "other", Backend: open, Sub: ep},
 	}}
 	st := resolver(cat, miruro.Sub, nil)
 	res, src, err := st.autoResolve(context.Background(), 1, Pin{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src.Code != "allanime" || res.Streams[0].URL != "allanime" {
-		t.Errorf("served = %q, want allanime", src.Code)
+	if src.Code != "other" || res.Streams[0].URL != "other" {
+		t.Errorf("served = %q, want other", src.Code)
 	}
 	if blocked.hits != 1 {
 		t.Errorf("blocked backend asked %d times, want once", blocked.hits)
 	}
 
 	// the refusal holds for the run, so the next episode costs it no request
-	if _, src, err := st.autoResolve(context.Background(), 1, Pin{Code: "ally"}, nil); err != nil || src.Code != "allanime" {
-		t.Errorf("second resolution = %q, %v, want allanime again", src.Code, err)
+	if _, src, err := st.autoResolve(context.Background(), 1, Pin{Code: "ally"}, nil); err != nil || src.Code != "other" {
+		t.Errorf("second resolution = %q, %v, want other again", src.Code, err)
 	}
 	if blocked.hits != 1 {
 		t.Errorf("blocked backend asked %d times across two resolutions, want once", blocked.hits)
 	}
 
-	delete(cat.Providers, "allanime")
+	delete(cat.Providers, "other")
 	if _, _, err := st.autoResolve(context.Background(), 1, Pin{}, nil); !errors.Is(err, miruro.ErrBlocked) {
 		t.Errorf("err = %v, want %v when nothing else served", err, miruro.ErrBlocked)
 	}
 }
 
 func TestEnabled(t *testing.T) {
-	a, b := &fakeBackend{name: "miruro"}, &fakeBackend{name: "allanime"}
+	a, b := &fakeBackend{name: "miruro"}, &fakeBackend{name: "other"}
 	all := miruro.Backends{a, b}
 	names := func(bs miruro.Backends) string {
 		var out []string
@@ -476,11 +476,11 @@ func TestEnabled(t *testing.T) {
 		names []string
 		want  string
 	}{
-		{nil, "miruro,allanime"},
-		{[]string{"allanime"}, "allanime"},
-		{[]string{"allanime", "miruro"}, "allanime,miruro"},
+		{nil, "miruro,other"},
+		{[]string{"other"}, "other"},
+		{[]string{"other", "miruro"}, "other,miruro"},
 		{[]string{"anilist", "miruro"}, "miruro"},
-		{[]string{"anilist"}, "miruro,allanime"},
+		{[]string{"anilist"}, "miruro,other"},
 	} {
 		if got := names(enabled(all, tc.names)); got != tc.want {
 			t.Errorf("enabled(%v) = %s, want %s", tc.names, got, tc.want)

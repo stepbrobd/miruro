@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
-	"ysun.co/miruro/backend/allanime"
 	"ysun.co/miruro/backend/mirurotv"
 	"ysun.co/miruro/play"
 	"ysun.co/miruro/ui"
@@ -231,7 +230,7 @@ func findAnime(ctx context.Context, client *mirurotv.Client, args []string) (mir
 // catalog lists them
 // a new backend is one package implementing miruro.Backend and one entry here
 func all(client *mirurotv.Client) miruro.Backends {
-	return miruro.Backends{client, allanime.New()}
+	return miruro.Backends{client}
 }
 
 // enabled keeps the backends a config names, every one when it names none

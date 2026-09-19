@@ -79,9 +79,7 @@ const template = `# miruro configuration
 # mirrors = ["https://www.miruro.ru", "https://www.miruro.to", "https://www.miruro.bz", "https://www.miruro.tv"]
 
 # upstreams to resolve against, in the order their providers are merged
-# miruro is the aggregator and allanime the site its ally provider fronts,
-# reached directly, and naming only one leaves the other out of every prompt
-# backends = ["miruro", "allanime"]
+# backends = ["miruro"]
 `
 
 func configPath() (string, error) {
