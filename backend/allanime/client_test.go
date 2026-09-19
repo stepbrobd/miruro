@@ -62,6 +62,7 @@ func newSite(t *testing.T) *site {
 		"sourceUrls": []map[string]any{
 			{"sourceUrl": "https://ok.ru/videoembed/1", "sourceName": "Ok", "priority": 3.5, "type": "iframe"},
 			{"sourceUrl": "--" + encode("/apivtwo/clock?id=abc"), "sourceName": "Luf-Mp4", "priority": 7.5, "type": "iframe"},
+			{"sourceUrl": "--" + encode("/apivtwo/clock?id=gone"), "sourceName": "Ak", "priority": 1, "type": "iframe"},
 			{"sourceUrl": s.srv.URL + "/media/1?auth=x", "sourceName": "Yt-mp4", "priority": 7.9, "type": "player", "fallBack": "mp4", "fileExtenstion": "mp4"},
 			{"sourceUrl": "javascript:alert(1)", "sourceName": "Evil", "priority": 9, "type": "player", "fileExtenstion": "mp4"},
 		},
@@ -74,7 +75,7 @@ func newSite(t *testing.T) *site {
 }
 
 func (s *site) backend() *Backend {
-	return &Backend{HTTP: s.srv.Client(), Site: s.srv.URL, API: s.srv.URL}
+	return &Backend{HTTP: s.srv.Client(), Site: s.srv.URL, API: s.srv.URL, Clock: s.srv.URL}
 }
 
 func (s *site) handle(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +92,21 @@ func (s *site) handle(w http.ResponseWriter, r *http.Request) {
 		s.bootstrap(w, r)
 	case "/api":
 		s.api(w, r)
+	case clockPath + ".json":
+		s.clock(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// clock answers the links behind one of the site's own encodes, the way the
+// real endpoint does, and refuses an id it no longer carries
+func (s *site) clock(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Query().Get("id") {
+	case "abc":
+		io.WriteString(w, `{"links":[{"link":"https://cdn.example/a/,1080p,720p,/mp4/file.mp4.urlset/master.m3u8","hls":true,"resolutionStr":"Hls"}]}`)
+	default:
+		http.Error(w, "error", http.StatusInternalServerError)
 	}
 }
 
@@ -297,16 +311,26 @@ func TestSourcesResolveThroughTheHandshake(t *testing.T) {
 	for _, st := range res.Streams {
 		kinds = append(kinds, st.Server+":"+string(st.Kind))
 	}
-	// the highest priority playable source leads and the javascript url is gone
-	if want := "Yt-mp4:mp4,Luf-Mp4:embed,Ok:embed"; strings.Join(kinds, ",") != want {
+	// the highest priority playable source leads, the javascript url is gone,
+	// the clock source that resolves carries its links and the one that does
+	// not keeps its entry
+	if want := "Yt-mp4:mp4,Luf-Mp4:hls,Ok:embed,Ak:embed"; strings.Join(kinds, ",") != want {
 		t.Errorf("streams = %v, want %s", kinds, want)
 	}
 	head := res.Streams[0]
 	if !head.Default || head.Quality != "1080p" || head.Referer != s.srv.URL || !strings.HasPrefix(head.URL, s.srv.URL+"/media/1") {
 		t.Errorf("head = %+v", head)
 	}
-	if res.Streams[1].URL != clockHost+"/apivtwo/clock?id=abc" {
-		t.Errorf("encoded source = %q", res.Streams[1].URL)
+	// a resolved clock keeps the name and referer of the source that named it
+	clocked := res.Streams[1]
+	if clocked.URL != "https://cdn.example/a/,1080p,720p,/mp4/file.mp4.urlset/master.m3u8" || clocked.Referer != s.srv.URL {
+		t.Errorf("clock source = %+v", clocked)
+	}
+	if clocked.Quality != "" {
+		t.Errorf("a master labeled Hls took %q as a height", clocked.Quality)
+	}
+	if got := res.Streams[3].URL; got != s.srv.URL+clockPath+"?id=gone" {
+		t.Errorf("a clock that failed = %q, want the path it was given", got)
 	}
 
 	// the build and the session are kept, so a second episode costs no bootstrap

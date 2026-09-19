@@ -3,6 +3,8 @@ package allanime
 import (
 	"strings"
 	"testing"
+
+	"ysun.co/miruro"
 )
 
 // the encoded path is one the live api handed out for Frieren episode 1 on
@@ -28,6 +30,60 @@ func TestParseNumber(t *testing.T) {
 	for _, in := range []string{"", "x", "-1", "1e400"} {
 		if _, err := parseNumber(in); err == nil {
 			t.Errorf("parseNumber(%q) accepted", in)
+		}
+	}
+}
+
+func TestClockJSON(t *testing.T) {
+	const clock = "https://allanime.day"
+	if got, ok := clockJSON(clock+"/apivtwo/clock?id=abc", clock); !ok || got != clock+"/apivtwo/clock.json?id=abc" {
+		t.Errorf("clockJSON = %q, %v", got, ok)
+	}
+	for _, raw := range []string{
+		"https://ok.ru/videoembed/1",
+		clock + "/apivtwo/clock.json?id=abc",
+		clock + "/apivtwo/clockwork?id=abc",
+		"https://elsewhere.example/apivtwo/clock?id=abc",
+	} {
+		if _, ok := clockJSON(raw, clock); ok {
+			t.Errorf("%q read as a clock source", raw)
+		}
+	}
+}
+
+// the answer decides the container, the path decides it when the answer does
+// not, and a link naming neither stays an embed rather than reaching a player
+// as a guess
+func TestClockStream(t *testing.T) {
+	from := miruro.Stream{Kind: miruro.Embed, Server: "Yt", Referer: "https://mkissa.to"}
+	for _, tc := range []struct {
+		link    link
+		kind    miruro.Kind
+		quality string
+		ok      bool
+	}{
+		{link{Link: "https://cdn.example/master.m3u8", HLS: true, Resolution: "Hls"}, miruro.HLS, "", true},
+		{link{Link: "https://cdn.example/file.mp4", Mp4: true, Resolution: "1080p"}, miruro.MP4, "1080p", true},
+		{link{Link: "https://cdn.example/a/,1080p,/mp4/file.mp4.urlset/master.m3u8"}, miruro.HLS, "", true},
+		{link{Link: "https://cdn.example/v/file.mp4"}, miruro.MP4, "", true},
+		{link{Link: "https://cdn.example/player"}, miruro.Embed, "", true},
+		{link{Link: "javascript:alert(1)"}, "", "", false},
+		{link{Link: "/relative"}, "", "", false},
+		{link{Link: ""}, "", "", false},
+	} {
+		s, ok := clockStream(tc.link, from)
+		if ok != tc.ok {
+			t.Errorf("clockStream(%q) ok = %v, want %v", tc.link.Link, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if s.Kind != tc.kind || s.Quality != tc.quality {
+			t.Errorf("clockStream(%q) = %s %q, want %s %q", tc.link.Link, s.Kind, s.Quality, tc.kind, tc.quality)
+		}
+		if s.Server != from.Server || s.Referer != from.Referer {
+			t.Errorf("clockStream(%q) lost the source it came from: %+v", tc.link.Link, s)
 		}
 	}
 }

@@ -54,6 +54,9 @@ type Backend struct {
 	Site string
 	// API is the graphql origin
 	API string
+	// Clock is the origin serving the site's own encodes, which the api names
+	// as encoded paths rather than urls
+	Clock string
 
 	mu      sync.Mutex
 	build   *build
@@ -72,9 +75,10 @@ func New() *Backend {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Backend{
-		HTTP: &http.Client{Transport: tr, Timeout: 2 * time.Minute},
-		Site: defaultSite,
-		API:  defaultAPI,
+		HTTP:  &http.Client{Transport: tr, Timeout: 2 * time.Minute},
+		Site:  defaultSite,
+		API:   defaultAPI,
+		Clock: defaultClock,
 	}
 }
 
@@ -467,10 +471,13 @@ func (b *Backend) Sources(ctx context.Context, episodeID, provider string, cat m
 	if err != nil {
 		return nil, err
 	}
-	res, err := streams(plain, cat, b.Site)
+	res, err := streams(plain, cat, b.Site, b.clock())
 	if err != nil {
 		return nil, err
 	}
+	// the site's own encodes arrive as paths to ask rather than urls to play,
+	// and resolving them is what makes the provider playable at all
+	b.expandClocks(ctx, res)
 	for _, s := range res.Streams {
 		log.Debug("allanime source", "server", s.Server, "kind", s.Kind, "quality", s.Quality)
 	}

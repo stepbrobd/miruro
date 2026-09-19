@@ -2,12 +2,16 @@ package allanime
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/charmbracelet/log"
 
 	"ysun.co/miruro"
 )
@@ -30,11 +34,13 @@ type vidInfo struct {
 }
 
 // streams reads an opened episode answer into a result
-// the site's own encode arrives as a player source, and everything else is an
-// embedded page or an encoded path to a source host, which nothing here plays
-// and which is listed as an embed so the provider reads as resolved rather
-// than empty
-func streams(plain []byte, cat miruro.Category, referer string) (*miruro.Result, error) {
+// a player source names a url outright, a clock source names an encoded path
+// the site asks for its own storage, and the rest are embedded pages nothing
+// here plays, which are listed as embeds so the provider reads as resolved
+// rather than empty
+// the clock paths are decoded here and resolved by expandClocks afterward,
+// since resolving one costs a request
+func streams(plain []byte, cat miruro.Category, referer, clock string) (*miruro.Result, error) {
 	var raw struct {
 		Episode struct {
 			Sources []source `json:"sourceUrls"`
@@ -57,7 +63,7 @@ func streams(plain []byte, cat miruro.Category, referer string) (*miruro.Result,
 	res := &miruro.Result{}
 	lead := true
 	for _, s := range srcs {
-		st, ok := stream(s, referer)
+		st, ok := stream(s, referer, clock)
 		if !ok {
 			continue
 		}
@@ -73,10 +79,10 @@ func streams(plain []byte, cat miruro.Category, referer string) (*miruro.Result,
 }
 
 // stream maps one source to a stream, refusing a url that is not http
-func stream(s source, referer string) (miruro.Stream, bool) {
+func stream(s source, referer, clock string) (miruro.Stream, bool) {
 	raw := s.URL
 	if strings.HasPrefix(raw, "--") {
-		raw = clockHost + decode(raw[2:])
+		raw = clock + decode(raw[2:])
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -97,10 +103,127 @@ func stream(s source, referer string) (miruro.Stream, bool) {
 	return st, true
 }
 
-// clockHost serves the encoded source paths the api hands out
-// its endpoint stalled on every real id on 2026-09-02, so the paths are
-// decoded for the record and listed as embeds rather than fetched
-const clockHost = "https://allanime.day"
+// defaultClock serves the encoded source paths the api hands out, and clockPath
+// is the endpoint they address
+// the site serves an html player at the path itself, which is what answered 404
+// and stalled in earlier runs, and the links behind it under the same path with
+// a .json suffix, which is the only one worth asking
+const (
+	defaultClock = "https://allanime.day"
+	clockPath    = "/apivtwo/clock"
+)
+
+// maxLinks bounds what a clock answer is trusted to carry
+// a real one holds a single master, so only a broken or hostile answer is near
+// this
+const maxLinks = 32
+
+// link is one playable url a clock endpoint answers
+type link struct {
+	Link string `json:"link"`
+	HLS  bool   `json:"hls"`
+	Mp4  bool   `json:"mp4"`
+	// Resolution labels a direct file by height and a master as "Hls"
+	Resolution string `json:"resolutionStr"`
+}
+
+// clockJSON turns a decoded clock path into the endpoint answering its links,
+// reporting false for a source that is not one
+func clockJSON(rawURL, clock string) (string, bool) {
+	prefix := clock + clockPath + "?"
+	if !strings.HasPrefix(rawURL, prefix) {
+		return "", false
+	}
+	return clock + clockPath + ".json?" + rawURL[len(prefix):], true
+}
+
+// expandClocks replaces the site's own encodes with the streams they resolve
+// to, leaving every other source as it arrived
+// a clock source names a path rather than a url, so without this the storage
+// the site plays from is listed as an embed and the provider never plays at all
+// one that fails keeps its entry, which reads as a single unplayable source
+// rather than as the provider carrying nothing
+func (b *Backend) expandClocks(ctx context.Context, res *miruro.Result) {
+	if len(res.Streams) == 0 {
+		return
+	}
+	out := make([][]miruro.Stream, len(res.Streams))
+	var wg sync.WaitGroup
+	for i, s := range res.Streams {
+		jsonURL, ok := clockJSON(s.URL, b.clock())
+		if !ok {
+			out[i] = []miruro.Stream{s}
+			continue
+		}
+		wg.Go(func() {
+			expanded, err := b.links(ctx, jsonURL, s)
+			if err != nil {
+				log.Debug("allanime clock source did not resolve", "server", s.Server, "err", err)
+				out[i] = []miruro.Stream{s}
+				return
+			}
+			out[i] = expanded
+		})
+	}
+	wg.Wait()
+	res.Streams = slices.Concat(out...)
+}
+
+// clock is the origin the encoded source paths address
+func (b *Backend) clock() string { return cmp.Or(b.Clock, defaultClock) }
+
+// links asks one clock endpoint for the streams behind it
+func (b *Backend) links(ctx context.Context, jsonURL string, from miruro.Stream) ([]miruro.Stream, error) {
+	body, err := b.get(ctx, jsonURL)
+	if err != nil {
+		return nil, err
+	}
+	var answer struct {
+		Links []link `json:"links"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("%w: allanime clock: %v", miruro.ErrUpstream, err)
+	}
+	if len(answer.Links) > maxLinks {
+		return nil, fmt.Errorf("%w: allanime clock carried %d links", miruro.ErrUpstream, len(answer.Links))
+	}
+	var out []miruro.Stream
+	for _, l := range answer.Links {
+		if s, ok := clockStream(l, from); ok {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: allanime clock carried no playable link", miruro.ErrUpstream)
+	}
+	return out, nil
+}
+
+// clockStream maps one answered link onto the source that named it, keeping the
+// server name and referer so the stream still reads as that source
+// the container is taken from what the answer declares and from the path when
+// it declares nothing, and a link that names neither stays an embed rather than
+// being handed to a player as a guess
+func clockStream(l link, from miruro.Stream) (miruro.Stream, bool) {
+	u, err := url.Parse(l.Link)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return miruro.Stream{}, false
+	}
+	s := from
+	s.URL = u.String()
+	switch {
+	case l.HLS, strings.Contains(u.Path, ".m3u8"):
+		s.Kind = miruro.HLS
+	case l.Mp4, strings.Contains(u.Path, ".mp4"):
+		s.Kind = miruro.MP4
+	}
+	// the endpoint labels a master "Hls" and a direct file by height, and only a
+	// height means anything to the quality pick
+	if strings.HasSuffix(l.Resolution, "p") {
+		s.Quality = l.Resolution
+	}
+	return s, true
+}
 
 // decode reverses the substitution the api applies to a source path, two hex
 // digits per character
