@@ -18,6 +18,8 @@ import (
 var historyCmd = &cobra.Command{
 	Use:   "history",
 	Short: "Manage watch history",
+	Args:  cobra.ArbitraryArgs,
+	RunE:  unknown,
 }
 
 var historyListCmd = &cobra.Command{
@@ -37,6 +39,8 @@ var historyClearCmd = &cobra.Command{
 var cacheCmd = &cobra.Command{
 	Use:   "cache",
 	Short: "Manage the segment cache",
+	Args:  cobra.ArbitraryArgs,
+	RunE:  unknown,
 }
 
 var cacheListCmd = &cobra.Command{
@@ -267,6 +271,16 @@ func runCacheClear(*cobra.Command, []string) error {
 	}
 	fmt.Printf("removed %s of cached segments\n", ui.Bytes(total))
 	return nil
+}
+
+// unknown answers a subcommand nothing implements
+// without it cobra prints the group's help and exits zero, so "cache clean"
+// reports success and does nothing, which a script cannot tell from a clear
+func unknown(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return cmd.Help()
+	}
+	return fmt.Errorf("unknown %s subcommand %q", cmd.Name(), args[0])
 }
 
 // plural counts a thing, so a listing of one does not report it as several

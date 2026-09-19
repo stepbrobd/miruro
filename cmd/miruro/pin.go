@@ -53,6 +53,24 @@ type offer struct {
 	declared bool
 }
 
+// pinFor decides which provider a run starts on and whether it may walk past it
+// the flag wins over the config, and an entry resumed from history fills in for
+// both when the flag named none
+// only a provider the run was told to use holds the walk to it: one in history
+// was picked from the menu once, and holding a later run to that would honor a
+// choice the user never stated
+func pinFor(config, flag, history string, widen bool) (Pin, bool) {
+	stated := flag != "" || config != ""
+	pinned := config
+	if flag != "" {
+		pinned = flag
+	}
+	if history != "" && flag == "" {
+		pinned = history
+	}
+	return ParsePin(pinned), widen || !stated
+}
+
 // offers expands the available providers into the rows worth showing, one per
 // subtitle rendition a provider declares
 // the table describes the two sub renditions only, so a dub run gets one bare

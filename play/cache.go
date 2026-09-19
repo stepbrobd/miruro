@@ -223,14 +223,14 @@ func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("playlist %s: %w", rawURL, status(resp.StatusCode))
+		return nil, fmt.Errorf("playlist refused: %w", status(resp.StatusCode))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTextBody+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(body) > maxTextBody {
-		return nil, fmt.Errorf("playlist %s: %w of %d bytes", rawURL, errTooLarge, maxTextBody)
+		return nil, fmt.Errorf("playlist %w of %d bytes", errTooLarge, maxTextBody)
 	}
 	return body, nil
 }

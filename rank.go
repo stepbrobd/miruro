@@ -3,6 +3,7 @@ package miruro
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,10 +227,10 @@ func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, err
 		return nil, err
 	}
 	if lr.N == 0 {
-		return nil, fmt.Errorf("master playlist exceeds %d bytes: %s", maxMaster, s.URL)
+		return nil, fmt.Errorf("master playlist exceeds %d bytes", maxMaster)
 	}
 	if len(variants) == 0 {
-		return nil, fmt.Errorf("not a master playlist: %s", s.URL)
+		return nil, errors.New("not a master playlist")
 	}
 	return variants, nil
 }

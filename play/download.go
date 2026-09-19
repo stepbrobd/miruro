@@ -124,7 +124,10 @@ func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Prog
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: %w", url, status(resp.StatusCode))
+		// the url is the proxy's own loopback address carrying an encoded target,
+		// which names nothing a reader can act on and, cut to the terminal from
+		// the right, hides the status that does
+		return fmt.Errorf("download refused: %w", status(resp.StatusCode))
 	}
 
 	f, err := os.Create(part)

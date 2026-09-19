@@ -3,16 +3,21 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
+// shells are the completion scripts this build can generate, named in one place
+// so the usage line, the tab completion and the refusal cannot drift apart
+var shells = []string{"bash", "zsh", "fish"}
+
 func init() {
 	root.AddCommand(&cobra.Command{
-		Use:       "completion [bash|zsh|fish]",
+		Use:       "completion [" + strings.Join(shells, "|") + "]",
 		Short:     "Generate shell completion script",
 		Args:      cobra.ExactArgs(1),
-		ValidArgs: []string{"bash", "zsh", "fish"},
+		ValidArgs: shells,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch args[0] {
 			case "bash":
@@ -22,7 +27,7 @@ func init() {
 			case "fish":
 				return root.GenFishCompletion(os.Stdout, true)
 			default:
-				return fmt.Errorf("unsupported shell %s", args[0])
+				return fmt.Errorf("shell %q is not one of %s", args[0], strings.Join(shells, ", "))
 			}
 		},
 	})

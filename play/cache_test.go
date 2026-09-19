@@ -539,10 +539,15 @@ func TestFetchTextRefusesOversizedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// the url is the proxy's own loopback address carrying an encoded target, so
+	// the cap is what the message names rather than where the body came from
 	u := srv.URL + "/media.m3u8"
 	_, err := fetchText(context.Background(), http.DefaultClient, u)
-	if err == nil || !strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), u) {
-		t.Fatalf("want an over-cap error naming the URL, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("want an over-cap error, got %v", err)
+	}
+	if strings.Contains(err.Error(), u) {
+		t.Errorf("the message carries the proxy url a reader cannot act on: %v", err)
 	}
 	// the cap guards against a hostile body, so refetching it only pays twice
 	if transient(err) {

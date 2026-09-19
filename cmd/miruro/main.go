@@ -43,26 +43,28 @@ func init() {
 	f := root.Flags()
 	f.StringVarP(&flagEpisode, "episode", "e", "", "Episode number or range, e.g. 5 or 5-8")
 	f.BoolVarP(&flagDownload, "download", "d", false, "Download instead of playing")
-	f.StringVarP(&flagQuality, "quality", "q", "", "Video quality, e.g. best or 1080p")
+	f.StringVarP(&flagQuality, "quality", "q", "", "Video quality, one of best, worst or a height such as 1080p")
 	f.BoolVar(&flagDub, "dub", false, "Use dub instead of sub")
 	f.BoolVarP(&flagContinue, "continue", "c", false, "Resume from history")
-	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard")
+	f.StringVar(&flagProvider, "provider", "", "Pin a provider as code or code:variant, variant is soft or hard, which also stops the fallback to others")
 	f.BoolVarP(&flagFallback, "fallback", "f", false, "Try other providers when the pinned one fails")
 	f.StringVar(&flagLang, "lang", "", "Preferred subtitle language, a tag such as en or a label such as English")
 	f.BoolVar(&flagAll, "all", false, "Select every episode, to binge or to download")
 	f.IntVarP(&flagParallel, "parallel", "p", 1, "Parallel download workers")
-	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as mpv chapters via aniskip")
+	f.BoolVar(&flagSkip, "skip", false, "Mark intro and outro as player chapters via aniskip")
 	root.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "Log resolution and playback detail")
 
-	// keep routine progress quiet by default, warnings and errors still show
-	// the wall clock goes with them: a record here is read as it happens, and
+	// a record here is read as it happens, so the wall clock says nothing, and
 	// under a live view it costs twenty of the eighty columns a narrow terminal
 	// has and pushes the keys the record was written for off the end
-	// it is set once here rather than around each view because the logger reads
-	// the setting outside the mutex it takes for the output, so moving it while
-	// a download worker logs is a race
+	// it is set here rather than in PersistentPreRun because a bad flag never
+	// reaches that, and around each view because the logger reads the setting
+	// outside the mutex it takes for the output, so moving it while a download
+	// worker logs is a race
+	log.SetReportTimestamp(false)
+
+	// keep routine progress quiet by default, warnings and errors still show
 	root.PersistentPreRun = func(*cobra.Command, []string) {
-		log.SetReportTimestamp(false)
 		if flagVerbose {
 			log.SetLevel(log.DebugLevel)
 		} else {

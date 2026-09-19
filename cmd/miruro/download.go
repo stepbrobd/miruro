@@ -48,8 +48,9 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 			bare.Add(1)
 		}
 		if want, ok := sv.wanted(eps[i]); ok && (src.Category != want.Category || src.Attach != want.Attach) {
+			// the run reports every swapped episode once it ends, so the worker
+			// only records it
 			swapped[i] = true
-			log.Warn("episode saved with a different rendition than pinned", "episode", labels[i], "provider", src.Pin)
 		}
 		return nil
 	})
@@ -68,7 +69,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d downloads failed", failed, len(eps))
+		return fmt.Errorf("%s of %d failed", plural(failed, "download", "downloads"), len(eps))
 	}
 	if canceled > 0 {
 		// map an interrupt onto the same silent 130 exit every other abort takes
@@ -77,7 +78,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	// warn rather than log so a soft-subbed run that lost its sidecars is visible
 	// without --verbose
 	if n := bare.Load(); n > 0 {
-		log.Warn("episodes saved without subtitles", "count", n)
+		log.Warn("saved without subtitles", "episodes", n)
 	}
 	// name the episodes so a re-fetch knows which files to delete first, since a
 	// rerun skips whatever is already on disk

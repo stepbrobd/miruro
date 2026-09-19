@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
+	"github.com/spf13/cobra"
 
 	"ysun.co/miruro"
 )
@@ -290,5 +291,24 @@ func TestPlural(t *testing.T) {
 		if got := plural(tc.n, "entry", "entries"); got != tc.want {
 			t.Errorf("plural(%d) = %q, want %q", tc.n, got, tc.want)
 		}
+	}
+}
+
+// a mistyped subcommand printed the group's help and exited zero, which a
+// script cannot tell from having done the work
+func TestUnknownSubcommand(t *testing.T) {
+	for _, cmd := range []*cobra.Command{historyCmd, cacheCmd, configCmd} {
+		err := unknown(cmd, []string{"clean"})
+		if err == nil {
+			t.Errorf("%s reported success on a subcommand it does not have", cmd.Name())
+			continue
+		}
+		if !strings.Contains(err.Error(), "clean") || !strings.Contains(err.Error(), cmd.Name()) {
+			t.Errorf("%s: err = %v, want it to name the group and the typo", cmd.Name(), err)
+		}
+	}
+	// the group with no argument is a request for its help, not a mistake
+	if err := unknown(historyCmd, nil); err != nil {
+		t.Errorf("a bare group errored: %v", err)
 	}
 }

@@ -110,10 +110,19 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 	case blocked != nil:
 		return nil, source{}, blocked
 	case !s.fallback && pin.Code != "":
+		// a caller retrying an episode has already put the pin in skip, so a walk
+		// that reached nothing says the pin is spent rather than that it carries
+		// nothing, which is false when it resolved and then failed to play
 		if last == nil {
-			last = fmt.Errorf("%s carries no source for episode %s", pin.Code, num(ep))
+			if skip[pin.Code] {
+				last = fmt.Errorf("%s is the only provider this run may use", pin.Code)
+			} else if _, ok := s.cat.Providers[pin.Code]; !ok {
+				last = fmt.Errorf("%s is not in the catalog for this title", pin.Code)
+			} else {
+				last = fmt.Errorf("%s carries no source for episode %s", pin.Code, num(ep))
+			}
 		}
-		return nil, source{}, fmt.Errorf("%w (pass --fallback to try another provider)", last)
+		return nil, source{}, fmt.Errorf("%w (pass --fallback to try the rest)", last)
 	case last == nil:
 		last = fmt.Errorf("no source resolved for episode %s", num(ep))
 	}

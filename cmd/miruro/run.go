@@ -75,9 +75,6 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagQuality != "" {
 		cfg.Quality = flagQuality
 	}
-	if flagProvider != "" {
-		cfg.Provider = flagProvider
-	}
 	if flagLang != "" {
 		cfg.Lang = flagLang
 	}
@@ -111,7 +108,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	var media miruro.Media
 	startEp := -1.0
-	pinned := cfg.Provider
+	resumed := ""
 
 	if flagContinue {
 		if len(args) > 0 {
@@ -127,9 +124,7 @@ func run(cmd *cobra.Command, args []string) error {
 		if !flagDub {
 			category = e.Category
 		}
-		if e.Provider != "" && flagProvider == "" {
-			pinned = e.Provider
-		}
+		resumed = e.Provider
 	} else {
 		media, err = findAnime(ctx, client, args)
 		if err != nil {
@@ -180,15 +175,13 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "backend", f.Backend, "err", f.Err)
 	}
 
-	// a pin the run was given rather than picked holds the walk to that provider
-	fallback := flagFallback || pinned == ""
-	pin := ParsePin(pinned)
+	pin, fallback := pinFor(cfg.Provider, flagProvider, resumed, flagFallback)
 	if pin.Code != "" {
 		if _, ok := cat.Providers[pin.Code]; !ok {
 			if fallback {
-				log.Warn("pinned provider not in catalog, using fallback order", "provider", pin.Code)
+				log.Warn("pinned provider is not in the catalog, trying the rest in preference order", "provider", pin.Code)
 			} else {
-				log.Warn("pinned provider not in catalog, pass --fallback to try another", "provider", pin.Code)
+				log.Warn("pinned provider is not in the catalog, pass --fallback to try the rest", "provider", pin.Code)
 			}
 		}
 	}

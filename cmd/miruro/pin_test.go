@@ -245,3 +245,36 @@ func TestCandidates(t *testing.T) {
 		t.Errorf("err = %v, want the missing-episode reason", err)
 	}
 }
+
+// only a provider the run was told to use holds the walk to it
+// a resumed entry carries whatever served last, including one picked from the
+// menu, and holding a later run to that honors a choice the user never made
+func TestPinFor(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		config, flag, history string
+		widen                 bool
+		code                  string
+		fallback              bool
+	}{
+		{name: "nothing anywhere", fallback: true},
+		{name: "config states one", config: "hop:soft", code: "hop"},
+		{name: "flag states one", flag: "bee:hard", code: "bee"},
+		{name: "flag beats config", config: "hop:soft", flag: "bee:hard", code: "bee"},
+		{name: "history alone still walks", history: "pewe", code: "pewe", fallback: true},
+		{name: "history fills in for a bare config", history: "pewe", code: "pewe", fallback: true},
+		{name: "history beats config but does not hold", config: "hop:soft", history: "pewe", code: "pewe"},
+		{name: "flag beats history", flag: "bee:hard", history: "pewe", code: "bee"},
+		{name: "fallback widens a stated one", config: "hop:soft", widen: true, code: "hop", fallback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pin, fallback := pinFor(tc.config, tc.flag, tc.history, tc.widen)
+			if pin.Code != tc.code {
+				t.Errorf("code = %q, want %q", pin.Code, tc.code)
+			}
+			if fallback != tc.fallback {
+				t.Errorf("fallback = %v, want %v", fallback, tc.fallback)
+			}
+		})
+	}
+}

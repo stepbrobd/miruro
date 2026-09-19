@@ -21,6 +21,8 @@ import (
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage the config file",
+	Args:  cobra.ArbitraryArgs,
+	RunE:  unknown,
 }
 
 var configInitCmd = &cobra.Command{
@@ -61,6 +63,7 @@ const template = `# miruro configuration
 # quality = "best"
 
 # provider to pin, as a code or code:variant where variant is soft or hard
+# a pinned provider holds a run to itself, and -f/--fallback widens it again
 # soft asks for the rendition with a detachable subtitle file, hard for the one
 # with the subtitles burned in, and a provider carrying only one is corrected to it
 # provider = ""
@@ -124,12 +127,22 @@ func runConfigShow(*cobra.Command, []string) error {
 		fmt.Fprintf(w, "player\t%s\n", or(c.Player, "auto"))
 		fmt.Fprintf(w, "quality\t%s\n", c.Quality)
 		fmt.Fprintf(w, "provider\t%s\n", or(c.Provider, "ask"))
+		fmt.Fprintf(w, "fallback\t%s\n", fallbackRow(c.Provider))
 		fmt.Fprintf(w, "lang\t%s\n", or(c.Lang, "any"))
 		fmt.Fprintf(w, "download\t%s\n", c.DownloadDir)
 		fmt.Fprintf(w, "dub\t%v\n", c.Dub)
 		fmt.Fprintf(w, "mirrors\t%s\n", or(strings.Join(c.Mirrors, " "), "built in"))
 		fmt.Fprintf(w, "backends\t%s\n", or(strings.Join(c.Backends, " "), "all"))
 	})
+}
+
+// fallbackRow says whether a run would walk past the configured provider, since
+// pinning one is what turns the walk off and the config names no such key
+func fallbackRow(provider string) string {
+	if provider == "" {
+		return "on, nothing is pinned"
+	}
+	return "off unless -f, since a provider is pinned"
 }
 
 func or(s, empty string) string {
@@ -167,7 +180,7 @@ func runConfigValidate(*cobra.Command, []string) error {
 	for _, p := range problems {
 		fmt.Fprintln(os.Stderr, " ", p)
 	}
-	return fmt.Errorf("%s has %d problems", path, len(problems))
+	return fmt.Errorf("%s has %s", path, plural(len(problems), "problem", "problems"))
 }
 
 // check reports what a run would refuse or quietly ignore
