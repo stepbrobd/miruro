@@ -185,9 +185,9 @@ func run(cmd *cobra.Command, args []string) error {
 	if pin.Code != "" {
 		if _, ok := cat.Providers[pin.Code]; !ok {
 			if fallback {
-				log.Warn("pinned provider is not in the catalog, trying the rest in preference order", "provider", pin.Code)
+				log.Warn("provider not in the catalog, using the preference order", "provider", pin.Code)
 			} else {
-				log.Warn("pinned provider is not in the catalog, pass --fallback to try the rest", "provider", pin.Code)
+				log.Warn("provider not in the catalog, pass --fallback to try the rest", "provider", pin.Code)
 			}
 		}
 	}
