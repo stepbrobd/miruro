@@ -621,7 +621,9 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 			// the session is over, and saying the player exited would hide that
 			return err
 		case err != nil:
-			log.Warn("no provider left to try", "provider", src.Code, "err", last)
+			// both halves are named because the playback failure alone reads as
+			// the user having quit, and says nothing about why the walk stopped
+			log.Warn("no provider left to try", "provider", src.Code, "err", last, "resolve", err)
 			// report what failed to play rather than what failed to resolve after
 			return last
 		}
