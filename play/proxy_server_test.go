@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -626,5 +627,64 @@ func TestProxySendsTheOriginWithTheReferer(t *testing.T) {
 	}
 	if px.Served() != 1 {
 		t.Errorf("served = %d, want the segment counted", px.Served())
+	}
+}
+
+// the token is what keeps another local process from driving the relay, since
+// the proxy will fetch whatever a decoded payload names
+// nothing else stands between a request and that fetch, so a path carrying the
+// wrong token, or none, must never reach it
+func TestProxyRefusesAWrongToken(t *testing.T) {
+	var reached atomic.Int64
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		w.Write(bytes.Repeat(tsPacket188(), 8))
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	// the address a player is handed, with the token swapped for another
+	good := px.proxied(cdn.URL+"/000.ts", "", segment)
+	payload := good[strings.LastIndexByte(good, '/')+1:]
+	base := good[:strings.Index(good, "/"+px.token)]
+
+	for _, tc := range []struct{ name, path string }{
+		{"another token", "/" + strings.Repeat("0", len(px.token)) + "/" + payload},
+		{"no token", "/" + payload},
+		{"an empty token", "//" + payload},
+		{"a truncated token", "/" + px.token[:len(px.token)-1] + "/" + payload},
+		{"the token as the payload", "/" + px.token},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(base + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("status %d, want the request refused", resp.StatusCode)
+			}
+		})
+	}
+	if n := reached.Load(); n != 0 {
+		t.Errorf("the relay fetched upstream %d times for a request carrying no valid token", n)
+	}
+
+	// the same payload under the right token still plays, so the refusals above
+	// are the token and not the path
+	resp, err := http.Get(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the valid token was refused with status %d", resp.StatusCode)
 	}
 }

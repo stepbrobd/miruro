@@ -623,3 +623,44 @@ func TestLocalizeKeepsADollarInTheKeyPath(t *testing.T) {
 		t.Errorf("localize dropped part of the key path:\n%s", got)
 	}
 }
+
+// two providers can segment an episode the same way at different bitrates, and
+// the durations are the only thing left that tells their caches apart
+// the tolerance exists because upstream prints them with limited precision, so
+// it has to be asserted in both directions: a difference inside it keeps the
+// cache, one outside it wipes it
+func TestReconcileComparesDurationsWithinATolerance(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second []float64
+		kept   bool
+	}{
+		{"the same durations", []float64{10, 9.5}, true},
+		{"inside the tolerance", []float64{10.0009, 9.4991}, true},
+		{"outside the tolerance", []float64{10.002, 9.5}, false},
+		{"far outside it", []float64{12, 9.5}, false},
+		{"an unknown duration", []float64{-1, 9.5}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			first := &mediaPlaylist{segAt: []int{0, 1}, durations: []float64{10, 9.5}}
+			if err := reconcile(dir, first); err != nil {
+				t.Fatal(err)
+			}
+			seg := filepath.Join(dir, segName(0))
+			if err := os.WriteFile(seg, []byte("segment"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := reconcile(dir, &mediaPlaylist{segAt: []int{0, 1}, durations: tc.second}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Stat(seg)
+			if tc.kept && err != nil {
+				t.Errorf("the cache was wiped for a difference the tolerance covers: %v", err)
+			}
+			if !tc.kept && !os.IsNotExist(err) {
+				t.Error("the cache survived durations that do not match")
+			}
+		})
+	}
+}
