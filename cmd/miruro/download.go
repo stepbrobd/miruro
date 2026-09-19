@@ -91,7 +91,9 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	if len(off) > 0 {
 		log.Warn("episodes saved with a different rendition than pinned", "episodes", strings.Join(off, " "))
 	}
-	log.Info("saved", "dir", s.cfg.DownloadDir, "episodes", len(eps))
+	// the default level is warn, so a result logged as info never reached the
+	// user and a long run ended without saying where anything landed
+	fmt.Printf("saved %s to %s\n", plural(len(eps), "episode", "episodes"), s.cfg.DownloadDir)
 	return nil
 }
 

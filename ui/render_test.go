@@ -210,3 +210,33 @@ func TestViewsFitTheScreenHeight(t *testing.T) {
 		}
 	}
 }
+
+// a task list longer than the screen pushed the rest of the view off the bottom
+// and took the log window with it, so a long download ended on a frozen screen
+// that never said where anything landed
+func TestDownloadsKeepTheLogWhenTasksOverflow(t *testing.T) {
+	for _, n := range []int{3, 16, 24, 40, 120} {
+		labels := make([]string, n)
+		for i := range labels {
+			labels[i] = fmt.Sprintf("E%d", i+1)
+		}
+		m := downloads{
+			labels: labels, width: 4, bars: bars(n),
+			done: make([]int64, n), total: make([]int64, n),
+			errs: make([]error, n), fin: make([]bool, n),
+			seen: []string{"WARN download failed, trying the next stream episode=3"},
+		}
+		var model tea.Model = m
+		model, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		view := model.(downloads).View()
+		if rows := strings.Count(view, "\n"); rows > 24 {
+			t.Errorf("%d tasks drew %d rows on a 24 row terminal", n, rows)
+		}
+		if !strings.Contains(view, "download failed") {
+			t.Errorf("%d tasks pushed the log window off the view:\n%s", n, view)
+		}
+		if n > 20 && !strings.Contains(view, "more episode") {
+			t.Errorf("%d tasks hid rows without saying so:\n%s", n, view)
+		}
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/log"
+
 	"ysun.co/miruro"
 )
 
@@ -27,10 +29,16 @@ type Pin struct {
 // ParsePin reads a "code" or "code:variant" pin
 // a bare code and an unrecognized variant both leave the variant unstated
 func ParsePin(s string) Pin {
-	code, variant, _ := strings.Cut(s, ":")
+	code, variant, named := strings.Cut(s, ":")
 	switch v := Variant(variant); v {
 	case Soft, Hard:
 		return Pin{Code: code, Variant: v}
+	case "":
+		if named {
+			log.Warn("provider variant is empty, so the rendition is unstated", "provider", s)
+		}
+	default:
+		log.Warn("provider variant is not soft or hard, so the rendition is unstated", "provider", s, "variant", variant)
 	}
 	return Pin{Code: code}
 }
@@ -60,13 +68,15 @@ type offer struct {
 // was picked from the menu once, and holding a later run to that would honor a
 // choice the user never stated
 func pinFor(config, flag, history string, widen bool) (Pin, bool) {
-	stated := flag != "" || config != ""
-	pinned := config
-	if flag != "" {
-		pinned = flag
-	}
+	// stated follows whichever source supplied the pin, not whether any of them
+	// named one: a config naming hop and a history carrying pewe pins pewe, and
+	// holding the run to pewe would honor a choice made for a different provider
+	pinned, stated := config, config != ""
 	if history != "" && flag == "" {
-		pinned = history
+		pinned, stated = history, false
+	}
+	if flag != "" {
+		pinned, stated = flag, true
 	}
 	return ParsePin(pinned), widen || !stated
 }

@@ -312,3 +312,51 @@ func TestUnknownSubcommand(t *testing.T) {
 		t.Errorf("a bare group errored: %v", err)
 	}
 }
+
+// config validate read the file, so a quality or a variant given on the command
+// line or in the environment reached the heuristic unchecked and was dropped in
+// silence
+func TestQualityAndVariantAreCheckedWhereverTheyCameFrom(t *testing.T) {
+	for _, q := range []string{"", "best", "worst", "1080p", "720"} {
+		if !miruro.ValidQuality(q) {
+			t.Errorf("quality %q is refused, want it accepted", q)
+		}
+	}
+	for _, q := range []string{"1080i", "veryhigh", "0p", "-3"} {
+		if miruro.ValidQuality(q) {
+			t.Errorf("quality %q is accepted, want it refused", q)
+		}
+	}
+
+	// a variant nothing implements leaves the rendition unstated rather than
+	// pinning one the provider never promised
+	for _, tc := range []struct {
+		in, code string
+		variant  Variant
+	}{
+		{"bonk:soft", "bonk", Soft},
+		{"bonk:hard", "bonk", Hard},
+		{"bonk:medium", "bonk", ""},
+		{"bonk:", "bonk", ""},
+		{"bonk", "bonk", ""},
+	} {
+		got := ParsePin(tc.in)
+		if got.Code != tc.code || got.Variant != tc.variant {
+			t.Errorf("ParsePin(%q) = %+v, want %s/%s", tc.in, got, tc.code, tc.variant)
+		}
+	}
+}
+
+// config show says it reports the settings a run would use, so a value a run
+// discards must not be shown as one it keeps
+func TestConfigShowReportsWhatARunWouldUse(t *testing.T) {
+	if got := fallbackRow(ParsePin(":hard")); !strings.Contains(got, "nothing is pinned") {
+		t.Errorf("a variant with no code showed as pinned: %q", got)
+	}
+	if got := fallbackRow(ParsePin("hop:soft")); !strings.Contains(got, "off unless") {
+		t.Errorf("a pinned provider showed as unpinned: %q", got)
+	}
+	if got := enabledNames([]string{"allanime", "miruro"}); len(got) != 1 || got[0] != "miruro" {
+		t.Errorf("enabledNames = %v, want only the backends a run resolves against", got)
+	}
+}

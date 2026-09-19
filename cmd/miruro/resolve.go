@@ -90,7 +90,12 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 			// a provider that fails to resolve is reported only when none served,
 			// so the pinned one says so as it happens and the rest under --verbose
 			if o.Code == pin.Code {
-				log.Warn("pinned provider did not resolve, trying the next", "provider", o.Code, "err", err)
+				// with the walk held to this provider there is no next to try
+				what := "trying the next"
+				if !s.fallback {
+					what = "and the walk is held to it"
+				}
+				log.Warn("pinned provider did not resolve, "+what, "provider", o.Code, "err", err)
 			} else {
 				log.Debug("provider did not resolve, trying the next", "provider", o.Code, "err", err)
 			}

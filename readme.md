@@ -1,6 +1,6 @@
 # Miruro
 
-Another CLI tool for weebs?
+A command line anime player, built on the miruro.tv API.
 
 Binary Cache:
 

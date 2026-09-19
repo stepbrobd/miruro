@@ -86,7 +86,8 @@ func (m downloads) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m downloads) View() string {
 	var b strings.Builder
-	for i, label := range m.labels {
+	shown, hidden := m.fit()
+	for i, label := range m.labels[:shown] {
 		name := fmt.Sprintf("%-*s", m.width, label)
 		switch {
 		case m.fin[i] && m.errs[i] != nil:
@@ -102,10 +103,45 @@ func (m downloads) View() string {
 			b.WriteByte('\n')
 		}
 	}
+	// a list longer than the screen would otherwise push the rest of the view off
+	// the bottom, taking the log window with it, and the run would end on a
+	// frozen screen that never said where anything landed
+	if hidden > 0 {
+		fmt.Fprintf(&b, "  %s\n", plural(hidden, "more episode", "more episodes"))
+	}
 	// a retry or a dropped stream writes to the log while the bars are up, so it
 	// goes under them rather than through them
 	writeLines(&b, m.seen, m.term)
 	return bound(b.String(), m.term, m.rows)
+}
+
+// fit is how many task rows there is room for, and how many that leaves over
+// the log window and the count of what is hidden each need a row of their own,
+// so they are reserved before the tasks take the rest
+func (m downloads) fit() (shown, hidden int) {
+	if m.rows <= 0 {
+		return len(m.labels), 0
+	}
+	room := m.rows - len(m.seen)
+	if len(m.labels) > room {
+		// one of the remaining rows goes to saying how many are not drawn
+		room--
+	}
+	if room < 1 {
+		room = 1
+	}
+	if room >= len(m.labels) {
+		return len(m.labels), 0
+	}
+	return room, len(m.labels) - room
+}
+
+// plural counts a thing, so a view of one does not report it as several
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // Downloads runs labeled tasks with a worker limit, rendering one live progress

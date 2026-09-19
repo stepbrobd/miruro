@@ -263,7 +263,7 @@ func TestPinFor(t *testing.T) {
 		{name: "flag beats config", config: "hop:soft", flag: "bee:hard", code: "bee"},
 		{name: "history alone still walks", history: "pewe", code: "pewe", fallback: true},
 		{name: "history fills in for a bare config", history: "pewe", code: "pewe", fallback: true},
-		{name: "history beats config but does not hold", config: "hop:soft", history: "pewe", code: "pewe"},
+		{name: "history beats config and does not hold", config: "hop:soft", history: "pewe", code: "pewe", fallback: true},
 		{name: "flag beats history", flag: "bee:hard", history: "pewe", code: "bee"},
 		{name: "fallback widens a stated one", config: "hop:soft", widen: true, code: "hop", fallback: true},
 	} {

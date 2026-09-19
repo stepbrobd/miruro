@@ -81,6 +81,12 @@ func run(cmd *cobra.Command, args []string) error {
 	if flagDub {
 		cfg.Dub = true
 	}
+	// config validate reads the file, so a quality given on the command line or
+	// in the environment reached the heuristic unchecked and was dropped in
+	// silence when it named a height no provider carries
+	if !miruro.ValidQuality(cfg.Quality) {
+		return fmt.Errorf("quality %q is not best, worst, or a height such as 1080p", cfg.Quality)
+	}
 
 	st, err := openStore()
 	if err != nil {

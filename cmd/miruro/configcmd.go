@@ -55,6 +55,8 @@ func init() {
 // file documents the surface without changing any behavior
 const template = `# miruro configuration
 # every key is optional, and the value shown is the default
+# each key is overridden by MIRURO_ and the key in upper case, so MIRURO_QUALITY
+# overrides quality, and a command line flag overrides both
 
 # player to launch, mpv or iina, empty picks whichever is installed
 # player = ""
@@ -124,22 +126,41 @@ func runConfigShow(*cobra.Command, []string) error {
 
 	c := loadConfig()
 	return table(func(w *tabwriter.Writer) {
-		fmt.Fprintf(w, "player\t%s\n", or(c.Player, "auto"))
+		// a run ignores a prefer it cannot launch, so the row says what it would take
+		player := c.Player
+		if play.Kind(player) != play.MPV && play.Kind(player) != play.IINA {
+			player = "auto"
+		}
+		fmt.Fprintf(w, "player\t%s\n", player)
 		fmt.Fprintf(w, "quality\t%s\n", c.Quality)
-		fmt.Fprintf(w, "provider\t%s\n", or(c.Provider, "ask"))
-		fmt.Fprintf(w, "fallback\t%s\n", fallbackRow(c.Provider))
+		pin := ParsePin(c.Provider)
+		fmt.Fprintf(w, "provider\t%s\n", or(pin.String(), "ask"))
+		fmt.Fprintf(w, "fallback\t%s\n", fallbackRow(pin))
 		fmt.Fprintf(w, "lang\t%s\n", or(c.Lang, "any"))
 		fmt.Fprintf(w, "download\t%s\n", c.DownloadDir)
 		fmt.Fprintf(w, "dub\t%v\n", c.Dub)
 		fmt.Fprintf(w, "mirrors\t%s\n", or(strings.Join(c.Mirrors, " "), "built in"))
-		fmt.Fprintf(w, "backends\t%s\n", or(strings.Join(c.Backends, " "), "all"))
+		fmt.Fprintf(w, "backends\t%s\n", or(strings.Join(enabledNames(c.Backends), " "), "all"))
 	})
 }
 
 // fallbackRow says whether a run would walk past the configured provider, since
 // pinning one is what turns the walk off and the config names no such key
-func fallbackRow(provider string) string {
-	if provider == "" {
+// enabledNames is the backends a run would keep, since one it cannot resolve is
+// dropped and a list of only those falls back to every backend
+func enabledNames(named []string) []string {
+	var out []string
+	known := backendNames()
+	for _, b := range named {
+		if slices.Contains(known, strings.TrimSpace(b)) {
+			out = append(out, strings.TrimSpace(b))
+		}
+	}
+	return out
+}
+
+func fallbackRow(pin Pin) string {
+	if pin.Code == "" {
 		return "on, nothing is pinned"
 	}
 	return "off unless -f, since a provider is pinned"

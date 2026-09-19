@@ -45,9 +45,20 @@ func Select[T any](title string, items []T, label func(T) string) (T, error) {
 // width the terminal may not have: it trims the legend at some widths and not
 // at others, and a row wider than the terminal wraps, which the renderer counts
 // as one row while it occupies two
-func drive(form *huh.Form) error {
-	final, err := tea.NewProgram(bounded{form: form}).Run()
-	if err != nil {
+func drive(form *huh.Form, opts ...tea.ProgramOption) error {
+	// huh wires these in the Run this replaces, and NewForm leaves them nil, so
+	// a form that reaches them never quits: the state goes to completed, the
+	// view blanks, and the loop spins with the terminal still in raw mode
+	form.SubmitCmd, form.CancelCmd = tea.Quit, tea.Quit
+	// the picker belongs on stderr, where huh puts it, so a run whose stdout is
+	// redirected still shows it and does not write it into the file
+	opts = append([]tea.ProgramOption{tea.WithOutput(os.Stderr)}, opts...)
+	final, err := tea.NewProgram(bounded{form: form}, opts...).Run()
+	switch {
+	case errors.Is(err, tea.ErrInterrupted):
+		// a signal from outside the terminal is the user aborting, not a crash
+		return ErrAborted
+	case err != nil:
 		return err
 	}
 	if final.(bounded).form.State != huh.StateCompleted {
