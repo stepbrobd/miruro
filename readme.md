@@ -1,6 +1,6 @@
 # Miruro
 
-A command line anime player, built on the miruro.tv API.
+Don't ask, just try or read the code ;)
 
 Binary Cache:
 
