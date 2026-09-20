@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // mpv is the real consumer of the proxy and a decoy-disguised segment is the
@@ -68,7 +68,7 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 	defer cancel()
 	play := exec.CommandContext(ctx, "mpv", "--no-config", "--vo=null", "--ao=null",
 		"--frames=1", "--msg-level=all=error",
-		px.URL(miruro.Stream{URL: base + "/media.m3u8", Kind: miruro.HLS}))
+		px.URL(upstream.Stream{URL: base + "/media.m3u8", Kind: upstream.HLS}))
 	if out, err := play.CombinedOutput(); err != nil {
 		t.Fatalf("mpv could not play the proxied stream: %v: %s", err, out)
 	}
@@ -76,9 +76,9 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 
 func TestProxyServesNormalizedHLS(t *testing.T) {
 	mux2 := http.NewServeMux()
-	upstream := httptest.NewServer(mux2)
-	defer upstream.Close()
-	up := upstream.URL
+	origin := httptest.NewServer(mux2)
+	defer origin.Close()
+	up := origin.URL
 	mux2.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Referer") != "https://ref/" {
 			t.Errorf("referer not forwarded upstream: %q", r.Header.Get("Referer"))
@@ -97,7 +97,7 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 	}
 	defer px.Close()
 
-	playlistURL := px.URL(miruro.Stream{URL: up + "/media.m3u8", Kind: miruro.HLS, Referer: "https://ref/"})
+	playlistURL := px.URL(upstream.Stream{URL: up + "/media.m3u8", Kind: upstream.HLS, Referer: "https://ref/"})
 	body := httpGetString(t, playlistURL)
 	if strings.Contains(body, up) {
 		t.Errorf("segment URL not rewritten to proxy:\n%s", body)
@@ -113,7 +113,7 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 // a playlist served through a redirect resolves its relative children against
 // the final URL rather than the one first requested
 func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/a/pl.m3u8":
 			http.Redirect(w, r, "/b/pl.m3u8", http.StatusFound)
@@ -121,7 +121,7 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 			fmt.Fprint(w, "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXT-X-ENDLIST\n")
 		}
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -129,7 +129,7 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 	}
 	defer px.Close()
 
-	body := httpGetString(t, px.URL(miruro.Stream{URL: upstream.URL + "/a/pl.m3u8", Kind: miruro.HLS}))
+	body := httpGetString(t, px.URL(upstream.Stream{URL: origin.URL + "/a/pl.m3u8", Kind: upstream.HLS}))
 	seg := firstProxiedLine(t, body, px.base)
 	u, err := url.Parse(seg)
 	if err != nil {
@@ -148,14 +148,14 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 // the proxy must still fetch the whole segment and strip the decoy rather than
 // relay a partial that keeps the image prefix
 func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Range") != "" {
 			// a cdn honoring the range would drop the leading framing
 			w.WriteHeader(http.StatusPartialContent)
 		}
 		w.Write(append([]byte("\x89PNG-decoy-bytes"), tsBlob(12)...))
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -163,7 +163,7 @@ func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 	}
 	defer px.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, px.proxied(upstream.URL+"/seg0.ts", "", segment), nil)
+	req, _ := http.NewRequest(http.MethodGet, px.proxied(origin.URL+"/seg0.ts", "", segment), nil)
 	req.Header.Set("Range", "bytes=0-")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -181,14 +181,14 @@ func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 // or a download worker
 func TestProxyBoundsStalledSegment(t *testing.T) {
 	stall := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		<-stall
 	}))
 	// the handler blocks until stall closes, and Close waits on the handler,
 	// so this defer has to run first
-	defer upstream.Close()
+	defer origin.Close()
 	defer close(stall)
 
 	// the proxy is built by hand so the short deadline is set before it serves
@@ -197,7 +197,7 @@ func TestProxyBoundsStalledSegment(t *testing.T) {
 	defer srv.Close()
 	px.base = srv.URL + "/tok"
 
-	resp, err := http.Get(px.proxied(upstream.URL+"/seg0.ts", "", segment))
+	resp, err := http.Get(px.proxied(origin.URL+"/seg0.ts", "", segment))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,10 +210,10 @@ func TestProxyBoundsStalledSegment(t *testing.T) {
 // a hostile or broken upstream serving an endless playlist must get a 502
 // rather than buffer until memory runs out
 func TestProxyRefusesOversizedPlaylist(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.CopyN(w, zeros{}, maxPlaylistBody+1)
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -221,7 +221,7 @@ func TestProxyRefusesOversizedPlaylist(t *testing.T) {
 	}
 	defer px.Close()
 
-	resp, err := http.Get(px.URL(miruro.Stream{URL: upstream.URL + "/media.m3u8", Kind: miruro.HLS}))
+	resp, err := http.Get(px.URL(upstream.Stream{URL: origin.URL + "/media.m3u8", Kind: upstream.HLS}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,10 +233,10 @@ func TestProxyRefusesOversizedPlaylist(t *testing.T) {
 
 func TestProxyRelaysRange(t *testing.T) {
 	full := bytes.Repeat([]byte("A"), 1000)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeContent(w, r, "x.bin", time.Time{}, bytes.NewReader(full))
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -244,7 +244,7 @@ func TestProxyRelaysRange(t *testing.T) {
 	}
 	defer px.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, px.Opaque(upstream.URL+"/x.bin", ""), nil)
+	req, _ := http.NewRequest(http.MethodGet, px.Opaque(origin.URL+"/x.bin", ""), nil)
 	req.Header.Set("Range", "bytes=10-19")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -282,7 +282,7 @@ func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
 	}
 	defer px.Close()
 
-	resp, err := http.Get(px.URL(miruro.Stream{URL: cdn.URL + "/ep.mp4", Kind: miruro.MP4}))
+	resp, err := http.Get(px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,14 +360,14 @@ func firstProxiedLine(t *testing.T, body, base string) string {
 // so the proxy has to carry a readable name past the base64 payload without
 // losing the target
 func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Referer") == "" {
 			http.Error(w, "referer required", http.StatusForbidden)
 			return
 		}
 		io.WriteString(w, "WEBVTT\n")
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -375,11 +375,11 @@ func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
 	}
 	defer px.Close()
 
-	subs := px.Subtitles([]miruro.Subtitle{
-		{File: upstream.URL + "/track.srt", Label: "Portugues (Brasil)", Lang: "pt-BR"},
-		{File: upstream.URL + "/track", Lang: "en"},
-		{File: upstream.URL + "/../track.vtt", Label: "../../escape"},
-	}, upstream.URL+"/")
+	subs := px.Subtitles([]upstream.Subtitle{
+		{File: origin.URL + "/track.srt", Label: "Portugues (Brasil)", Lang: "pt-BR"},
+		{File: origin.URL + "/track", Lang: "en"},
+		{File: origin.URL + "/../track.vtt", Label: "../../escape"},
+	}, origin.URL+"/")
 
 	want := []string{"Portugues (Brasil).srt", "en.vtt", "-..-escape.vtt"}
 	for i, s := range subs {
@@ -402,7 +402,7 @@ func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
 // the downloader retries on the status the proxy answers with, so flattening
 // every upstream failure to 502 would make a dead url look worth retrying
 func TestProxyMirrorsUpstreamStatus(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/gone.ts":
 			http.Error(w, "gone", http.StatusNotFound)
@@ -412,7 +412,7 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 			http.Error(w, "upstream unreachable", http.StatusBadGateway)
 		}
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -425,7 +425,7 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 		"/denied.ts": http.StatusForbidden,
 		"/dead.ts":   http.StatusBadGateway,
 	} {
-		resp, err := http.Get(px.proxied(upstream.URL+path, "", segment))
+		resp, err := http.Get(px.proxied(origin.URL+path, "", segment))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -440,7 +440,7 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 // and a subtitle sidecar must not raise it
 func TestProxyServedCountsPictureOnly(t *testing.T) {
 	seg := tsBlob(12)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, ".m3u8"):
 			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s\n#EXT-X-ENDLIST\n", "seg0.ts")
@@ -450,7 +450,7 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 			io.WriteString(w, "WEBVTT\n")
 		}
 	}))
-	defer upstream.Close()
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -458,13 +458,13 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 	}
 	defer px.Close()
 
-	body := httpGetString(t, px.URL(miruro.Stream{URL: upstream.URL + "/media.m3u8", Kind: miruro.HLS}))
+	body := httpGetString(t, px.URL(upstream.Stream{URL: origin.URL + "/media.m3u8", Kind: upstream.HLS}))
 	if px.Served() != 0 {
 		t.Errorf("a playlist raised Served to %d", px.Served())
 	}
 
-	httpGetBytes(t, px.Opaque(upstream.URL+"/key.bin", ""))
-	httpGetString(t, px.Subtitles([]miruro.Subtitle{{File: upstream.URL + "/en.vtt", Lang: "en"}}, "")[0].File)
+	httpGetBytes(t, px.Opaque(origin.URL+"/key.bin", ""))
+	httpGetString(t, px.Subtitles([]upstream.Subtitle{{File: origin.URL + "/en.vtt", Lang: "en"}}, "")[0].File)
 	if px.Served() != 0 {
 		t.Errorf("a key or a sidecar raised Served to %d", px.Served())
 	}
@@ -474,7 +474,7 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 		t.Errorf("a segment left Served at %d, want 1", px.Served())
 	}
 
-	httpGetBytes(t, px.URL(miruro.Stream{URL: upstream.URL + "/video.mp4", Kind: miruro.MP4}))
+	httpGetBytes(t, px.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
 	if px.Served() != 2 {
 		t.Errorf("an mp4 body left Served at %d, want 2", px.Served())
 	}
@@ -483,8 +483,8 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 // a host that answers 200 with nothing is a dead stream, and counting it would
 // tell the caller the player started
 func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer upstream.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer origin.Close()
 
 	px, err := StartProxy(context.Background())
 	if err != nil {
@@ -492,7 +492,7 @@ func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
 	}
 	defer px.Close()
 
-	httpGetBytes(t, px.URL(miruro.Stream{URL: upstream.URL + "/video.mp4", Kind: miruro.MP4}))
+	httpGetBytes(t, px.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
 	if px.Served() != 0 {
 		t.Errorf("an empty body left Served at %d, want 0", px.Served())
 	}
@@ -522,7 +522,7 @@ func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
 	body := make(chan struct{})
 	go func() {
 		defer close(body)
-		resp, err := http.Get(px.Stream(miruro.Stream{URL: cdn.URL + "/v.mp4", Kind: miruro.MP4}).URL)
+		resp, err := http.Get(px.Stream(upstream.Stream{URL: cdn.URL + "/v.mp4", Kind: upstream.MP4}).URL)
 		if err != nil {
 			return
 		}
@@ -575,19 +575,19 @@ func TestProxyRefused(t *testing.T) {
 	}
 
 	// a playlist the upstream refuses is not picture, so it counts as neither
-	get(px.Stream(miruro.Stream{URL: cdn.URL + "/gone.m3u8", Kind: miruro.HLS}).URL)
+	get(px.Stream(upstream.Stream{URL: cdn.URL + "/gone.m3u8", Kind: upstream.HLS}).URL)
 	if px.Refused() != 0 || px.Served() != 0 {
 		t.Errorf("a refused playlist counted as %d served and %d refused, want neither",
 			px.Served(), px.Refused())
 	}
 
-	get(px.Stream(miruro.Stream{URL: cdn.URL + "/gone.mp4", Kind: miruro.MP4}).URL)
+	get(px.Stream(upstream.Stream{URL: cdn.URL + "/gone.mp4", Kind: upstream.MP4}).URL)
 	if px.Refused() != 1 {
 		t.Errorf("Refused = %d after one refused media body, want 1", px.Refused())
 	}
 
 	// an upstream that answers 200 with nothing gave the player no picture
-	get(px.Stream(miruro.Stream{URL: cdn.URL + "/empty.mp4", Kind: miruro.MP4}).URL)
+	get(px.Stream(upstream.Stream{URL: cdn.URL + "/empty.mp4", Kind: upstream.MP4}).URL)
 	if px.Refused() != 2 || px.Served() != 0 {
 		t.Errorf("an empty body counted as %d served and %d refused, want 0 and 2",
 			px.Served(), px.Refused())
@@ -761,7 +761,7 @@ func TestProxyCountsARelayedBodyOnce(t *testing.T) {
 	}
 	defer px.Close()
 
-	resp, err := http.Get(px.URL(miruro.Stream{URL: cdn.URL + "/ep.mp4", Kind: miruro.MP4}))
+	resp, err := http.Get(px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
 	if err != nil {
 		t.Fatal(err)
 	}

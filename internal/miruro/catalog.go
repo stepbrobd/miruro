@@ -1,4 +1,4 @@
-package mirurotv
+package miruro
 
 import (
 	"cmp"
@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strconv"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // skipEntry is one raw aniskip row
@@ -33,14 +33,14 @@ func (e skipEntry) plausible() bool {
 		return true
 	}
 	mid := e.Length / 2
-	if miruro.SkipKind(e.Type) == miruro.Outro {
+	if upstream.SkipKind(e.Type) == upstream.Outro {
 		return e.Start >= mid
 	}
 	return e.Start < mid
 }
 
 // Episodes fetches the provider and episode map for a title
-func (c *Client) Episodes(ctx context.Context, m miruro.Media) (*miruro.Catalog, error) {
+func (c *Client) Episodes(ctx context.Context, m upstream.Media) (*upstream.Catalog, error) {
 	body, err := c.pipe(ctx, "episodes", map[string]string{"anilistId": strconv.Itoa(m.ID)})
 	if err != nil {
 		return nil, err
@@ -53,8 +53,8 @@ func (c *Client) Episodes(ctx context.Context, m miruro.Media) (*miruro.Catalog,
 		} `json:"mappings"`
 		Providers map[string]struct {
 			Episodes struct {
-				Sub []miruro.Episode `json:"sub"`
-				Dub []miruro.Episode `json:"dub"`
+				Sub []upstream.Episode `json:"sub"`
+				Dub []upstream.Episode `json:"dub"`
 			} `json:"episodes"`
 		} `json:"providers"`
 	}
@@ -62,12 +62,12 @@ func (c *Client) Episodes(ctx context.Context, m miruro.Media) (*miruro.Catalog,
 		return nil, err
 	}
 
-	cat := &miruro.Catalog{
+	cat := &upstream.Catalog{
 		Title:     raw.Mappings.Title,
-		Providers: make(map[string]miruro.Provider, len(raw.Providers)),
+		Providers: make(map[string]upstream.Provider, len(raw.Providers)),
 	}
 	for code, p := range raw.Providers {
-		cat.Providers[code] = miruro.Provider{Code: code, Backend: c, Sub: p.Episodes.Sub, Dub: p.Episodes.Dub}
+		cat.Providers[code] = upstream.Provider{Code: code, Backend: c, Sub: p.Episodes.Sub, Dub: p.Episodes.Dub}
 	}
 	cat.Aniskip = bestSkips(raw.Mappings.Aniskip)
 	return cat, nil
@@ -78,15 +78,15 @@ func (c *Client) Episodes(ctx context.Context, m miruro.Media) (*miruro.Catalog,
 // off-enum types such as recap and mixed are dropped, rows whose position
 // contradicts their kind are dropped, and among what remains for one episode and
 // kind the highest-voted row wins
-func bestSkips(rows []skipEntry) []miruro.SkipRange {
+func bestSkips(rows []skipEntry) []upstream.SkipRange {
 	type key struct {
 		ep   float64
-		kind miruro.SkipKind
+		kind upstream.SkipKind
 	}
 	best := map[key]skipEntry{}
 	for _, r := range rows {
-		kind := miruro.SkipKind(r.Type)
-		if kind != miruro.Intro && kind != miruro.Outro || !r.plausible() {
+		kind := upstream.SkipKind(r.Type)
+		if kind != upstream.Intro && kind != upstream.Outro || !r.plausible() {
 			continue
 		}
 		k := key{r.Episode, kind}
@@ -95,11 +95,11 @@ func bestSkips(rows []skipEntry) []miruro.SkipRange {
 		}
 	}
 
-	out := make([]miruro.SkipRange, 0, len(best))
+	out := make([]upstream.SkipRange, 0, len(best))
 	for k, r := range best {
-		out = append(out, miruro.SkipRange{Episode: k.ep, Kind: k.kind, Start: r.Start, End: r.End})
+		out = append(out, upstream.SkipRange{Episode: k.ep, Kind: k.kind, Start: r.Start, End: r.End})
 	}
-	slices.SortFunc(out, func(a, b miruro.SkipRange) int {
+	slices.SortFunc(out, func(a, b upstream.SkipRange) int {
 		return cmp.Or(cmp.Compare(a.Episode, b.Episode), cmp.Compare(a.Start, b.Start))
 	})
 	return out

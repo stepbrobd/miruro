@@ -10,16 +10,16 @@ import (
 
 	"github.com/adrg/xdg"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 type entry struct {
-	AnilistID int             `json:"anilistId"`
-	Title     string          `json:"title"`
-	Provider  string          `json:"provider"`
-	Category  miruro.Category `json:"category"`
-	Episode   float64         `json:"episode"`
-	Updated   time.Time       `json:"updated"`
+	AnilistID int               `json:"anilistId"`
+	Title     string            `json:"title"`
+	Provider  string            `json:"provider"`
+	Category  upstream.Category `json:"category"`
+	Episode   float64           `json:"episode"`
+	Updated   time.Time         `json:"updated"`
 }
 
 type store struct {
@@ -61,11 +61,11 @@ func (s *store) load() ([]entry, error) {
 // Category also names the ssub rendition, which is derived per resolution and
 // never a top level choice, so an entry carrying it would ask every hardsub
 // provider for a rendition it does not have and write itself back unchanged
-func audio(cat miruro.Category) miruro.Category {
-	if cat == miruro.Dub {
-		return miruro.Dub
+func audio(cat upstream.Category) upstream.Category {
+	if cat == upstream.Dub {
+		return upstream.Dub
 	}
-	return miruro.Sub
+	return upstream.Sub
 }
 
 // save upserts by AnilistID and keeps the most recent entry first
@@ -103,7 +103,7 @@ func segmentsRoot() string {
 // category, provider and quality are all part of the key because each selects a
 // different rendition, and reusing one for another would splice a video out of
 // the wrong source
-func cacheDir(anilistID int, ep float64, category miruro.Category, provider, quality string) string {
+func cacheDir(anilistID int, ep float64, category upstream.Category, provider, quality string) string {
 	if quality == "" {
 		quality = "best"
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func TestParsePin(t *testing.T) {
@@ -54,7 +54,7 @@ func TestPinString(t *testing.T) {
 	}
 }
 
-var testCaps = miruro.Capabilities{
+var testCaps = upstream.Capabilities{
 	"kiwi": {Hard: true},
 	"bee":  {Soft: true},
 	"bonk": {Hard: true, Soft: true},
@@ -62,10 +62,10 @@ var testCaps = miruro.Capabilities{
 	"void": {},
 }
 
-func providers(codes ...string) []miruro.Provider {
-	out := make([]miruro.Provider, len(codes))
+func providers(codes ...string) []upstream.Provider {
+	out := make([]upstream.Provider, len(codes))
 	for i, c := range codes {
-		out[i] = miruro.Provider{Code: c}
+		out[i] = upstream.Provider{Code: c}
 	}
 	return out
 }
@@ -74,7 +74,7 @@ func providers(codes ...string) []miruro.Provider {
 // one
 // a provider the table omits must not be labeled with a claim it never made
 func TestOffers(t *testing.T) {
-	rows := offers(providers("kiwi", "bee", "bonk", "void", "ANIMEDUNYA"), testCaps, miruro.Sub, Pin{})
+	rows := offers(providers("kiwi", "bee", "bonk", "void", "ANIMEDUNYA"), testCaps, upstream.Sub, Pin{})
 	var got []string
 	for _, o := range rows {
 		got = append(got, o.Pin.String())
@@ -105,7 +105,7 @@ func TestOffers(t *testing.T) {
 // the table describes the two sub renditions and says nothing about dub, so a
 // variant chosen for a sub run must not reach one provider's dub and no other's
 func TestOffersForDub(t *testing.T) {
-	rows := offers(providers("kiwi", "bonk"), testCaps, miruro.Dub, Pin{"bonk", Hard})
+	rows := offers(providers("kiwi", "bonk"), testCaps, upstream.Dub, Pin{"bonk", Hard})
 	if len(rows) != 2 {
 		t.Fatalf("offers = %d rows, want one per provider", len(rows))
 	}
@@ -113,7 +113,7 @@ func TestOffersForDub(t *testing.T) {
 		if o.declared || o.Variant != "" {
 			t.Errorf("%q = %+v, want a bare row untouched by the sub pin", o.Code, o)
 		}
-		if got := o.source(miruro.Dub); got.Category != miruro.Dub || !got.Attach {
+		if got := o.source(upstream.Dub); got.Category != upstream.Dub || !got.Attach {
 			t.Errorf("%q source = %+v, want the dub category with its subtitles", o.Code, got)
 		}
 	}
@@ -124,7 +124,7 @@ func TestOffersForDub(t *testing.T) {
 // an explicit code:hard still has to survive, since it is the only correction
 // left when the table cannot be reached
 func TestOffersWithoutTheTable(t *testing.T) {
-	rows := offers(providers("kiwi", "bonk"), nil, miruro.Sub, Pin{})
+	rows := offers(providers("kiwi", "bonk"), nil, upstream.Sub, Pin{})
 	if len(rows) != 2 {
 		t.Fatalf("offers = %d rows, want one per provider", len(rows))
 	}
@@ -132,16 +132,16 @@ func TestOffersWithoutTheTable(t *testing.T) {
 		if o.declared || o.Variant != "" {
 			t.Errorf("%q = %+v, want an undeclared bare row", o.Code, o)
 		}
-		if got := o.source(miruro.Sub); got.Category != miruro.Sub || !got.Attach {
+		if got := o.source(upstream.Sub); got.Category != upstream.Sub || !got.Attach {
 			t.Errorf("%q source = %+v, want the sub rendition with its subtitles", o.Code, got)
 		}
 	}
 
-	pinned := offers(providers("kiwi", "bonk"), nil, miruro.Sub, Pin{"bonk", Hard})
+	pinned := offers(providers("kiwi", "bonk"), nil, upstream.Sub, Pin{"bonk", Hard})
 	if got := pinned[1]; got.Variant != Hard {
 		t.Errorf("pinned row = %+v, want the explicit hard variant carried through", got)
 	}
-	if got := pinned[1].source(miruro.Sub); got.Attach {
+	if got := pinned[1].source(upstream.Sub); got.Attach {
 		t.Error("an explicit hard pin still attached the subtitle file")
 	}
 }
@@ -153,38 +153,38 @@ func TestOfferSource(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		o    offer
-		cat  miruro.Category
+		cat  upstream.Category
 		want source
 	}{
 		{
 			"declared hard asks for the burned-in rendition and drops the file",
-			offer{Pin: Pin{"bonk", Hard}, declared: true}, miruro.Sub,
-			source{Pin: Pin{"bonk", Hard}, Category: miruro.Sub},
+			offer{Pin: Pin{"bonk", Hard}, declared: true}, upstream.Sub,
+			source{Pin: Pin{"bonk", Hard}, Category: upstream.Sub},
 		},
 		{
 			"declared soft asks for the detachable rendition",
-			offer{Pin: Pin{"bonk", Soft}, declared: true}, miruro.Sub,
-			source{Pin: Pin{"bonk", Soft}, Category: miruro.Ssub, Attach: true},
+			offer{Pin: Pin{"bonk", Soft}, declared: true}, upstream.Sub,
+			source{Pin: Pin{"bonk", Soft}, Category: upstream.Ssub, Attach: true},
 		},
 		{
 			"undeclared keeps the sub rendition and its file",
-			offer{Pin: Pin{"ANIMEDUNYA", Soft}}, miruro.Sub,
-			source{Pin: Pin{"ANIMEDUNYA", Soft}, Category: miruro.Sub, Attach: true},
+			offer{Pin: Pin{"ANIMEDUNYA", Soft}}, upstream.Sub,
+			source{Pin: Pin{"ANIMEDUNYA", Soft}, Category: upstream.Sub, Attach: true},
 		},
 		{
 			"dub never becomes ssub and keeps its tracks",
-			offer{Pin: Pin{"bonk", Soft}}, miruro.Dub,
-			source{Pin: Pin{"bonk", Soft}, Category: miruro.Dub, Attach: true},
+			offer{Pin: Pin{"bonk", Soft}}, upstream.Dub,
+			source{Pin: Pin{"bonk", Soft}, Category: upstream.Dub, Attach: true},
 		},
 		{
 			"a hard row on dub keeps them too, since the variant is not about dub",
-			offer{Pin: Pin{"bonk", Hard}, declared: true}, miruro.Dub,
-			source{Pin: Pin{"bonk", Hard}, Category: miruro.Dub, Attach: true},
+			offer{Pin: Pin{"bonk", Hard}, declared: true}, upstream.Dub,
+			source{Pin: Pin{"bonk", Hard}, Category: upstream.Dub, Attach: true},
 		},
 		{
 			"an undeclared provider honors an explicit hard pin",
-			offer{Pin: Pin{"ANIMEDUNYA", Hard}}, miruro.Sub,
-			source{Pin: Pin{"ANIMEDUNYA", Hard}, Category: miruro.Sub},
+			offer{Pin: Pin{"ANIMEDUNYA", Hard}}, upstream.Sub,
+			source{Pin: Pin{"ANIMEDUNYA", Hard}, Category: upstream.Sub},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,7 +196,7 @@ func TestOfferSource(t *testing.T) {
 }
 
 func TestOrderPinned(t *testing.T) {
-	rows := offers(providers("kiwi", "bee", "bonk"), testCaps, miruro.Sub, Pin{})
+	rows := offers(providers("kiwi", "bee", "bonk"), testCaps, upstream.Sub, Pin{})
 	for _, tc := range []struct {
 		name string
 		pin  Pin
@@ -228,12 +228,12 @@ func TestOrderPinned(t *testing.T) {
 }
 
 func TestCandidates(t *testing.T) {
-	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
-		"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "k1", Number: 1}}},
-		"twin": {Code: "twin", Sub: []miruro.Episode{{ID: "t1", Number: 1}, {ID: "t2", Number: 2}}},
+	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
+		"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "k1", Number: 1}}},
+		"twin": {Code: "twin", Sub: []upstream.Episode{{ID: "t1", Number: 1}, {ID: "t2", Number: 2}}},
 	}}
 
-	got, err := candidates(cat, 1, miruro.Sub, testCaps)
+	got, err := candidates(cat, 1, upstream.Sub, testCaps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,10 +242,10 @@ func TestCandidates(t *testing.T) {
 	}
 
 	// an episode only an embed carries is not the same as an episode nobody has
-	if _, err := candidates(cat, 2, miruro.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "embed") {
+	if _, err := candidates(cat, 2, upstream.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "embed") {
 		t.Errorf("err = %v, want the embed reason", err)
 	}
-	if _, err := candidates(cat, 3, miruro.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "no provider") {
+	if _, err := candidates(cat, 3, upstream.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "no provider") {
 		t.Errorf("err = %v, want the missing-episode reason", err)
 	}
 }

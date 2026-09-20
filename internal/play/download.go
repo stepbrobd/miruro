@@ -17,7 +17,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // Progress reports bytes written so far and the total when known
@@ -32,7 +32,7 @@ type Progress func(done, total int64)
 // it reports how many sidecars failed so the caller can summarize the run, and
 // a failure is warned rather than returned because the video is the deliverable
 // and an episode already on disk must not be discarded over a missing sidecar
-func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miruro.Subtitle, dir, name, cache string, prog Progress) (int, error) {
+func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []upstream.Subtitle, dir, name, cache string, prog Progress) (int, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
@@ -47,11 +47,11 @@ func Download(ctx context.Context, hc *http.Client, s miruro.Stream, subs []miru
 	}
 
 	switch s.Kind {
-	case miruro.MP4:
+	case upstream.MP4:
 		if err := grab(ctx, hc, s.URL, dest, prog, mp4Head); err != nil {
 			return 0, err
 		}
-	case miruro.HLS:
+	case upstream.HLS:
 		if err := hls(ctx, hc, s.URL, dest, cache, prog); err != nil {
 			return 0, err
 		}
@@ -287,7 +287,7 @@ func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string)
 	return os.Rename(part, dest)
 }
 
-func subLabel(s miruro.Subtitle) string {
+func subLabel(s upstream.Subtitle) string {
 	if s.Label != "" {
 		return s.Label
 	}
@@ -298,7 +298,7 @@ func subLabel(s miruro.Subtitle) string {
 // english track, which is the shape a player auto-loads
 // seen counts the tags already used, because two tracks can name one language
 // and the second must not overwrite the first
-func sidecar(s miruro.Subtitle, seen map[string]int) string {
+func sidecar(s upstream.Subtitle, seen map[string]int) string {
 	tag := s.Lang
 	if tag == "" {
 		tag = s.Label

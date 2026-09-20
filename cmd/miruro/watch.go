@@ -8,9 +8,9 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/play"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/ui"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float64, pin Pin, player play.Player) error {
@@ -33,7 +33,7 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 		// a transient fallback serves another provider but must not overwrite the pin
 		pin = carry
 
-		var skips []miruro.SkipRange
+		var skips []upstream.SkipRange
 		if flagSkip {
 			skips = episodeSkips(s.cat, ep)
 		}
@@ -45,7 +45,7 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 
 		stage := playback{
 			runState: s, px: px, pin: pin, ep: ep, kind: player.Kind,
-			launch: func(pctx context.Context, stream miruro.Stream, subs []miruro.Subtitle) error {
+			launch: func(pctx context.Context, stream upstream.Stream, subs []upstream.Subtitle) error {
 				return player.Play(pctx, px.Stream(stream), px.Subtitles(subs, stream.Referer), skips, mediaTitle)
 			},
 		}

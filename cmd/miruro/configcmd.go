@@ -13,9 +13,9 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/backend/mirurotv"
-	"ysun.co/miruro/play"
+	"ysun.co/miruro/internal/miruro"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/upstream"
 )
 
 var configCmd = &cobra.Command{
@@ -160,7 +160,7 @@ func enabledNames(named []string) []string {
 // qualityRow reports the quality a run would use, and says so when a run would
 // refuse to start on it instead, since the environment reaches here unchecked
 func qualityRow(q string) string {
-	if !miruro.ValidQuality(q) {
+	if !upstream.ValidQuality(q) {
 		return q + " (a run refuses this)"
 	}
 	return or(q, "best")
@@ -224,7 +224,7 @@ func check(md toml.MetaData, c config) []string {
 	if c.Player != "" && play.Kind(c.Player) != play.MPV && play.Kind(c.Player) != play.IINA {
 		out = append(out, fmt.Sprintf("player %q is not mpv or iina", c.Player))
 	}
-	if !miruro.ValidQuality(c.Quality) {
+	if !upstream.ValidQuality(c.Quality) {
 		out = append(out, fmt.Sprintf("quality %q is not best, worst, or a height such as 1080p", c.Quality))
 	}
 	if code, variant, found := strings.Cut(c.Provider, ":"); found {
@@ -277,7 +277,7 @@ func check(md toml.MetaData, c config) []string {
 // one that only printed help
 func backendNames() []string {
 	var out []string
-	for _, b := range all(mirurotv.New()) {
+	for _, b := range all(miruro.New()) {
 		out = append(out, b.Name())
 	}
 	return out

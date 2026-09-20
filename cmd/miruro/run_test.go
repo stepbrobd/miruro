@@ -22,9 +22,9 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/backend/mirurotv"
-	"ysun.co/miruro/play"
+	"ysun.co/miruro/internal/miruro"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // sourcesServer decodes the pipe envelope and dispatches on the provider in
@@ -82,11 +82,11 @@ func serveBlocked(w http.ResponseWriter, r *http.Request) {
 
 // Available orders providers by preference, where ally leads bonk, so ally
 // probes first when no pin reorders them
-func twoProviderCatalog(b miruro.Backend) *miruro.Catalog {
-	return served(&miruro.Catalog{
-		Providers: map[string]miruro.Provider{
-			"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-1", Number: 1}}},
-			"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
+func twoProviderCatalog(b upstream.Backend) *upstream.Catalog {
+	return served(&upstream.Catalog{
+		Providers: map[string]upstream.Provider{
+			"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-1", Number: 1}}},
+			"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
 		},
 	}, b)
 }
@@ -94,13 +94,13 @@ func twoProviderCatalog(b miruro.Backend) *miruro.Catalog {
 // resolver is the state one resolution needs
 // fallback is on because these exercise the walk past a provider, and the
 // pinned run that refuses to walk has its own test
-func resolver(cat *miruro.Catalog, category miruro.Category, caps miruro.Capabilities) *runState {
+func resolver(cat *upstream.Catalog, category upstream.Category, caps upstream.Capabilities) *runState {
 	return &runState{cat: cat, category: category, caps: caps, fallback: true}
 }
 
 // served points every provider of a hand-written catalog at one backend, the
 // way a fetched catalog arrives
-func served(cat *miruro.Catalog, b miruro.Backend) *miruro.Catalog {
+func served(cat *upstream.Catalog, b upstream.Backend) *upstream.Catalog {
 	for code, p := range cat.Providers {
 		p.Backend = b
 		cat.Providers[code] = p
@@ -109,8 +109,8 @@ func served(cat *miruro.Catalog, b miruro.Backend) *miruro.Catalog {
 }
 
 // pipe is a miruro client against a fake pipe server
-func pipe(srv *httptest.Server) *mirurotv.Client {
-	return &mirurotv.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+func pipe(srv *httptest.Server) *miruro.Client {
+	return &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 }
 
 // episodeBody opens with the file type box the download path checks for and
@@ -134,7 +134,7 @@ func deadCDN(t *testing.T, prefix string) *httptest.Server {
 
 // newSaver wires a saver against srv with a proxy and a download directory, and
 // returns that directory
-func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, string) {
+func newSaver(t *testing.T, srv *httptest.Server, cat *upstream.Catalog) (saver, string) {
 	t.Helper()
 	px, err := play.StartProxy(context.Background())
 	if err != nil {
@@ -147,7 +147,7 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *miruro.Catalog) (saver, s
 		hc:       srv.Client(),
 		cat:      served(cat, client),
 		title:    "Show",
-		category: miruro.Sub,
+		category: upstream.Sub,
 		cfg:      config{Quality: "best", DownloadDir: dir},
 	}
 	return saver{runState: state, px: px, media: http.DefaultClient}, dir
@@ -171,7 +171,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		res, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		res, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,8 +191,8 @@ func TestAutoResolve(t *testing.T) {
 		}, &hits)
 		defer srv.Close()
 
-		_, _, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
-		if !errors.Is(err, miruro.ErrBlocked) {
+		_, _, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		if !errors.Is(err, upstream.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
 		if n := hits.Load(); n != 1 {
@@ -207,7 +207,7 @@ func TestAutoResolve(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		_, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{}, nil)
+		_, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,7 +221,7 @@ func TestAutoResolve(t *testing.T) {
 		srv := sourcesServer(t, map[string]http.HandlerFunc{}, &hits)
 		defer srv.Close()
 
-		_, _, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 9, Pin{}, nil)
+		_, _, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 9, Pin{}, nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
@@ -234,14 +234,14 @@ func TestAutoResolve(t *testing.T) {
 func TestMediaLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		m    miruro.Media
+		m    upstream.Media
 		want string
 	}{
-		{"format and count", miruro.Media{English: "T", Format: "TV", Episodes: 12}, "T (TV, 12 eps)"},
-		{"mapped format", miruro.Media{English: "T", Format: "TV_SHORT", Episodes: 3}, "T (TV Short, 3 eps)"},
-		{"movie without count", miruro.Media{English: "T", Format: "MOVIE"}, "T (Movie)"},
-		{"unknown format passes through", miruro.Media{English: "T", Format: "WEIRD"}, "T (WEIRD)"},
-		{"bare title", miruro.Media{English: "T"}, "T"},
+		{"format and count", upstream.Media{English: "T", Format: "TV", Episodes: 12}, "T (TV, 12 eps)"},
+		{"mapped format", upstream.Media{English: "T", Format: "TV_SHORT", Episodes: 3}, "T (TV Short, 3 eps)"},
+		{"movie without count", upstream.Media{English: "T", Format: "MOVIE"}, "T (Movie)"},
+		{"unknown format passes through", upstream.Media{English: "T", Format: "WEIRD"}, "T (WEIRD)"},
+		{"bare title", upstream.Media{English: "T"}, "T"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mediaLabel(tc.m); got != tc.want {
@@ -252,7 +252,7 @@ func TestMediaLabel(t *testing.T) {
 }
 
 func TestFind(t *testing.T) {
-	eps := []miruro.Episode{{ID: "a1", Number: 1}, {ID: "a2", Number: 2.5}}
+	eps := []upstream.Episode{{ID: "a1", Number: 1}, {ID: "a2", Number: 2.5}}
 	for _, tc := range []struct {
 		name   string
 		n      float64
@@ -408,35 +408,35 @@ type fakeBackend struct {
 
 func (f *fakeBackend) Name() string { return f.name }
 
-func (f *fakeBackend) Episodes(context.Context, miruro.Media) (*miruro.Catalog, error) {
-	return &miruro.Catalog{}, nil
+func (f *fakeBackend) Episodes(context.Context, upstream.Media) (*upstream.Catalog, error) {
+	return &upstream.Catalog{}, nil
 }
 
-func (f *fakeBackend) Sources(context.Context, string, string, miruro.Category) (*miruro.Result, error) {
+func (f *fakeBackend) Sources(context.Context, string, string, upstream.Category) (*upstream.Result, error) {
 	f.hits++
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &miruro.Result{Streams: []miruro.Stream{{URL: f.name, Kind: miruro.HLS}}}, nil
+	return &upstream.Result{Streams: []upstream.Stream{{URL: f.name, Kind: upstream.HLS}}}, nil
 }
 
-func (f *fakeBackend) Capabilities(context.Context) (miruro.Capabilities, error) {
-	return miruro.Capabilities{}, nil
+func (f *fakeBackend) Capabilities(context.Context) (upstream.Capabilities, error) {
+	return upstream.Capabilities{}, nil
 }
 
 // a backend whose firewall refused the run would answer every one of its
 // providers the same, so the walk skips them and reaches the other backend,
 // and only when nothing else served is the refusal what comes back
 func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
-	blocked := &fakeBackend{name: "miruro", err: miruro.ErrBlocked}
+	blocked := &fakeBackend{name: "miruro", err: upstream.ErrBlocked}
 	open := &fakeBackend{name: "other"}
-	ep := []miruro.Episode{{ID: "e1", Number: 1}}
-	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
+	ep := []upstream.Episode{{ID: "e1", Number: 1}}
+	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
 		"ally":  {Code: "ally", Backend: blocked, Sub: ep},
 		"pewe":  {Code: "pewe", Backend: blocked, Sub: ep},
 		"other": {Code: "other", Backend: open, Sub: ep},
 	}}
-	st := resolver(cat, miruro.Sub, nil)
+	st := resolver(cat, upstream.Sub, nil)
 	res, src, err := st.autoResolve(context.Background(), 1, Pin{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -457,15 +457,15 @@ func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
 	}
 
 	delete(cat.Providers, "other")
-	if _, _, err := st.autoResolve(context.Background(), 1, Pin{}, nil); !errors.Is(err, miruro.ErrBlocked) {
-		t.Errorf("err = %v, want %v when nothing else served", err, miruro.ErrBlocked)
+	if _, _, err := st.autoResolve(context.Background(), 1, Pin{}, nil); !errors.Is(err, upstream.ErrBlocked) {
+		t.Errorf("err = %v, want %v when nothing else served", err, upstream.ErrBlocked)
 	}
 }
 
 func TestEnabled(t *testing.T) {
 	a, b := &fakeBackend{name: "miruro"}, &fakeBackend{name: "other"}
-	all := miruro.Backends{a, b}
-	names := func(bs miruro.Backends) string {
+	all := upstream.Backends{a, b}
+	names := func(bs upstream.Backends) string {
 		var out []string
 		for _, b := range bs {
 			out = append(out, b.Name())
@@ -497,7 +497,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 	defer srv.Close()
 
 	cat := twoProviderCatalog(pipe(srv))
-	_, src, err := resolver(cat, miruro.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true})
+	_, src, err := resolver(cat, upstream.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 		t.Errorf("served = %q, want bonk", src.Code)
 	}
 
-	_, _, err = resolver(cat, miruro.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
+	_, _, err = resolver(cat, upstream.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
 	if err == nil || !strings.Contains(err.Error(), "no provider resolved a stream") {
 		t.Fatalf("err = %v, want the spent-walk error once every provider is tried", err)
 	}
@@ -562,8 +562,8 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
-		"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
+	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
+		"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
 	}}
 	sv, dir := newSaver(t, srv, cat)
 	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
@@ -576,12 +576,12 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 // the source the pinned pick would have resolved
 func TestSaverWanted(t *testing.T) {
 	sv := saver{runState: &runState{
-		cat: &miruro.Catalog{Providers: map[string]miruro.Provider{
-			"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "k1", Number: 1}}},
-			"bee":  {Code: "bee", Sub: []miruro.Episode{{ID: "b1", Number: 1}}},
+		cat: &upstream.Catalog{Providers: map[string]upstream.Provider{
+			"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "k1", Number: 1}}},
+			"bee":  {Code: "bee", Sub: []upstream.Episode{{ID: "b1", Number: 1}}},
 		}},
 		caps:     testCaps,
-		category: miruro.Sub,
+		category: upstream.Sub,
 	}}
 
 	if _, ok := sv.wanted(1); ok {
@@ -590,27 +590,27 @@ func TestSaverWanted(t *testing.T) {
 
 	sv.pin = Pin{"kiwi", Hard}
 	want, ok := sv.wanted(1)
-	if !ok || want.Category != miruro.Sub || want.Attach {
+	if !ok || want.Category != upstream.Sub || want.Attach {
 		t.Errorf("wanted = (%+v, %v), want kiwi's burned-in rendition", want, ok)
 	}
 	// bee's soft source is what a fallback would have served, and it has to read
 	// as a swap against the hard pin
-	swap := offer{Pin: Pin{"bee", Soft}, declared: true}.source(miruro.Sub)
+	swap := offer{Pin: Pin{"bee", Soft}, declared: true}.source(upstream.Sub)
 	if swap.Category == want.Category && swap.Attach == want.Attach {
 		t.Error("a soft fallback reads as the pinned rendition")
 	}
 
 	// a bare pin measures against what its provider declares
 	sv.pin = Pin{Code: "kiwi"}
-	if want, ok := sv.wanted(1); !ok || want.Category != miruro.Sub || want.Attach {
+	if want, ok := sv.wanted(1); !ok || want.Category != upstream.Sub || want.Attach {
 		t.Errorf("wanted = (%+v, %v), want the declared hardsub for a bare kiwi pin", want, ok)
 	}
 }
 
 // fakePlay stands in for the player, fetching what it was handed the way a real
 // one does, so the proxy sees exactly what playback would have made it see
-func fakePlay(t *testing.T, px *play.Proxy, tried *[]string) func(context.Context, miruro.Stream) error {
-	return func(ctx context.Context, s miruro.Stream) error {
+func fakePlay(t *testing.T, px *play.Proxy, tried *[]string) func(context.Context, upstream.Stream) error {
+	return func(ctx context.Context, s upstream.Stream) error {
 		*tried = append(*tried, s.Server)
 		resp, err := http.Get(px.Stream(s).URL)
 		if err != nil {
@@ -642,12 +642,12 @@ func TestPlayStreams(t *testing.T) {
 	}
 	defer px.Close()
 
-	dead := miruro.Stream{URL: cdn.URL + "/dead.mp4", Kind: miruro.MP4, Server: "HD-1"}
-	live := miruro.Stream{URL: cdn.URL + "/live.mp4", Kind: miruro.MP4, Server: "HD-2"}
+	dead := upstream.Stream{URL: cdn.URL + "/dead.mp4", Kind: upstream.MP4, Server: "HD-1"}
+	live := upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "HD-2"}
 
 	t.Run("a stream that never started falls through", func(t *testing.T) {
 		var tried []string
-		if err := playStreams(ctx, px, []miruro.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
+		if err := playStreams(ctx, px, []upstream.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
 			t.Fatalf("the live stream did not play: %v", err)
 		}
 		if !slices.Equal(tried, []string{"HD-1", "HD-2"}) {
@@ -660,7 +660,7 @@ func TestPlayStreams(t *testing.T) {
 	t.Run("a stream that played is not retried", func(t *testing.T) {
 		var tried []string
 		quit := errors.New("player exit 4")
-		err := playStreams(ctx, px, []miruro.Stream{live, dead}, func(ctx context.Context, s miruro.Stream) error {
+		err := playStreams(ctx, px, []upstream.Stream{live, dead}, func(ctx context.Context, s upstream.Stream) error {
 			fakePlay(t, px, &tried)(ctx, s)
 			return quit
 		})
@@ -674,7 +674,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("every stream dead reports the last failure", func(t *testing.T) {
 		var tried []string
-		err := playStreams(ctx, px, []miruro.Stream{dead, dead}, fakePlay(t, px, &tried))
+		err := playStreams(ctx, px, []upstream.Stream{dead, dead}, fakePlay(t, px, &tried))
 		if err == nil {
 			t.Fatal("nothing played, playback must fail")
 		}
@@ -706,7 +706,7 @@ func TestDeadStream(t *testing.T) {
 
 // a catalog that names nothing must still render a bare number
 func TestEpisodeLabel(t *testing.T) {
-	label := episodeLabel(map[float64]miruro.Episode{
+	label := episodeLabel(map[float64]upstream.Episode{
 		1:   {Number: 1, Title: "Rebirth"},
 		2:   {Number: 2, Title: "Confrontation", Filler: true},
 		3:   {Number: 3},
@@ -748,36 +748,36 @@ func pipeQuery(t *testing.T, r *http.Request) map[string]string {
 // provider for the one it does not carry answers 444, so the variant has to
 // reach Sources rather than stay a client-side attach decision
 func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
-	caps := miruro.Capabilities{
+	caps := upstream.Capabilities{
 		"kiwi": {Hard: true},
 		"bee":  {Soft: true},
 		"bonk": {Hard: true, Soft: true},
 	}
-	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
-		"kiwi": {Code: "kiwi", Sub: []miruro.Episode{{ID: "kiwi-1", Number: 1}}},
-		"bee":  {Code: "bee", Sub: []miruro.Episode{{ID: "bee-1", Number: 1}}},
-		"bonk": {Code: "bonk", Sub: []miruro.Episode{{ID: "bonk-1", Number: 1}}},
+	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
+		"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "kiwi-1", Number: 1}}},
+		"bee":  {Code: "bee", Sub: []upstream.Episode{{ID: "bee-1", Number: 1}}},
+		"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
 	}}
 
 	for _, tc := range []struct {
 		name     string
 		pin      Pin
-		category miruro.Category
+		category upstream.Category
 		wantCat  string
 		attach   bool
 	}{
-		{"a hardsub provider is asked for sub", Pin{"kiwi", Hard}, miruro.Sub, "sub", false},
-		{"a softsub provider is asked for ssub", Pin{"bee", Soft}, miruro.Sub, "ssub", true},
-		{"bonk soft is asked for ssub", Pin{"bonk", Soft}, miruro.Sub, "ssub", true},
-		{"bonk hard is asked for sub", Pin{"bonk", Hard}, miruro.Sub, "sub", false},
+		{"a hardsub provider is asked for sub", Pin{"kiwi", Hard}, upstream.Sub, "sub", false},
+		{"a softsub provider is asked for ssub", Pin{"bee", Soft}, upstream.Sub, "ssub", true},
+		{"bonk soft is asked for ssub", Pin{"bonk", Soft}, upstream.Sub, "ssub", true},
+		{"bonk hard is asked for sub", Pin{"bonk", Hard}, upstream.Sub, "sub", false},
 		// a pin contradicting the table would ask for a rendition that 444s, so
 		// the declared one wins over what was typed
-		{"a soft pin on a hardsub provider is corrected", Pin{"kiwi", Soft}, miruro.Sub, "sub", false},
-		{"a hard pin on a softsub provider is corrected", Pin{"bee", Hard}, miruro.Sub, "ssub", true},
+		{"a soft pin on a hardsub provider is corrected", Pin{"kiwi", Soft}, upstream.Sub, "sub", false},
+		{"a hard pin on a softsub provider is corrected", Pin{"bee", Hard}, upstream.Sub, "ssub", true},
 		// the variant names a sub rendition, so a dub run ignores it rather than
 		// suppressing one provider's tracks and no other's
-		{"dub is never rewritten and keeps its tracks", Pin{"bonk", Hard}, miruro.Dub, "dub", true},
-		{"dub with a soft pin keeps them too", Pin{"bonk", Soft}, miruro.Dub, "dub", true},
+		{"dub is never rewritten and keeps its tracks", Pin{"bonk", Hard}, upstream.Dub, "dub", true},
+		{"dub with a soft pin keeps them too", Pin{"bonk", Soft}, upstream.Dub, "dub", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked map[string]string
@@ -788,9 +788,9 @@ func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 			defer srv.Close()
 
 			catalog := cat
-			if tc.category == miruro.Dub {
-				catalog = &miruro.Catalog{Providers: map[string]miruro.Provider{
-					"bonk": {Code: "bonk", Dub: []miruro.Episode{{ID: "bonk-d1", Number: 1}}},
+			if tc.category == upstream.Dub {
+				catalog = &upstream.Catalog{Providers: map[string]upstream.Provider{
+					"bonk": {Code: "bonk", Dub: []upstream.Episode{{ID: "bonk-d1", Number: 1}}},
 				}}
 			}
 			_, src, err := resolver(served(catalog, pipe(srv)), tc.category, caps).autoResolve(context.Background(), 1, tc.pin, nil)
@@ -842,9 +842,9 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}, nil)
 	defer srv.Close()
 
-	cat := &miruro.Catalog{Providers: map[string]miruro.Provider{
-		"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
-		"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
+	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
+		"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-8", Number: 8}}},
+		"pewe": {Code: "pewe", Sub: []upstream.Episode{{ID: "pewe-8", Number: 8}}},
 	}}
 
 	var tried []string
@@ -854,26 +854,26 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 			hc:       srv.Client(),
 			cat:      served(cat, client),
 			title:    "Grow Up Show",
-			category: miruro.Sub,
+			category: upstream.Sub,
 			cfg:      config{Quality: "best"},
 			fallback: true,
 		},
 		px:  px,
 		pin: Pin{Code: "ally", Variant: Hard},
 		ep:  8,
-		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
+		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
 			return fakePlay(t, px, new([]string))(ctx, s)
 		},
 	}
 
 	// ally is the pin, so it is what resolve would have handed over
-	res, err := client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	res, err := client.Sources(ctx, "ally-8", "ally", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	said := captureLog(t)
-	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); err != nil {
+	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(upstream.Sub)); err != nil {
 		t.Fatalf("pewe should have played after ally refused everything: %v", err)
 	}
 	if want := []string{"Yt-mp4", "Mp4", "AniDBApp"}; !slices.Equal(tried, want) {
@@ -940,30 +940,30 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	stage := playback{
 		runState: &runState{
 			hc: srv.Client(),
-			cat: served(&miruro.Catalog{Providers: map[string]miruro.Provider{
-				"ally": {Code: "ally", Sub: []miruro.Episode{{ID: "ally-8", Number: 8}}},
+			cat: served(&upstream.Catalog{Providers: map[string]upstream.Provider{
+				"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-8", Number: 8}}},
 				// a second provider the walk could reach, so the guard has something
 				// to prevent rather than nothing to do
-				"pewe": {Code: "pewe", Sub: []miruro.Episode{{ID: "pewe-8", Number: 8}}},
+				"pewe": {Code: "pewe", Sub: []upstream.Episode{{ID: "pewe-8", Number: 8}}},
 			}}, client),
-			category: miruro.Sub,
+			category: upstream.Sub,
 			cfg:      config{Quality: "best"},
 		},
 		px:  px,
 		pin: Pin{Code: "ally", Variant: Hard},
 		ep:  8,
-		launch: func(ctx context.Context, s miruro.Stream, _ []miruro.Subtitle) error {
+		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
 			fakePlay(t, px, new([]string))(ctx, s)
 			return quit
 		},
 	}
 
-	res, err := client.Sources(ctx, "ally-8", "ally", miruro.Sub)
+	res, err := client.Sources(ctx, "ally-8", "ally", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(miruro.Sub)); !errors.Is(err, quit) {
+	if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(upstream.Sub)); !errors.Is(err, quit) {
 		t.Errorf("err = %v, want the player's own failure", err)
 	}
 	if !slices.Equal(tried, []string{"Yt-mp4"}) {
@@ -990,7 +990,7 @@ func TestAbandonStalled(t *testing.T) {
 	defer px.Close()
 
 	// skipping mimics the demuxer, fetching forever and never giving up
-	skipping := func(ctx context.Context, s miruro.Stream) error {
+	skipping := func(ctx context.Context, s upstream.Stream) error {
 		for {
 			if ctx.Err() != nil {
 				return errors.New("signal: killed")
@@ -1012,7 +1012,7 @@ func TestAbandonStalled(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			done <- playStreams(context.Background(), px,
-				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}}, skipping)
+				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}}, skipping)
 		}()
 		select {
 		case err := <-done:
@@ -1042,8 +1042,8 @@ func TestAbandonStalled(t *testing.T) {
 		played := make(chan error, 1)
 		go func() {
 			played <- playStreams(ctx, px,
-				[]miruro.Stream{{URL: cdn.URL + "/seg.mp4", Kind: miruro.MP4, Server: "HD-1"}},
-				func(pctx context.Context, s miruro.Stream) error {
+				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}},
+				func(pctx context.Context, s upstream.Stream) error {
 					// fetch until picture lands, then sit there the way a player
 					// does
 					// a refused fetch answers with the upstream status as its
@@ -1094,7 +1094,7 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		}, &hits)
 		defer srv.Close()
 
-		st := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil)
+		st := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil)
 		st.fallback = false
 		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err == nil {
@@ -1112,7 +1112,7 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		srv := sourcesServer(t, map[string]http.HandlerFunc{"ally": serveJSON(hlsPayload)}, nil)
 		defer srv.Close()
 
-		st := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil)
+		st := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil)
 		st.fallback = false
 		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "gone"}, nil)
 		if err == nil || !strings.Contains(err.Error(), "gone") {
@@ -1127,7 +1127,7 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		}, nil)
 		defer srv.Close()
 
-		_, src, err := resolver(twoProviderCatalog(pipe(srv)), miruro.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		_, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err != nil || src.Code != "ally" {
 			t.Fatalf("served = %q, %v, want ally", src.Code, err)
 		}
@@ -1139,14 +1139,14 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 // of one
 func TestServerNamesAnUnnamedStream(t *testing.T) {
 	for _, tc := range []struct {
-		stream miruro.Stream
+		stream upstream.Stream
 		want   string
 	}{
-		{miruro.Stream{Server: "HD-1", URL: "https://cdn.example/a.m3u8"}, "HD-1"},
-		{miruro.Stream{URL: "https://hls.krussdomi.com/manifest/x/master.m3u8"}, "hls.krussdomi.com"},
-		{miruro.Stream{URL: "https://bl.krussdomi.com/manifest/x/master.m3u8"}, "bl.krussdomi.com"},
-		{miruro.Stream{URL: "not a url"}, "unnamed"},
-		{miruro.Stream{}, "unnamed"},
+		{upstream.Stream{Server: "HD-1", URL: "https://cdn.example/a.m3u8"}, "HD-1"},
+		{upstream.Stream{URL: "https://hls.krussdomi.com/manifest/x/master.m3u8"}, "hls.krussdomi.com"},
+		{upstream.Stream{URL: "https://bl.krussdomi.com/manifest/x/master.m3u8"}, "bl.krussdomi.com"},
+		{upstream.Stream{URL: "not a url"}, "unnamed"},
+		{upstream.Stream{}, "unnamed"},
 	} {
 		if got := server(tc.stream); got != tc.want {
 			t.Errorf("server(%+v) = %q, want %q", tc.stream, got, tc.want)

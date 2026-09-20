@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/backend/mirurotv"
+	"ysun.co/miruro/internal/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // titles are the anime the integration run pulls its provider list from
@@ -36,11 +36,11 @@ var titles = []int{
 // one provider serves different hosts on different titles, so binding it to the
 // first title found lets one dead host stand in for the provider and take the
 // whole path down with it
-func providerMatrix(ctx context.Context, t *testing.T, client *mirurotv.Client) map[string][]miruro.Provider {
+func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) map[string][]upstream.Provider {
 	t.Helper()
-	out := map[string][]miruro.Provider{}
+	out := map[string][]upstream.Provider{}
 	for _, id := range titles {
-		cat, err := client.Episodes(ctx, miruro.Media{ID: id})
+		cat, err := client.Episodes(ctx, upstream.Media{ID: id})
 		if err != nil {
 			t.Fatalf("catalog %d: %v", id, err)
 		}
@@ -61,16 +61,16 @@ func providerMatrix(ctx context.Context, t *testing.T, client *mirurotv.Client) 
 // matrix on a condition the run itself created
 // soft wins when a provider declares both, matching what the cli resolves to
 // with no pin, so the run covers the rendition the pick defaults to
-func rendition(caps miruro.Capabilities, code string) miruro.Category {
+func rendition(caps upstream.Capabilities, code string) upstream.Category {
 	if c, ok := caps[code]; ok && c.Soft {
-		return miruro.Ssub
+		return upstream.Ssub
 	}
-	return miruro.Sub
+	return upstream.Sub
 }
 
 // capabilities fetches the provider table, empty when the resource is down so
 // the run falls back to asking every provider for sub
-func capabilities(ctx context.Context, t *testing.T, client *mirurotv.Client) miruro.Capabilities {
+func capabilities(ctx context.Context, t *testing.T, client *miruro.Client) upstream.Capabilities {
 	t.Helper()
 	caps, err := client.Capabilities(ctx)
 	if err != nil {
@@ -83,7 +83,7 @@ func capabilities(ctx context.Context, t *testing.T, client *mirurotv.Client) mi
 // the cache path can take apart, with why nothing did when none can
 // a provider is only excused once every title it carries has been tried, since
 // each names its own host and one dead host is not a dead provider
-func cacheable(ctx context.Context, t *testing.T, client *mirurotv.Client, px *Proxy, carried []miruro.Provider, code string, cat miruro.Category) (*mediaPlaylist, string) {
+func cacheable(ctx context.Context, t *testing.T, client *miruro.Client, px *Proxy, carried []upstream.Provider, code string, cat upstream.Category) (*mediaPlaylist, string) {
 	t.Helper()
 	why := "no title carries it"
 	for _, provider := range carried {
@@ -97,12 +97,12 @@ func cacheable(ctx context.Context, t *testing.T, client *mirurotv.Client, px *P
 			why = fmt.Sprintf("did not resolve %s: %v", cat, err)
 			continue
 		}
-		ranked := miruro.Rank(ctx, client.HTTP, res, "")
+		ranked := upstream.Rank(ctx, client.HTTP, res, "")
 		if len(ranked) == 0 {
 			why = "no selectable stream"
 			continue
 		}
-		if ranked[0].Kind != miruro.HLS {
+		if ranked[0].Kind != upstream.HLS {
 			why = fmt.Sprintf("kind %s does not exercise the segment cache", ranked[0].Kind)
 			continue
 		}
@@ -136,7 +136,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	client := mirurotv.New()
+	client := miruro.New()
 
 	px, err := StartProxy(ctx)
 	if err != nil {
@@ -278,7 +278,7 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 
 // shipped walks the titles a provider carries and returns the first result that
 // ships a subtitle, with why none did when none do
-func shipped(ctx context.Context, t *testing.T, client *mirurotv.Client, carried []miruro.Provider, code string, cat miruro.Category) (*miruro.Result, string) {
+func shipped(ctx context.Context, t *testing.T, client *miruro.Client, carried []upstream.Provider, code string, cat upstream.Category) (*upstream.Result, string) {
 	t.Helper()
 	why := "no title carries it"
 	for _, provider := range carried {
@@ -312,7 +312,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	client := mirurotv.New()
+	client := miruro.New()
 
 	px, err := StartProxy(ctx)
 	if err != nil {
@@ -329,13 +329,13 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 			if res == nil {
 				t.Skipf("no title shipped a sidecar on this provider: %s", why)
 			}
-			ranked := miruro.Rank(ctx, client.HTTP, res, "")
+			ranked := upstream.Rank(ctx, client.HTTP, res, "")
 			if len(ranked) == 0 {
 				t.Skip("no selectable stream")
 			}
 			stream := ranked[0]
 
-			for _, s := range px.Subtitles(miruro.Order(res.Subtitles, "en"), stream.Referer) {
+			for _, s := range px.Subtitles(upstream.Order(res.Subtitles, "en"), stream.Referer) {
 				u, err := url.Parse(s.File)
 				if err != nil {
 					t.Fatalf("subtitle url: %v", err)

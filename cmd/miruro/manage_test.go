@@ -9,7 +9,7 @@ import (
 
 	"github.com/adrg/xdg"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func TestClearHistory(t *testing.T) {
@@ -151,7 +151,7 @@ func TestLoadNarrowsTheStoredCategory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []miruro.Category{miruro.Sub, miruro.Dub, miruro.Sub}
+	want := []upstream.Category{upstream.Sub, upstream.Dub, upstream.Sub}
 	if len(entries) != len(want) {
 		t.Fatalf("load returned %d entries, want %d", len(entries), len(want))
 	}

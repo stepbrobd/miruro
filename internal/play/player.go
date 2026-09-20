@@ -15,7 +15,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 type Kind string
@@ -71,7 +71,7 @@ func binaries(k Kind) []string {
 	return []string{string(k)}
 }
 
-func (p Player) Play(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) error {
+func (p Player) Play(ctx context.Context, s upstream.Stream, subs []upstream.Subtitle, skips []upstream.SkipRange, title string) error {
 	args, cleanup := p.args(s, subs, skips, title)
 	if cleanup != nil {
 		defer cleanup()
@@ -128,7 +128,7 @@ func (t *tail) last() string {
 
 // args carries no referer flag because the proxy injects the referer upstream
 // so every URL a player sees is localhost
-func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.SkipRange, title string) ([]string, func()) {
+func (p Player) args(s upstream.Stream, subs []upstream.Subtitle, skips []upstream.SkipRange, title string) ([]string, func()) {
 	// iina takes mpv's options under a prefix, and needs two of its own
 	var args []string
 	pre := "--"
@@ -152,7 +152,7 @@ func (p Player) args(s miruro.Stream, subs []miruro.Subtitle, skips []miruro.Ski
 // player can jump past them, and returns a cleanup that removes it
 // a write failure warns and disables skip rather than passing a broken file to
 // the player
-func chaptersFile(skips []miruro.SkipRange) (string, func()) {
+func chaptersFile(skips []upstream.SkipRange) (string, func()) {
 	if len(skips) == 0 {
 		return "", nil
 	}
@@ -164,7 +164,7 @@ func chaptersFile(skips []miruro.SkipRange) (string, func()) {
 	var marks []mark
 	for _, s := range skips {
 		start := "Intro"
-		if s.Kind == miruro.Outro {
+		if s.Kind == upstream.Outro {
 			start = "Outro"
 		}
 		marks = append(marks, mark{s.Start, start}, mark{s.End, "Episode"})

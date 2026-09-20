@@ -8,14 +8,14 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/ui"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // episodeLabel renders one picker row, the number plus what the catalog knows
 // that tells episodes apart
 // a number the catalog does not detail reads as the bare number
-func episodeLabel(details map[float64]miruro.Episode) func(float64) string {
+func episodeLabel(details map[float64]upstream.Episode) func(float64) string {
 	return func(n float64) string {
 		d := details[n]
 		out := num(n)
@@ -61,8 +61,8 @@ func ahead(queue []float64, ep float64) []float64 {
 	return queue[i:]
 }
 
-func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
-	var out []miruro.SkipRange
+func episodeSkips(cat *upstream.Catalog, ep float64) []upstream.SkipRange {
+	var out []upstream.SkipRange
 	for _, s := range cat.Aniskip {
 		if s.Episode == ep {
 			out = append(out, s)
@@ -71,8 +71,8 @@ func episodeSkips(cat *miruro.Catalog, ep float64) []miruro.SkipRange {
 	return out
 }
 
-func find(eps []miruro.Episode, n float64) *miruro.Episode {
-	i := slices.IndexFunc(eps, func(e miruro.Episode) bool { return e.Number == n })
+func find(eps []upstream.Episode, n float64) *upstream.Episode {
+	i := slices.IndexFunc(eps, func(e upstream.Episode) bool { return e.Number == n })
 	if i < 0 {
 		return nil
 	}

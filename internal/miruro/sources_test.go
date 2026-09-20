@@ -1,4 +1,4 @@
-package mirurotv
+package miruro
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
@@ -22,11 +22,11 @@ func TestSourcesKeepsOnlyDialogueTracks(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	res, err := c.Sources(context.Background(), "ep", "bonk", miruro.Sub)
+	res, err := c.Sources(context.Background(), "ep", "bonk", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []miruro.Subtitle{
+	want := []upstream.Subtitle{
 		{File: "en.vtt", Label: "English", Lang: "en", Default: true},
 		{File: "pt.vtt", Label: "Portugues", Lang: "pt-BR"},
 		{File: "bare.vtt", Label: "Bare"},
@@ -43,11 +43,11 @@ func TestSourcesDropUnknownKinds(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	res, err := c.Sources(context.Background(), "e", "p", miruro.Sub)
+	res, err := c.Sources(context.Background(), "e", "p", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Streams) != 1 || res.Streams[0].Kind != miruro.HLS {
+	if len(res.Streams) != 1 || res.Streams[0].Kind != upstream.HLS {
 		t.Errorf("streams = %+v, want only the hls one", res.Streams)
 	}
 }
@@ -55,7 +55,7 @@ func TestSourcesDropUnknownKinds(t *testing.T) {
 func TestAbsentActiveFlagStaysPlayable(t *testing.T) {
 	srv := mirror(t, serves(`{"streams":[{"url":"u","type":"hls"},{"url":"v","type":"hls","isActive":false}]}`))
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	res, err := c.Sources(context.Background(), "ep", "bonk", miruro.Sub)
+	res, err := c.Sources(context.Background(), "ep", "bonk", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}

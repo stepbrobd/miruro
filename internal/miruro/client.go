@@ -1,8 +1,8 @@
-// Package mirurotv is the miruro.tv backend, an aggregator fronting several
+// Package miruro is the miruro.tv backend, an aggregator fronting several
 // provider sites behind one obfuscated api.
 // It owns the search, episode, and source resolution against the secure pipe,
 // including the browser header set, the HTTP/2 transport, and deobfuscation.
-package mirurotv
+package miruro
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 const (
@@ -64,7 +64,7 @@ type Client struct {
 	// the capability table is fetched at most once per client
 	// cfgMu is only ever taken before mu
 	cfgMu   sync.Mutex
-	cfg     miruro.Capabilities
+	cfg     upstream.Capabilities
 	cfgErr  error
 	cfgDone bool
 }
@@ -109,7 +109,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	e := base64.RawURLEncoding.EncodeToString(env)
 
 	if len(c.Bases) == 0 {
-		return nil, fmt.Errorf("%w: no mirror configured", miruro.ErrUpstream)
+		return nil, fmt.Errorf("%w: no mirror configured", upstream.ErrUnreachable)
 	}
 
 	start := c.current()
@@ -130,7 +130,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 		case aborted:
 			return nil, err
 		}
-		if errors.Is(err, miruro.ErrBlocked) {
+		if errors.Is(err, upstream.ErrBlocked) {
 			blocked = true
 		}
 		last = err
@@ -139,7 +139,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	// blocked, even when a later mirror failed to connect at all, since reporting
 	// that as recoverable sends the fallback loop back into the block
 	if blocked {
-		return nil, miruro.ErrBlocked
+		return nil, upstream.ErrBlocked
 	}
 	return nil, last
 }
@@ -186,7 +186,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", miruro.ErrUpstream, err)
+		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", upstream.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -205,11 +205,11 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
 	switch {
 	case resp.StatusCode == http.StatusForbidden && isHTML:
-		return nil, unreachable, miruro.ErrBlocked
+		return nil, unreachable, upstream.ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, refused, fmt.Errorf("%w: miruro status %d", miruro.ErrUpstream, resp.StatusCode)
+		return nil, refused, fmt.Errorf("%w: miruro status %d", upstream.ErrUnreachable, resp.StatusCode)
 	case isHTML:
-		return nil, refused, fmt.Errorf("%w: miruro answered html", miruro.ErrUpstream)
+		return nil, refused, fmt.Errorf("%w: miruro answered html", upstream.ErrUnreachable)
 	}
 
 	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
@@ -224,7 +224,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, refused, fmt.Errorf("%w: miruro %s: %s", miruro.ErrUpstream, path, fail.Error)
+		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, path, fail.Error)
 	}
 	return body, served, nil
 }
@@ -282,7 +282,7 @@ func decode(body []byte, obf string) ([]byte, error) {
 // the origin follows the mirror in use, so a rule comparing it against the host
 // sees what a browser on that domain would send
 func setHeaders(h http.Header, base string) {
-	h.Set("User-Agent", miruro.UserAgent)
+	h.Set("User-Agent", upstream.UserAgent)
 	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("Accept-Language", "en-US,en;q=0.5")
 	h.Set("Referer", base+"/")

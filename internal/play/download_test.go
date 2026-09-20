@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // sampleSegment synthesizes one transport stream segment, with audio unless the test
@@ -57,7 +57,7 @@ func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
 
 	dir, name := t.TempDir(), "Show - E1"
 	if _, err := Download(context.Background(), http.DefaultClient,
-		miruro.Stream{URL: base + "/media.m3u8", Kind: miruro.HLS},
+		upstream.Stream{URL: base + "/media.m3u8", Kind: upstream.HLS},
 		nil, dir, name, "", nil); err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestDownloadRefusesASilentEpisode(t *testing.T) {
 
 	dir, name := t.TempDir(), "Show - E1"
 	_, err := Download(context.Background(), http.DefaultClient,
-		miruro.Stream{URL: base + "/master.m3u8", Kind: miruro.HLS},
+		upstream.Stream{URL: base + "/master.m3u8", Kind: upstream.HLS},
 		nil, dir, name, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "no audio") {
 		t.Fatalf("err = %v, want the silent episode refused", err)
@@ -167,12 +167,12 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	defer srv.Close()
 
 	dir, name := t.TempDir(), "Show - E1"
-	subs := []miruro.Subtitle{
+	subs := []upstream.Subtitle{
 		{File: srv.URL + "/good.vtt", Label: "English", Lang: "en"},
 		{File: srv.URL + "/gone.vtt", Label: "Spanish", Lang: "es"},
 	}
 	missed, err := Download(context.Background(), http.DefaultClient,
-		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4},
+		upstream.Stream{URL: srv.URL + "/video.mp4", Kind: upstream.MP4},
 		subs, dir, name, "", nil)
 	if err != nil {
 		t.Fatalf("a missing sidecar must not fail the download: %v", err)
@@ -205,7 +205,7 @@ func TestDownloadRefusesAnMP4ThatIsNotOne(t *testing.T) {
 
 	dir, name := t.TempDir(), "Show - E1"
 	_, err := Download(context.Background(), http.DefaultClient,
-		miruro.Stream{URL: srv.URL + "/video.mp4", Kind: miruro.MP4}, nil, dir, name, "", nil)
+		upstream.Stream{URL: srv.URL + "/video.mp4", Kind: upstream.MP4}, nil, dir, name, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "not an mp4") {
 		t.Fatalf("err = %v, want the page refused", err)
 	}
@@ -239,8 +239,8 @@ func TestDownloadSkipsExistingEpisode(t *testing.T) {
 	hc := &http.Client{Transport: noNet{t}}
 	var done, total int64 = -1, -1
 	missed, err := Download(context.Background(), hc,
-		miruro.Stream{URL: "http://unused/video.mp4", Kind: miruro.MP4},
-		[]miruro.Subtitle{{File: "http://unused/sub.vtt", Label: "English"}},
+		upstream.Stream{URL: "http://unused/video.mp4", Kind: upstream.MP4},
+		[]upstream.Subtitle{{File: "http://unused/sub.vtt", Label: "English"}},
 		dir, name, "", func(d, tot int64) { done, total = d, tot })
 	if err != nil {
 		t.Fatalf("an existing episode failed the rerun: %v", err)
@@ -259,14 +259,14 @@ func TestDownloadSkipsExistingEpisode(t *testing.T) {
 func TestSidecarNames(t *testing.T) {
 	seen := map[string]int{}
 	cases := []struct {
-		sub  miruro.Subtitle
+		sub  upstream.Subtitle
 		want string
 	}{
-		{miruro.Subtitle{File: "http://x/a.vtt", Label: "English", Lang: "en"}, ".en.vtt"},
-		{miruro.Subtitle{File: "http://x/b.srt", Label: "English", Lang: "en"}, ".en.1.srt"},
-		{miruro.Subtitle{File: "http://x/c.ass?token=1", Label: "Signs"}, ".Signs.ass"},
-		{miruro.Subtitle{File: "http://x/d"}, ".sub.vtt"},
-		{miruro.Subtitle{File: "http://x/e.exe", Lang: "../../etc"}, ".-..-etc.vtt"},
+		{upstream.Subtitle{File: "http://x/a.vtt", Label: "English", Lang: "en"}, ".en.vtt"},
+		{upstream.Subtitle{File: "http://x/b.srt", Label: "English", Lang: "en"}, ".en.1.srt"},
+		{upstream.Subtitle{File: "http://x/c.ass?token=1", Label: "Signs"}, ".Signs.ass"},
+		{upstream.Subtitle{File: "http://x/d"}, ".sub.vtt"},
+		{upstream.Subtitle{File: "http://x/e.exe", Lang: "../../etc"}, ".-..-etc.vtt"},
 	}
 	for _, c := range cases {
 		if got := sidecar(c.sub, seen); got != c.want {

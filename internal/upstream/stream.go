@@ -1,4 +1,4 @@
-package miruro
+package upstream
 
 import (
 	"errors"

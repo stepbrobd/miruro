@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // Variant decides whether a provider's external subtitle file is attached
@@ -103,12 +103,12 @@ func pinFor(config, flag, history string, widen bool) (Pin, bool) {
 // reads and the way its pin is persisted, and takes the pinned variant when
 // the pin names one, which is the only way an explicit code:hard survives a
 // run that could not reach the table
-func offers(avail []miruro.Provider, caps miruro.Capabilities, category miruro.Category, pin Pin) []offer {
+func offers(avail []upstream.Provider, caps upstream.Capabilities, category upstream.Category, pin Pin) []offer {
 	out := make([]offer, 0, len(avail))
 	for _, p := range avail {
 		c, ok := caps[p.Code]
 		switch {
-		case category != miruro.Sub:
+		case category != upstream.Sub:
 			out = append(out, offer{Pin: Pin{Code: p.Code}})
 		case !ok, !c.Hard && !c.Soft:
 			var v Variant
@@ -134,7 +134,7 @@ type source struct {
 	Pin
 	// Category is what sources was asked for, ssub for the rendition carrying a
 	// detachable subtitle file and sub for the burned-in one
-	Category miruro.Category
+	Category upstream.Category
 	// Attach reports whether the subtitle file belongs over the picture
 	Attach bool
 }
@@ -145,17 +145,17 @@ type source struct {
 // whether one arrived
 // an undeclared provider keeps the pre-table behavior, the sub rendition with
 // whatever subtitle file comes back, unless the pin said hard
-func (o offer) source(category miruro.Category) source {
+func (o offer) source(category upstream.Category) source {
 	switch {
-	case category != miruro.Sub:
+	case category != upstream.Sub:
 		// the variant names a sub rendition, so it says nothing here
 		return source{Pin: o.Pin, Category: category, Attach: true}
 	case !o.declared:
 		return source{Pin: o.Pin, Category: category, Attach: o.Variant != Hard}
 	case o.Variant == Hard:
-		return source{Pin: o.Pin, Category: miruro.Sub, Attach: false}
+		return source{Pin: o.Pin, Category: upstream.Sub, Attach: false}
 	default:
-		return source{Pin: o.Pin, Category: miruro.Ssub, Attach: true}
+		return source{Pin: o.Pin, Category: upstream.Ssub, Attach: true}
 	}
 }
 
@@ -208,12 +208,12 @@ func orderPinned(rows []offer, pin Pin) []offer {
 // it minus the ones the capability table puts behind an iframe
 // resolving an embed only to have Playable reject it costs a request, and
 // offering one costs the user a pick that cannot work
-func candidates(cat *miruro.Catalog, ep float64, category miruro.Category, caps miruro.Capabilities) ([]miruro.Provider, error) {
+func candidates(cat *upstream.Catalog, ep float64, category upstream.Category, caps upstream.Capabilities) ([]upstream.Provider, error) {
 	avail := cat.Available(ep, category)
 	if len(avail) == 0 {
 		return nil, fmt.Errorf("no provider has episode %s", num(ep))
 	}
-	out := make([]miruro.Provider, 0, len(avail))
+	out := make([]upstream.Provider, 0, len(avail))
 	for _, p := range avail {
 		if c, ok := caps[p.Code]; ok && c.Embed {
 			continue

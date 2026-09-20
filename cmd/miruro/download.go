@@ -11,9 +11,9 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/play"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/ui"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
@@ -129,7 +129,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 
 		// one provider serves an episode from several hosts, so a dead default
 		// stream is not a dead provider
-		for _, stream := range miruro.Rank(ctx, s.media, res, s.cfg.Quality) {
+		for _, stream := range upstream.Rank(ctx, s.media, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
 				return src, missed, nil
@@ -162,8 +162,8 @@ func (s saver) wanted(ep float64) (source, bool) {
 // from downloads one episode from one stream of the source that served it
 // the cache is keyed by the rendition asked for, since sub and ssub are
 // different cuts of the episode and must not share a segment directory
-func (s saver) from(ctx context.Context, res *miruro.Result, src source, stream miruro.Stream, ep float64, report play.Progress) (int, error) {
-	subs := miruro.Order(res.Subtitles, s.cfg.Lang)
+func (s saver) from(ctx context.Context, res *upstream.Result, src source, stream upstream.Stream, ep float64, report play.Progress) (int, error) {
+	subs := upstream.Order(res.Subtitles, s.cfg.Lang)
 	if !src.Attach {
 		subs = nil
 	}

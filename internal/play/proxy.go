@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 const (
@@ -157,8 +157,8 @@ func (p *Proxy) Close() error {
 }
 
 // URL returns the localhost address a player or ffmpeg should open for s
-func (p *Proxy) URL(s miruro.Stream) string {
-	if s.Kind == miruro.HLS {
+func (p *Proxy) URL(s upstream.Stream) string {
+	if s.Kind == upstream.HLS {
 		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height})
 	}
 	return p.proxied(s.URL, s.Referer, media)
@@ -172,8 +172,8 @@ func (p *Proxy) Opaque(rawURL, referer string) string {
 // Subtitles addresses each sidecar through the proxy under a file name a player
 // can show
 // subtitles carry no referer of their own, so they inherit the video stream's
-func (p *Proxy) Subtitles(subs []miruro.Subtitle, referer string) []miruro.Subtitle {
-	out := make([]miruro.Subtitle, len(subs))
+func (p *Proxy) Subtitles(subs []upstream.Subtitle, referer string) []upstream.Subtitle {
+	out := make([]upstream.Subtitle, len(subs))
 	for i, s := range subs {
 		out[i] = s
 		out[i].File = p.named(s.File, referer, subName(s))
@@ -191,7 +191,7 @@ func (p *Proxy) named(rawURL, referer, name string) string {
 // subName is the file name a player shows for an external subtitle track
 // the label names the track and the language tag is the fallback, and the
 // extension is carried over so a player picks the right parser
-func subName(s miruro.Subtitle) string {
+func subName(s upstream.Subtitle) string {
 	name := s.Label
 	if name == "" {
 		name = s.Lang
@@ -219,7 +219,7 @@ func subExt(rawURL string) string {
 
 // Stream addresses s through the proxy
 // the referer is cleared because the proxy sends it upstream itself
-func (p *Proxy) Stream(s miruro.Stream) miruro.Stream {
+func (p *Proxy) Stream(s upstream.Stream) upstream.Stream {
 	s.URL = p.URL(s)
 	s.Referer = ""
 	return s
@@ -383,8 +383,8 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 		return nil, fmt.Errorf("unsupported scheme %q", req.URL.Scheme)
 	}
-	req.Header.Set("User-Agent", miruro.UserAgent)
-	miruro.SetReferer(req.Header, t.Referer)
+	req.Header.Set("User-Agent", upstream.UserAgent)
+	upstream.SetReferer(req.Header, t.Referer)
 	// forward a range only for a relayed body such as an mp4 or a .vtt
 	// a segment must arrive whole so the decoy strip and any decryption line up
 	if rng := r.Header.Get("Range"); rng != "" && t.Kind.relayed() {

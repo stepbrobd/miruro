@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro/play"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/ui"
 )
 
 var historyCmd = &cobra.Command{

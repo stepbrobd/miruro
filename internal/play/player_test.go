@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func TestTailKeepsSuffix(t *testing.T) {
@@ -104,7 +104,7 @@ func fakePlayer(t *testing.T, code int) Player {
 
 func TestPlayWrapsStderr(t *testing.T) {
 	p := fakePlayer(t, 3)
-	err := p.Play(context.Background(), miruro.Stream{URL: "http://localhost/x"}, nil, nil, "t")
+	err := p.Play(context.Background(), upstream.Stream{URL: "http://localhost/x"}, nil, nil, "t")
 	if !errors.As(err, new(*exec.ExitError)) {
 		t.Fatalf("err = %v, want an ExitError", err)
 	}
@@ -115,7 +115,7 @@ func TestPlayWrapsStderr(t *testing.T) {
 
 func TestPlayCleanExit(t *testing.T) {
 	p := fakePlayer(t, 0)
-	if err := p.Play(context.Background(), miruro.Stream{URL: "http://localhost/x"}, nil, nil, "t"); err != nil {
+	if err := p.Play(context.Background(), upstream.Stream{URL: "http://localhost/x"}, nil, nil, "t"); err != nil {
 		t.Errorf("clean exit returned %v", err)
 	}
 }
@@ -123,8 +123,8 @@ func TestPlayCleanExit(t *testing.T) {
 // the proxy injects the referer upstream, so the only difference between the
 // two players is iina's prefix and its own two flags
 func TestArgsPerPlayer(t *testing.T) {
-	s := miruro.Stream{URL: "http://127.0.0.1:1/tok/pay.m3u8"}
-	subs := []miruro.Subtitle{{File: "http://127.0.0.1:1/tok/en.vtt"}}
+	s := upstream.Stream{URL: "http://127.0.0.1:1/tok/pay.m3u8"}
+	subs := []upstream.Subtitle{{File: "http://127.0.0.1:1/tok/en.vtt"}}
 
 	for _, tc := range []struct {
 		kind Kind
@@ -156,8 +156,8 @@ func TestArgsPerPlayer(t *testing.T) {
 // a skip range adds the chapters flag under the same prefix, and the cleanup
 // removes the file it names
 func TestArgsChaptersFile(t *testing.T) {
-	skips := []miruro.SkipRange{{Kind: miruro.Intro, Start: 80, End: 170}}
-	args, cleanup := Player{Kind: MPV}.args(miruro.Stream{URL: "u"}, nil, skips, "Show")
+	skips := []upstream.SkipRange{{Kind: upstream.Intro, Start: 80, End: 170}}
+	args, cleanup := Player{Kind: MPV}.args(upstream.Stream{URL: "u"}, nil, skips, "Show")
 	if cleanup == nil {
 		t.Fatal("a skip range named no chapters file")
 	}

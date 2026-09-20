@@ -1,9 +1,9 @@
-// Package miruro is the vocabulary every backend speaks: the title, episode,
+// Package upstream is the vocabulary every backend speaks: the title, episode,
 // stream, and subtitle records, the Backend interface an upstream implements,
 // the merge of several backends into one catalog, and the heuristics that
 // pick a stream and a subtitle track out of what they answer.
-// The backends themselves live under backend, one package per upstream.
-package miruro
+// The backends themselves live beside it, one package per upstream.
+package upstream
 
 import (
 	"context"
@@ -22,8 +22,8 @@ var (
 	// its firewall rejected this client, and every further request would meet
 	// the same rejection
 	ErrBlocked = errors.New("cloudflare blocked request")
-	// ErrUpstream is recoverable and drives provider fallback
-	ErrUpstream = errors.New("upstream unreachable")
+	// ErrUnreachable is recoverable and drives provider fallback
+	ErrUnreachable = errors.New("upstream unreachable")
 )
 
 // SetReferer attaches the referer a provider named and the origin it belongs to

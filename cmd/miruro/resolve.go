@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/ui"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // resolve resolves an episode and returns the source that served it and the pin
@@ -18,7 +18,7 @@ import (
 // unchanged
 // with no pin it asks once, for a provider and its subtitle rendition together,
 // and the pick is the pin whether or not that provider ends up serving
-func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Result, source, Pin, error) {
+func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*upstream.Result, source, Pin, error) {
 	if pin.Code != "" {
 		res, src, err := s.autoResolve(ctx, ep, pin, nil)
 		return res, src, pin, err
@@ -48,7 +48,7 @@ func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*miruro.Re
 // a provider named in the config or on the command line holds the run to
 // itself, since trading a stated choice for another provider without being
 // asked is what --fallback exists to allow
-func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*miruro.Result, source, error) {
+func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*upstream.Result, source, error) {
 	avail, err := candidates(s.cat, ep, s.category, s.caps)
 	if err != nil {
 		return nil, source{}, err
@@ -80,7 +80,7 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 			if ctx.Err() != nil {
 				return nil, source{}, ctx.Err()
 			}
-			if errors.Is(err, miruro.ErrBlocked) {
+			if errors.Is(err, upstream.ErrBlocked) {
 				if s.refused.add(p.Backend, err) {
 					log.Warn("backend refused the run, skipping its providers", "backend", p.Backend.Name(), "err", err)
 				}

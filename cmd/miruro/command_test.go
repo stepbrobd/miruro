@@ -13,7 +13,7 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // stateRoot points the xdg state directory at a fresh one, which is where the
@@ -108,10 +108,10 @@ func TestStamp(t *testing.T) {
 }
 
 func TestEpisodeSkips(t *testing.T) {
-	cat := &miruro.Catalog{Aniskip: []miruro.SkipRange{
-		{Episode: 1, Kind: miruro.Intro, Start: 0, End: 90},
-		{Episode: 2, Kind: miruro.Intro, Start: 5, End: 95},
-		{Episode: 1, Kind: miruro.Outro, Start: 1300, End: 1400},
+	cat := &upstream.Catalog{Aniskip: []upstream.SkipRange{
+		{Episode: 1, Kind: upstream.Intro, Start: 0, End: 90},
+		{Episode: 2, Kind: upstream.Intro, Start: 5, End: 95},
+		{Episode: 1, Kind: upstream.Outro, Start: 1300, End: 1400},
 	}}
 	got := episodeSkips(cat, 1)
 	if len(got) != 2 {
@@ -129,7 +129,7 @@ func TestEpisodeSkips(t *testing.T) {
 
 func TestJoined(t *testing.T) {
 	sentinel := errors.New("refused")
-	errs := joined([]miruro.Failure{{Backend: "miruro", Err: sentinel}})
+	errs := joined([]upstream.Failure{{Backend: "miruro", Err: sentinel}})
 	if len(errs) != 1 {
 		t.Fatalf("widened %d errors, want 1", len(errs))
 	}
@@ -162,7 +162,7 @@ func TestHistoryCommands(t *testing.T) {
 	}
 	if err := st.save(entry{
 		AnilistID: 16498, Title: "Shingeki no Kyojin", Provider: "hop:soft",
-		Category: miruro.Sub, Episode: 8, Updated: time.Now(),
+		Category: upstream.Sub, Episode: 8, Updated: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -325,12 +325,12 @@ func TestUnknownSubcommand(t *testing.T) {
 // silence
 func TestQualityAndVariantAreCheckedWhereverTheyCameFrom(t *testing.T) {
 	for _, q := range []string{"", "best", "worst", "1080p", "720"} {
-		if !miruro.ValidQuality(q) {
+		if !upstream.ValidQuality(q) {
 			t.Errorf("quality %q is refused, want it accepted", q)
 		}
 	}
 	for _, q := range []string{"1080i", "veryhigh", "0p", "-3"} {
-		if miruro.ValidQuality(q) {
+		if upstream.ValidQuality(q) {
 			t.Errorf("quality %q is accepted, want it refused", q)
 		}
 	}

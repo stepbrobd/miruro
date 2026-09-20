@@ -1,10 +1,10 @@
-package mirurotv
+package miruro
 
 import (
 	"context"
 	"encoding/json"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // Capabilities fetches the capability table, once per client
@@ -12,7 +12,7 @@ import (
 // provider as undeclared instead of refetching per episode
 // a canceled run is not remembered, since the next one would inherit a verdict
 // about nothing that was ever attempted
-func (c *Client) Capabilities(ctx context.Context) (miruro.Capabilities, error) {
+func (c *Client) Capabilities(ctx context.Context) (upstream.Capabilities, error) {
 	c.cfgMu.Lock()
 	defer c.cfgMu.Unlock()
 	if c.cfgDone {
@@ -26,7 +26,7 @@ func (c *Client) Capabilities(ctx context.Context) (miruro.Capabilities, error) 
 	return cfg, err
 }
 
-func (c *Client) config(ctx context.Context) (miruro.Capabilities, error) {
+func (c *Client) config(ctx context.Context) (upstream.Capabilities, error) {
 	body, err := c.pipe(ctx, "config", nil)
 	if err != nil {
 		return nil, err
@@ -46,9 +46,9 @@ func (c *Client) config(ctx context.Context) (miruro.Capabilities, error) {
 		return nil, err
 	}
 
-	cfg := make(miruro.Capabilities, len(raw.Streaming))
+	cfg := make(upstream.Capabilities, len(raw.Streaming))
 	for code, p := range raw.Streaming {
-		cfg[code] = miruro.Caps{
+		cfg[code] = upstream.Caps{
 			Hard:  p.Capabilities.Sub,
 			Soft:  p.Capabilities.Ssub,
 			Embed: p.Player == "iframe" || p.Relationship == "embed",

@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/ui"
 )
 
 var version = "dev"

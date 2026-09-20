@@ -9,8 +9,8 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/play"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // playback is one episode's attempt, the ambient state the stream and provider
@@ -23,42 +23,42 @@ type playback struct {
 	kind play.Kind
 	// launch runs the player on one stream with the subtitles chosen for the
 	// provider that served it, a field so a test needs no player binary
-	launch func(ctx context.Context, s miruro.Stream, subs []miruro.Subtitle) error
+	launch func(ctx context.Context, s upstream.Stream, subs []upstream.Subtitle) error
 }
 
 // run plays the episode, walking the streams of a provider and then the
 // providers, and reports the last failure when none of them produced picture
 // a provider that relayed no media body at all is dead for this episode however
 // many streams it listed, and the download path has always moved off one
-func (p playback) run(pctx context.Context, res *miruro.Result, src source) error {
+func (p playback) run(pctx context.Context, res *upstream.Result, src source) error {
 	tried := map[string]bool{}
 	var last error
 	for {
-		subs := miruro.Order(res.Subtitles, p.cfg.Lang)
+		subs := upstream.Order(res.Subtitles, p.cfg.Lang)
 		if !src.Attach {
 			subs = nil
 		}
 
-		if ranked := miruro.Rank(pctx, p.hc, res, p.cfg.Quality); len(ranked) > 0 {
+		if ranked := upstream.Rank(pctx, p.hc, res, p.cfg.Quality); len(ranked) > 0 {
 			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
 				"server", server(ranked[0]), "rendition", src.Category,
 				"player", p.kind, "subs", len(subs))
 
 			before := p.px.Served()
-			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s miruro.Stream) error {
+			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream) error {
 				return p.launch(ctx, s, subs)
 			})
 			if last == nil || pctx.Err() != nil || p.px.Served() != before {
 				return last
 			}
 		} else {
-			last = fmt.Errorf("%s: %w", src.Code, miruro.ErrNoStream)
+			last = fmt.Errorf("%s: %w", src.Code, upstream.ErrNoStream)
 		}
 
 		tried[src.Code] = true
 		next, nsrc, err := p.autoResolve(pctx, p.ep, p.pin, tried)
 		switch {
-		case errors.Is(err, miruro.ErrBlocked):
+		case errors.Is(err, upstream.ErrBlocked):
 			// the session is over, and saying the player exited would hide that
 			return err
 		case err != nil:
@@ -77,7 +77,7 @@ func (p playback) run(pctx context.Context, res *miruro.Result, src source) erro
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
 // inside the playback goroutine
-func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, play func(context.Context, miruro.Stream) error) error {
+func playStreams(ctx context.Context, px *play.Proxy, ranked []upstream.Stream, play func(context.Context, upstream.Stream) error) error {
 	var err error
 	for i, s := range ranked {
 		before := px.Served()
@@ -101,7 +101,7 @@ func playStreams(ctx context.Context, px *play.Proxy, ranked []miruro.Stream, pl
 // own host
 // the url's host is what tells one unnamed stream of a provider from another,
 // where a placeholder reads as the provider serving a thing called "stream"
-func server(s miruro.Stream) string {
+func server(s upstream.Stream) string {
 	if s.Server != "" {
 		return s.Server
 	}

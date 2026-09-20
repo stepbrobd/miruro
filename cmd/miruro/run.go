@@ -12,21 +12,21 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
-	"ysun.co/miruro"
-	"ysun.co/miruro/backend/mirurotv"
-	"ysun.co/miruro/play"
-	"ysun.co/miruro/ui"
+	"ysun.co/miruro/internal/miruro"
+	"ysun.co/miruro/internal/play"
+	"ysun.co/miruro/internal/ui"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // runState is the state shared by every episode in one command
 type runState struct {
 	// hc fetches a master playlist when a quality pick needs one expanded
 	hc        *http.Client
-	cat       *miruro.Catalog
+	cat       *upstream.Catalog
 	anilistID int
 	title     string
-	category  miruro.Category
-	caps      miruro.Capabilities
+	category  upstream.Category
+	caps      upstream.Capabilities
 	cfg       config
 	// fallback allows the walk past the pinned provider
 	// a provider named in the config or on the command line is a stated choice,
@@ -46,7 +46,7 @@ type refusals struct {
 }
 
 // add records a refusal and reports whether it is the first for the backend
-func (r *refusals) add(b miruro.Backend, err error) bool {
+func (r *refusals) add(b upstream.Backend, err error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.dead == nil {
@@ -60,7 +60,7 @@ func (r *refusals) add(b miruro.Backend, err error) bool {
 }
 
 // get returns the refusal a backend answered, nil when it answered none
-func (r *refusals) get(b miruro.Backend) error {
+func (r *refusals) get(b upstream.Backend) error {
 	if b == nil {
 		return nil
 	}
@@ -84,7 +84,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// config validate reads the file, so a quality given on the command line or
 	// in the environment reached the heuristic unchecked and was dropped in
 	// silence when it named a height no provider carries
-	if !miruro.ValidQuality(cfg.Quality) {
+	if !upstream.ValidQuality(cfg.Quality) {
 		return fmt.Errorf("quality %q is not best, worst, or a height such as 1080p", cfg.Quality)
 	}
 
@@ -101,18 +101,18 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	client := mirurotv.New()
+	client := miruro.New()
 	if len(cfg.Mirrors) > 0 {
 		client.Bases = cfg.Mirrors
 	}
 	backends := enabled(all(client), cfg.Backends)
 
-	category := miruro.Sub
+	category := upstream.Sub
 	if cfg.Dub {
-		category = miruro.Dub
+		category = upstream.Dub
 	}
 
-	var media miruro.Media
+	var media upstream.Media
 	startEp := -1.0
 	resumed := ""
 
@@ -124,7 +124,7 @@ func run(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		media, startEp = miruro.Media{ID: e.AnilistID, Romaji: e.Title}, e.Episode
+		media, startEp = upstream.Media{ID: e.AnilistID, Romaji: e.Title}, e.Episode
 		// an explicit flag overrides what the entry saved, so a sub run can be
 		// corrected with --dub and a saved bonk:soft with --provider bonk:hard
 		if !flagDub {
@@ -211,46 +211,46 @@ func run(cmd *cobra.Command, args []string) error {
 	return state.watch(ctx, st, numbers, eps, pin, player)
 }
 
-func findAnime(ctx context.Context, client *mirurotv.Client, args []string) (miruro.Media, error) {
+func findAnime(ctx context.Context, client *miruro.Client, args []string) (upstream.Media, error) {
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" {
 		q, err := ui.Prompt("Search anime")
 		if err != nil {
-			return miruro.Media{}, err
+			return upstream.Media{}, err
 		}
 		query = q
 	}
 	if query == "" {
-		return miruro.Media{}, errors.New("empty query")
+		return upstream.Media{}, errors.New("empty query")
 	}
 
 	media, err := client.Search(ctx, query)
 	if err != nil {
-		return miruro.Media{}, err
+		return upstream.Media{}, err
 	}
 	if len(media) == 0 {
-		return miruro.Media{}, fmt.Errorf("no results for %q", query)
+		return upstream.Media{}, fmt.Errorf("no results for %q", query)
 	}
 	return ui.Select("Select anime", media, mediaLabel)
 }
 
 // all is every upstream this build resolves against, in the order the merged
 // catalog lists them
-// a new backend is one package implementing miruro.Backend and one entry here
-func all(client *mirurotv.Client) miruro.Backends {
-	return miruro.Backends{client}
+// a new backend is one package implementing upstream.Backend and one entry here
+func all(client *miruro.Client) upstream.Backends {
+	return upstream.Backends{client}
 }
 
 // enabled keeps the backends a config names, every one when it names none
 // a name nothing implements is warned about, since a typo would otherwise
 // read as the backend being down
-func enabled(backends miruro.Backends, names []string) miruro.Backends {
+func enabled(backends upstream.Backends, names []string) upstream.Backends {
 	if len(names) == 0 {
 		return backends
 	}
-	var out miruro.Backends
+	var out upstream.Backends
 	for _, name := range names {
-		i := slices.IndexFunc(backends, func(b miruro.Backend) bool { return b.Name() == name })
+		i := slices.IndexFunc(backends, func(b upstream.Backend) bool { return b.Name() == name })
 		if i < 0 {
 			log.Warn("ignoring unknown backend", "backend", name)
 			continue
@@ -265,7 +265,7 @@ func enabled(backends miruro.Backends, names []string) miruro.Backends {
 }
 
 // joined widens backend failures to errors for errors.Join
-func joined(failed []miruro.Failure) []error {
+func joined(failed []upstream.Failure) []error {
 	out := make([]error, len(failed))
 	for i, f := range failed {
 		out[i] = f
@@ -286,7 +286,7 @@ var formatNames = map[string]string{
 
 // mediaLabel renders one search hit with what tells same-titled media apart,
 // the AniList format and the episode count
-func mediaLabel(x miruro.Media) string {
+func mediaLabel(x upstream.Media) string {
 	var meta []string
 	if x.Format != "" {
 		name, ok := formatNames[x.Format]

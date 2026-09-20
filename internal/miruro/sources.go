@@ -1,15 +1,15 @@
-package mirurotv
+package miruro
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 // Sources resolves an episode on a provider to playable streams and subtitles
-func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat miruro.Category) (*miruro.Result, error) {
+func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat upstream.Category) (*upstream.Result, error) {
 	body, err := c.pipe(ctx, "sources", map[string]string{
 		"episodeId": episodeID,
 		"provider":  provider,
@@ -41,7 +41,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 		return nil, err
 	}
 
-	res := &miruro.Result{}
+	res := &upstream.Result{}
 	for _, s := range raw.Streams {
 		// the kind is a closed set, so a container nothing here plays is dropped
 		// where it arrives rather than carried as a free string
@@ -49,7 +49,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 		if !ok {
 			continue
 		}
-		res.Streams = append(res.Streams, miruro.Stream{
+		res.Streams = append(res.Streams, upstream.Stream{
 			URL:     s.URL,
 			Kind:    kind,
 			Quality: s.Quality,
@@ -63,7 +63,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 		if !attachable(s.Kind) {
 			continue
 		}
-		res.Subtitles = append(res.Subtitles, miruro.Subtitle{
+		res.Subtitles = append(res.Subtitles, upstream.Subtitle{
 			File:    s.File,
 			Label:   s.Label,
 			Lang:    s.Language,
@@ -74,10 +74,10 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat mi
 }
 
 // kinds maps the api's stream type to the closed set
-var kinds = map[string]miruro.Kind{
-	"hls":   miruro.HLS,
-	"mp4":   miruro.MP4,
-	"embed": miruro.Embed,
+var kinds = map[string]upstream.Kind{
+	"hls":   upstream.HLS,
+	"mp4":   upstream.MP4,
+	"embed": upstream.Embed,
 }
 
 // attachable reports whether a subtitle entry carries dialogue

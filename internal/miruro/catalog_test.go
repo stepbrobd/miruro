@@ -1,9 +1,9 @@
-package mirurotv
+package miruro
 
 import (
 	"testing"
 
-	"ysun.co/miruro"
+	"ysun.co/miruro/internal/upstream"
 )
 
 func TestBestSkips(t *testing.T) {
@@ -20,10 +20,10 @@ func TestBestSkips(t *testing.T) {
 		t.Fatalf("want 2 ranges, got %d: %+v", len(got), got)
 	}
 	// the highest-voted op wins, recap and mixed are dropped
-	if got[0].Kind != miruro.Intro || got[0].Start != 12 {
+	if got[0].Kind != upstream.Intro || got[0].Start != 12 {
 		t.Errorf("intro is not the highest-voted row: %+v", got[0])
 	}
-	if got[1].Kind != miruro.Outro || got[1].Start != 1300 {
+	if got[1].Kind != upstream.Outro || got[1].Start != 1300 {
 		t.Errorf("outro missing or wrong: %+v", got[1])
 	}
 }
@@ -40,10 +40,10 @@ func TestBestSkipsRejectsMisplacedRange(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 ranges, got %d: %+v", len(got), got)
 	}
-	if got[0].Kind != miruro.Intro || got[0].Start != 275.794 {
+	if got[0].Kind != upstream.Intro || got[0].Start != 275.794 {
 		t.Errorf("intro should be the early row despite fewer votes: %+v", got[0])
 	}
-	if got[1].Kind != miruro.Outro || got[1].Start != 1326.083 {
+	if got[1].Kind != upstream.Outro || got[1].Start != 1326.083 {
 		t.Errorf("outro should be the late row despite fewer votes: %+v", got[1])
 	}
 }
