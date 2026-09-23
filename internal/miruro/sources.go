@@ -50,7 +50,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat up
 			continue
 		}
 		res.Streams = append(res.Streams, upstream.Stream{
-			URL:     s.URL,
+			URL:     browserURL(s.URL),
 			Kind:    kind,
 			Quality: s.Quality,
 			Referer: s.Referer,
@@ -64,7 +64,7 @@ func (c *Client) Sources(ctx context.Context, episodeID, provider string, cat up
 			continue
 		}
 		res.Subtitles = append(res.Subtitles, upstream.Subtitle{
-			File:    s.File,
+			File:    browserURL(s.File),
 			Label:   s.Label,
 			Lang:    s.Language,
 			Default: s.Default,
@@ -78,6 +78,22 @@ var kinds = map[string]upstream.Kind{
 	"hls":   upstream.HLS,
 	"mp4":   upstream.MP4,
 	"embed": upstream.Embed,
+}
+
+// browserURL reads a url from the api the way the site's own player reads it
+// a browser takes https:///host as https://host however many slashes follow the
+// first two, where net/url reads the third as an empty host
+// hop lists the subtitle files of its older encodes in that shape
+func browserURL(raw string) string {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return raw
+	}
+	switch strings.ToLower(scheme) {
+	case "http", "https":
+		return scheme + "://" + strings.TrimLeft(rest, "/")
+	}
+	return raw
 }
 
 // attachable reports whether a subtitle entry carries dialogue

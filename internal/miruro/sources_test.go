@@ -66,3 +66,39 @@ func TestAbsentActiveFlagStaysPlayable(t *testing.T) {
 		t.Error("an explicit isActive false was not marked dead")
 	}
 }
+
+// hop lists the subtitle files of its older encodes with a third slash after the
+// scheme, which the site's player reads past and net/url reads as an empty host
+func TestSourcesReadURLsTheWayABrowserDoes(t *testing.T) {
+	srv := mirror(t, serves(`{"streams":[{"url":"https:///bl.example/master.m3u8","type":"hls"}],
+		"subtitles":[{"file":"https:///subbl.example/1_en.srt","label":"English","language":"en"}]}`))
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	res, err := c.Sources(context.Background(), "ep", "hop", upstream.Ssub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := res.Streams[0].URL, "https://bl.example/master.m3u8"; got != want {
+		t.Errorf("stream url = %q, want %q", got, want)
+	}
+	if got, want := res.Subtitles[0].File, "https://subbl.example/1_en.srt"; got != want {
+		t.Errorf("subtitle file = %q, want %q", got, want)
+	}
+}
+
+func TestBrowserURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://cdn.example/a//b.vtt":       "https://cdn.example/a//b.vtt",
+		"https:///cdn.example/a.vtt":         "https://cdn.example/a.vtt",
+		"http:////cdn.example/a.vtt":         "http://cdn.example/a.vtt",
+		"HTTPS:///cdn.example/a.vtt":         "HTTPS://cdn.example/a.vtt",
+		"ftp:///cdn.example/a.vtt":           "ftp:///cdn.example/a.vtt",
+		"/a.vtt?next=https:///cdn.example/b": "/a.vtt?next=https:///cdn.example/b",
+		"https:/cdn.example/a.vtt":           "https:/cdn.example/a.vtt",
+		"en.vtt":                             "en.vtt",
+		"":                                   "",
+	} {
+		if got := browserURL(raw); got != want {
+			t.Errorf("browserURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
