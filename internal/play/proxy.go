@@ -38,7 +38,11 @@ const (
 	bufferedTimeout = 5 * time.Minute
 )
 
-var errToken = errors.New("bad token")
+var (
+	errToken = errors.New("bad token")
+	// errTarget marks an upstream url the relay cannot address
+	errTarget = errors.New("bad target")
+)
 
 // kind selects how the proxy treats an upstream body
 type kind string
@@ -376,12 +380,15 @@ func (p *Proxy) decode(reqPath string) (target, error) {
 func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errTarget, err)
 	}
 	// the upstream URL comes from a decoded payload and from playlist rewriting
 	// refuse any non-http scheme so the relay cannot reach a local target
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return nil, fmt.Errorf("unsupported scheme %q", req.URL.Scheme)
+		return nil, fmt.Errorf("%w: unsupported scheme %q", errTarget, req.URL.Scheme)
+	}
+	if req.URL.Host == "" {
+		return nil, fmt.Errorf("%w: no host in %q", errTarget, t.URL)
 	}
 	req.Header.Set("User-Agent", upstream.UserAgent)
 	upstream.SetReferer(req.Header, t.Referer)
@@ -406,11 +413,16 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 // an upstream status is passed through rather than flattened, because a caller
 // that retries has to tell a dead url from a hiccup, and every failure looking
 // like a 502 makes a 404 look worth retrying
+// a target the relay cannot address is refused like a payload it cannot decode,
+// since no request left for an upstream and none ever could
 // anything else is a transport failure, which is what a 502 means
 func mirrored(err error) int {
 	var s status
-	if errors.As(err, &s) {
+	switch {
+	case errors.As(err, &s):
 		return int(s)
+	case errors.Is(err, errTarget):
+		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
 }

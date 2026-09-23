@@ -436,6 +436,27 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 	}
 }
 
+// a target the relay cannot address never reached an upstream, so answering it
+// as a gateway failure would have the downloader retry what cannot succeed
+func TestProxyRefusesAnUnaddressableTarget(t *testing.T) {
+	px, err := StartProxy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for _, raw := range []string{"https:///subbl.example/1_en.srt", "file:///etc/passwd", "https://cdn.example/%zz"} {
+		resp, err := http.Get(px.Opaque(raw, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s answered %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}
+
 // Served has to say whether the player got picture, so a playlist, an aes key,
 // and a subtitle sidecar must not raise it
 func TestProxyServedCountsPictureOnly(t *testing.T) {
