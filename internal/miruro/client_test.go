@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -50,11 +52,40 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+// mask obfuscates plain the way the catalog api does, gzip then a repeating xor
+func mask(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := gz.Bytes()
+	for i := range raw {
+		raw[i] ^= catalogKey[i%len(catalogKey)]
+	}
+	return raw
+}
+
+func TestUnmask(t *testing.T) {
+	want := []byte(`{"data":[],"next_cursor":null,"has_more":false}`)
+	got, err := unmask(mask(t, want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
 // the taxonomy switch tests 403 html before the general >= 400 branch
 // a reorder would report a WAF rejection as recoverable upstream.ErrUnreachable and send
 // the fallback loop back into the block, so every case asserts on the
 // sentinel with errors.Is rather than on message text
-func TestPipeErrorTaxonomy(t *testing.T) {
+func TestErrorTaxonomy(t *testing.T) {
 	plain := []byte(`{"providers":{"bonk":{}}}`)
 	cases := []struct {
 		name    string
@@ -64,6 +95,7 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 		body    []byte
 		cancel  bool
 		wantErr error
+		wantMsg string
 		want    []byte
 	}{
 		{
@@ -112,6 +144,45 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			cancel:  true,
 			wantErr: context.Canceled,
 		},
+		{
+			name:   "a catalog body round-trips",
+			status: http.StatusOK,
+			ctype:  "application/octet-stream",
+			body:   mask(t, plain),
+			want:   plain,
+		},
+		{
+			name:   "a plain json body passes through",
+			status: http.StatusOK,
+			ctype:  "application/json; charset=utf-8",
+			body:   plain,
+			want:   plain,
+		},
+		{
+			name:    "a problem document is recoverable",
+			status:  http.StatusBadRequest,
+			ctype:   "application/problem+json",
+			body:    []byte(`{"type":"about:blank","title":"Bad Request","status":400,"detail":"Unsupported catalog request."}`),
+			wantErr: upstream.ErrUnreachable,
+			wantMsg: "status 400: Bad Request: Unsupported catalog request.",
+		},
+		// the secure pipe went this way in 2026-09, and reading the html shell
+		// as a firewall would have walked every mirror for nothing
+		{
+			name:    "a route the api no longer has is recoverable",
+			status:  http.StatusNotFound,
+			ctype:   "text/html; charset=UTF-8",
+			body:    []byte("<!doctype html><html></html>"),
+			wantErr: upstream.ErrUnreachable,
+			wantMsg: "status 404",
+		},
+		{
+			name:    "a mask that does not decode is an error",
+			status:  http.StatusOK,
+			ctype:   "application/octet-stream",
+			body:    []byte("a body long enough to hold a gzip header and still not be one"),
+			wantErr: gzip.ErrHeader,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,10 +206,13 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 			}
 
 			c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-			got, err := c.pipe(ctx, "sources", nil)
+			got, err := c.get(ctx, "/api/v1/anime")
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("pipe error = %v, want %v", err, tc.wantErr)
+					t.Fatalf("error = %v, want %v", err, tc.wantErr)
+				}
+				if !strings.Contains(fmt.Sprint(err), tc.wantMsg) {
+					t.Errorf("error = %v, want it to carry %q", err, tc.wantMsg)
 				}
 				return
 			}
@@ -146,7 +220,7 @@ func TestPipeErrorTaxonomy(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("pipe body = %s, want %s", got, tc.want)
+				t.Fatalf("body = %s, want %s", got, tc.want)
 			}
 		})
 	}
@@ -160,7 +234,7 @@ func (zeros) Read(p []byte) (int, error) { return len(p), nil }
 // an endless chunked pipe body would otherwise buffer until memory runs out
 func TestPipeRefusesOversizedBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.CopyN(w, zeros{}, maxPipeRaw+1)
+		io.CopyN(w, zeros{}, maxRaw+1)
 	}))
 	defer srv.Close()
 
@@ -212,64 +286,57 @@ func TestClientBoundsAStalledBody(t *testing.T) {
 	}
 }
 
-// the search resource answers 200 with an error object when it fails, and 200
-// with manga when the type filter does not hold, so neither may reach the picker
+// the catalog refuses any page size but the site's own, and a record that names
+// no AniList id or several cannot key the history, so neither may reach the
+// picker
 func TestSearch(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("keeps anime and drops everything else", func(t *testing.T) {
-		var got map[string]string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got = envelopeQuery(t, r)
-			io.WriteString(w, `[
-				{"id":1,"type":"ANIME","title":{"romaji":"Shingeki","english":"Attack on Titan"},"episodes":25,"format":"TV"},
-				{"id":2,"type":"MANGA","title":{"romaji":"Berserk"},"format":"MANGA"},
-				{"id":3,"type":"ANIME","title":{"romaji":"Only Romaji"},"format":"OVA"}]`)
-		}))
-		defer srv.Close()
+	t.Run("asks the way the site does and keys every hit by its AniList id", func(t *testing.T) {
+		var asked *http.Request
+		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			asked = r
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write(mask(t, []byte(`{"data":[
+				{"id":"a","external_ids":{"anilist":["16498"],"mal":["16498"]},"title":{"romaji":"Shingeki no Kyojin","english":"Attack on Titan"},"format":"TV","episode_count":25,"episode_counts":{"raw":25}},
+				{"id":"b","external_ids":{"mal":["1"]},"title":{"romaji":"Unkeyed"},"format":"TV"},
+				{"id":"c","external_ids":{"anilist":["1","2"]},"title":{"romaji":"Ambiguous"},"format":"TV"},
+				{"id":"d","external_ids":{"anilist":["x"]},"title":{"romaji":"Garbled"},"format":"TV"},
+				{"id":"e","external_ids":{"anilist":["21"]},"title":{"romaji":"ONE PIECE"},"format":"TV","episode_count":null,"episode_counts":{"raw":1180}}],
+				"next_cursor":"n","has_more":true}`)))
+		})
 
-		media, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
+		media, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "attack on titan")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(media) != 2 {
-			t.Fatalf("got %d results, want the 2 anime", len(media))
+		want := []upstream.Media{
+			{ID: 16498, Romaji: "Shingeki no Kyojin", English: "Attack on Titan", Episodes: 25, Format: "TV"},
+			{ID: 21, Romaji: "ONE PIECE", Episodes: 1180, Format: "TV"},
 		}
-		if media[0].Title() != "Attack on Titan" || media[1].Title() != "Only Romaji" {
-			t.Errorf("titles = %q and %q", media[0].Title(), media[1].Title())
+		if !reflect.DeepEqual(media, want) {
+			t.Errorf("media = %+v, want %+v", media, want)
 		}
-		if got["q"] != "titan" || got["type"] != "ANIME" {
-			t.Errorf("query = %v, want the term and the anime filter", got)
+		if asked.URL.Path != "/api/v1/anime" {
+			t.Errorf("path = %q, want the anime resource", asked.URL.Path)
+		}
+		if q := asked.URL.Query(); q.Get("q") != "attack on titan" || q.Get("limit") != "15" || len(q) != 2 {
+			t.Errorf("query = %v, want the term and the site's page size and nothing else", q)
 		}
 	})
 
-	t.Run("an error object is reported rather than a json type error", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, `{"error":"Secure pipe failed"}`)
-		}))
-		defer srv.Close()
+	t.Run("a refused search names the reason", func(t *testing.T) {
+		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"type":"about:blank","title":"Bad Request","status":400,"detail":"Unsupported catalog request."}`)
+		})
 
 		_, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
-		if !errors.Is(err, upstream.ErrUnreachable) || !strings.Contains(err.Error(), "Secure pipe failed") {
+		if !errors.Is(err, upstream.ErrUnreachable) || !strings.Contains(err.Error(), "Unsupported catalog request") {
 			t.Errorf("err = %v, want the upstream reason", err)
 		}
 	})
-}
-
-// envelopeQuery decodes the query the client packed into the pipe envelope
-func envelopeQuery(t *testing.T, r *http.Request) map[string]string {
-	t.Helper()
-	raw, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("e"))
-	if err != nil {
-		t.Fatalf("undecodable envelope: %v", err)
-	}
-	var env struct {
-		Query map[string]string `json:"query"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		t.Fatalf("envelope is not json: %v", err)
-	}
-	return env.Query
 }
 
 // counter is a mirror that records how often it was asked

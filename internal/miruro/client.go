@@ -1,6 +1,6 @@
 // Package miruro is the miruro.tv backend, an aggregator fronting several
 // provider sites behind one obfuscated api.
-// It owns the search, episode, and source resolution against the secure pipe,
+// It owns the search, episode, and source resolution against that api,
 // including the browser header set, the HTTP/2 transport, and deobfuscation.
 package miruro
 
@@ -13,10 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptrace"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,12 +25,12 @@ import (
 )
 
 const (
-	// maxPipeBody caps the decoded pipe response against a decompression bomb
-	// the largest real payload, One Piece, decodes to about 8.7 MB
-	maxPipeBody = 64 << 20
-	// maxPipeRaw caps the wire body feeding decode, sized so anything that
-	// decodes within maxPipeBody fits despite the base64 over gzip expansion
-	maxPipeRaw = 96 << 20
+	// maxBody caps a decoded response against a decompression bomb
+	// the largest real payload, One Piece's pipe episodes, decodes to about 8.7 MB
+	maxBody = 64 << 20
+	// maxRaw caps the wire body feeding decode, sized so anything that decodes
+	// within maxBody fits despite the base64 over gzip expansion
+	maxRaw = 96 << 20
 )
 
 // mirrors are the domains that front one miruro backend, which answers every
@@ -50,6 +50,10 @@ var obfKey = []byte{
 	0x71, 0x95, 0x10, 0x34, 0xf8, 0xfb, 0xcf, 0x53,
 	0xd8, 0x9d, 0xb5, 0x2c, 0xeb, 0x3d, 0xc2, 0x2c,
 }
+
+// catalogKey is what the catalog api xors its gzip bodies with, the bytes of a
+// string fixed in the site's bundle
+var catalogKey = []byte("miruro/catalog")
 
 type Client struct {
 	// Bases are the mirror origins tried in order
@@ -96,8 +100,6 @@ type envelope struct {
 }
 
 // pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body
-// it walks the mirrors from the one that answered last, and only a failure a
-// different mirror could answer moves it along
 func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
 	if query == nil {
 		query = map[string]string{}
@@ -106,8 +108,14 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	if err != nil {
 		return nil, err
 	}
-	e := base64.RawURLEncoding.EncodeToString(env)
+	return c.get(ctx, "/api/secure/pipe?e="+base64.RawURLEncoding.EncodeToString(env))
+}
 
+// get runs a GET for ref, a path and query under a mirror, and returns the
+// decoded JSON body
+// it walks the mirrors from the one that answered last, and only a failure a
+// different mirror could answer moves it along
+func (c *Client) get(ctx context.Context, ref string) ([]byte, error) {
 	if len(c.Bases) == 0 {
 		return nil, fmt.Errorf("%w: no mirror configured", upstream.ErrUnreachable)
 	}
@@ -117,7 +125,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	var last error
 	for i := range c.Bases {
 		idx := (start + i) % len(c.Bases)
-		body, v, err := c.attempt(ctx, c.Bases[idx], path, e)
+		body, v, err := c.attempt(ctx, c.Bases[idx], ref)
 		switch v {
 		case served:
 			c.prefer(idx)
@@ -144,7 +152,7 @@ func (c *Client) pipe(ctx context.Context, path string, query map[string]string)
 	return nil, last
 }
 
-// verdict is what pipe does with one mirror's outcome
+// verdict is what get does with one mirror's outcome
 type verdict int
 
 const (
@@ -159,12 +167,13 @@ const (
 	aborted
 )
 
-// attempt runs the pipe against one mirror and reports what pipe should do next
+// attempt runs the request against one mirror and reports what get should do
+// next
 // a transport failure and a WAF rejection are what another mirror could answer
 // every mirror fronts the same backend, so walking them all on a backend status
 // would multiply the requests a provider outage already costs
-func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, verdict, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/secure/pipe?e="+e, nil)
+func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+ref, nil)
 	if err != nil {
 		return nil, aborted, err
 	}
@@ -190,7 +199,7 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPipeRaw+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRaw+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
@@ -198,33 +207,39 @@ func (c *Client) attempt(ctx context.Context, base, path, e string) ([]byte, ver
 		// the headers already arrived, so this host answered
 		return nil, refused, err
 	}
-	if len(body) > maxPipeRaw {
-		return nil, refused, fmt.Errorf("pipe response exceeds %d bytes", maxPipeRaw)
+	if len(body) > maxRaw {
+		return nil, refused, fmt.Errorf("miruro response exceeds %d bytes", maxRaw)
 	}
 
-	isHTML := strings.Contains(resp.Header.Get("content-type"), "text/html")
+	kind := mediaType(resp.Header)
+	isHTML := kind == "text/html"
 	switch {
 	case resp.StatusCode == http.StatusForbidden && isHTML:
 		return nil, unreachable, upstream.ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, refused, fmt.Errorf("%w: miruro status %d", upstream.ErrUnreachable, resp.StatusCode)
+		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, refusal(resp.StatusCode, kind, body))
 	case isHTML:
-		return nil, refused, fmt.Errorf("%w: miruro answered html", upstream.ErrUnreachable)
+		return nil, refused, fmt.Errorf("%w: miruro %s answered html", upstream.ErrUnreachable, req.URL.Path)
 	}
 
-	if obf := resp.Header.Get("x-obfuscated"); obf != "" {
-		if body, err = decode(body, obf); err != nil {
-			return nil, refused, err
-		}
+	switch obf := resp.Header.Get("x-obfuscated"); {
+	case obf != "":
+		body, err = decode(body, obf)
+	case kind == "application/octet-stream":
+		body, err = unmask(body)
+	}
+	if err != nil {
+		return nil, refused, err
 	}
 
-	// a resource that fails answers 200 with an error object rather than a status
-	// every resource does this, so the check belongs here rather than per caller
+	// a pipe resource that fails answers 200 with an error object rather than a
+	// status, and every one of them does, so the check belongs here rather than
+	// per caller
 	var fail struct {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, path, fail.Error)
+		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, fail.Error)
 	}
 	return body, served, nil
 }
@@ -235,6 +250,41 @@ func reached(connected bool) verdict {
 		return refused
 	}
 	return unreachable
+}
+
+// mediaType is the response's content type without its parameters, empty when
+// it names none that parses
+func mediaType(h http.Header) string {
+	kind, _, err := mime.ParseMediaType(h.Get("Content-Type"))
+	if err != nil {
+		return ""
+	}
+	return kind
+}
+
+// refusal names why the backend refused, the status plus the reason a problem
+// document gives
+// the catalog api answers a request it cannot serve with an rfc 9457 problem,
+// while a route it does not have falls through to the site's html shell, which
+// carries nothing worth reading
+func refusal(status int, kind string, body []byte) string {
+	out := fmt.Sprintf("status %d", status)
+	if kind != "application/problem+json" {
+		return out
+	}
+	var p struct {
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal(body, &p) != nil {
+		return out
+	}
+	for _, s := range []string{p.Title, p.Detail} {
+		if s != "" {
+			out += ": " + s
+		}
+	}
+	return out
 }
 
 func (c *Client) current() int {
@@ -263,17 +313,31 @@ func decode(body []byte, obf string) ([]byte, error) {
 			raw[i] ^= obfKey[i%len(obfKey)]
 		}
 	}
+	return inflate(raw)
+}
+
+// unmask reverses the catalog api's obfuscation, a repeating xor over gzip
+// the body is xored in place, since nothing reads the masked bytes afterwards
+func unmask(body []byte) ([]byte, error) {
+	for i := range body {
+		body[i] ^= catalogKey[i%len(catalogKey)]
+	}
+	return inflate(body)
+}
+
+// inflate gunzips raw, refusing anything that decodes past maxBody
+func inflate(raw []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
 	defer zr.Close()
-	out, err := io.ReadAll(io.LimitReader(zr, maxPipeBody+1))
+	out, err := io.ReadAll(io.LimitReader(zr, maxBody+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(out) > maxPipeBody {
-		return nil, fmt.Errorf("pipe response exceeds %d bytes", maxPipeBody)
+	if len(out) > maxBody {
+		return nil, fmt.Errorf("miruro response exceeds %d bytes", maxBody)
 	}
 	return out, nil
 }
