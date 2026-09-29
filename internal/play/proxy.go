@@ -1,6 +1,7 @@
 package play
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -489,17 +490,44 @@ func relay(w http.ResponseWriter, resp *http.Response) error {
 	}
 }
 
+// pngMagic opens every decoy seen, a 1x1 image in front of the stream
+var pngMagic = []byte("\x89PNG\r\n\x1a\n")
+
 // normalizeSegment drops the decoy image some providers place before the
 // transport stream
 // requiring a run of aligned sync bytes keeps a random payload from matching
 // by chance
+// a final segment can hold fewer packets than that run, and one keeping its
+// decoy fails the cache path's check and with it the whole download, so a body
+// opening with the decoy's image is cut where it becomes whole packets to its
+// end instead
+// the image is what makes the shorter test safe, since without it a body that
+// merely ends on a sync byte would be cut down to its last packet
 func normalizeSegment(data []byte) []byte {
 	for i := 0; i < len(data) && i < scanHead; i++ {
 		if synced(data, i) {
 			return data[i:]
 		}
 	}
+	if bytes.HasPrefix(data, pngMagic) {
+		for i := len(pngMagic); i < len(data) && i < scanHead; i++ {
+			if (len(data)-i)%tsPacket == 0 && packets(data, i) {
+				return data[i:]
+			}
+		}
+	}
 	return data
+}
+
+// packets reports whether data from at to its end is whole packets that each
+// open on a sync byte
+func packets(data []byte, at int) bool {
+	for i := at; i < len(data); i += tsPacket {
+		if data[i] != 0x47 {
+			return false
+		}
+	}
+	return true
 }
 
 // synced reports whether data carries a run of aligned sync bytes from at
