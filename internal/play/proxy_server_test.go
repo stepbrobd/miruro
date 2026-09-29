@@ -379,9 +379,11 @@ func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
 		{File: origin.URL + "/track.srt", Label: "Portugues (Brasil)", Lang: "pt-BR"},
 		{File: origin.URL + "/track", Lang: "en"},
 		{File: origin.URL + "/../track.vtt", Label: "../../escape"},
+		// sun's shape, a label naming its own extension over a file named .jpeg
+		{File: origin.URL + "/track.jpeg", Label: "English.VTT", Lang: "en"},
 	}, origin.URL+"/")
 
-	want := []string{"Portugues (Brasil).srt", "en.vtt", "-..-escape.vtt"}
+	want := []string{"Portugues (Brasil).srt", "en.vtt", "-..-escape.vtt", "English.vtt"}
 	for i, s := range subs {
 		u, err := url.Parse(s.File)
 		if err != nil {

@@ -195,6 +195,8 @@ func (p *Proxy) named(rawURL, referer, name string) string {
 // subName is the file name a player shows for an external subtitle track
 // the label names the track and the language tag is the fallback, and the
 // extension is carried over so a player picks the right parser
+// sun labels its tracks as file names, English.vtt, so a label already ending
+// in the extension keeps it once rather than twice
 func subName(s upstream.Subtitle) string {
 	name := s.Label
 	if name == "" {
@@ -203,7 +205,11 @@ func subName(s upstream.Subtitle) string {
 	if name == "" {
 		name = "subtitle"
 	}
-	return safeName(name) + subExt(s.File)
+	ext := subExt(s.File)
+	if strings.HasSuffix(strings.ToLower(name), ext) {
+		name = name[:len(name)-len(ext)]
+	}
+	return safeName(name) + ext
 }
 
 // subExt is the upstream subtitle extension
