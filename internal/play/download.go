@@ -70,6 +70,9 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 		side := filepath.Join(dir, name+sidecar(sub, seen))
 		err := grab(ctx, hc, sub.File, side, nil, nil)
 		if err == nil {
+			if err := asVTT(side); err != nil {
+				log.Warn("subtitle kept under its upstream name", "episode", name, "label", subLabel(sub), "err", err)
+			}
 			continue
 		}
 		// a canceled run is not a missing subtitle, so report it as cancellation
@@ -292,6 +295,29 @@ func subLabel(s upstream.Subtitle) string {
 		return s.Label
 	}
 	return "sub"
+}
+
+// asVTT names a sidecar holding WebVTT .vtt whatever the upstream called it
+// hop's older encodes list .srt files that carry WebVTT, under a format the
+// api declares as srt too, and a player trusting the extension reads them as
+// SubRip and shows nothing
+// each track's tag is its own, so the new name cannot be another track's
+func asVTT(path string) error {
+	ext := filepath.Ext(path)
+	if ext == ".vtt" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	head := make([]byte, 16)
+	n, _ := io.ReadFull(f, head)
+	f.Close()
+	if !bytes.HasPrefix(bytes.TrimPrefix(head[:n], []byte("\xef\xbb\xbf")), []byte("WEBVTT")) {
+		return nil
+	}
+	return os.Rename(path, strings.TrimSuffix(path, ext)+".vtt")
 }
 
 // sidecar is the tail a subtitle takes next to the video, ".en.vtt" for an

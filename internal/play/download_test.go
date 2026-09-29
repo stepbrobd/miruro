@@ -188,6 +188,41 @@ func TestDownloadCountsMissingSidecars(t *testing.T) {
 	}
 }
 
+// hop's older encodes name WebVTT files .srt, and the api calls them srt too,
+// so what the file holds decides its extension, and a real SubRip file keeps
+// its own
+func TestDownloadNamesASidecarByContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "video.mp4"):
+			w.Write(mp4Bytes)
+		case strings.HasSuffix(r.URL.Path, "vtt.srt"):
+			w.Write([]byte("\xef\xbb\xbfWEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhi\n"))
+		case strings.HasSuffix(r.URL.Path, "real.srt"):
+			w.Write([]byte("1\n00:00:00,000 --> 00:00:01,000\nhi\n"))
+		}
+	}))
+	defer srv.Close()
+
+	dir, name := t.TempDir(), "Show - E1"
+	subs := []upstream.Subtitle{
+		{File: srv.URL + "/1_en.vtt.srt", Label: "English", Lang: "en"},
+		{File: srv.URL + "/1_pt.real.srt", Label: "Portugues", Lang: "pt"},
+	}
+	if _, err := Download(context.Background(), http.DefaultClient,
+		upstream.Stream{URL: srv.URL + "/video.mp4", Kind: upstream.MP4}, subs, dir, name, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{name + ".en.vtt", name + ".pt.srt"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("%s is missing: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, name+".en.srt")); !os.IsNotExist(err) {
+		t.Errorf("the WebVTT file also stayed under .srt: %v", err)
+	}
+}
+
 // mp4Bytes opens with the file type box every mp4 leads with and carries
 // nothing a player could show, which is all the container check reads
 var mp4Bytes = []byte("\x00\x00\x00\x18ftypisom" + "not really an mp4, but bytes on disk")
