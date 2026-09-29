@@ -19,14 +19,24 @@ import (
 
 func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	// an episode already on disk is left out before anything is resolved for it,
-	// so a rerun over a finished range asks the api nothing and draws no bars
-	all := len(eps)
+	// so a rerun over a finished range asks the api nothing and draws no bars,
+	// and one owed sidecars comes back for those alone
+	owes := map[float64]owed{}
+	onDisk := 0
 	eps = slices.DeleteFunc(slices.Clone(eps), func(ep float64) bool {
-		return play.Saved(s.cfg.DownloadDir, episodeName(s.title, ep))
+		name := episodeName(s.title, ep)
+		if !play.Saved(s.cfg.DownloadDir, name) {
+			return false
+		}
+		onDisk++
+		o, ok := owing(play.EpisodePath(s.cfg.DownloadDir, name))
+		if ok {
+			owes[ep] = o
+		}
+		return !ok
 	})
-	there := all - len(eps)
 	if len(eps) == 0 {
-		fmt.Printf("%s already in %s\n", plural(there, "episode", "episodes"), s.cfg.DownloadDir)
+		fmt.Printf("%s already in %s\n", plural(onDisk, "episode", "episodes"), s.cfg.DownloadDir)
 		return nil
 	}
 
@@ -44,17 +54,37 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	labels := make([]string, len(eps))
 	for i, ep := range eps {
 		labels[i] = "E" + num(ep)
+		if _, ok := owes[ep]; ok {
+			labels[i] += " subtitles"
+		}
 	}
 
-	// workers run concurrently, so the tally of episodes that lost their
-	// subtitles is shared state
-	var bare atomic.Int64
+	// workers run concurrently, so the tallies of episodes that lost their
+	// subtitles and of episodes that got owed ones back are shared state
+	var bare, repaid atomic.Int64
 	// worker i alone writes swapped[i], published by Downloads joining them
 	swapped := make([]bool, len(eps))
 
 	sv := saver{runState: s, px: px, media: local, pin: pin}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64, share float64)) error {
+		if o, ok := owes[eps[i]]; ok {
+			asked, missed, err := sv.resubtitle(dctx, eps[i], o)
+			switch {
+			case err != nil && dctx.Err() != nil:
+				return err
+			case err != nil:
+				// the video is on disk, so the sidecars still out of reach are
+				// warned the way a first attempt warns them, and stay owed
+				log.Warn("missing subtitles not fetched", "episode", labels[i], "err", err)
+			case !asked:
+			case missed > 0:
+				bare.Add(1)
+			default:
+				repaid.Add(1)
+			}
+			return nil
+		}
 		src, want, missed, err := sv.save(dctx, eps[i], report)
 		if err != nil {
 			return err
@@ -84,7 +114,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("%s of %d failed", plural(failed, "download", "downloads"), len(eps))
+		return fmt.Errorf("%s of %d failed", plural(failed, "download", "downloads"), len(eps)-len(owes))
 	}
 	if canceled > 0 {
 		// map an interrupt onto the same silent 130 exit every other abort takes
@@ -108,11 +138,22 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	}
 	// the default level is warn, so a result logged as info never reached the
 	// user and a long run ended without saying where anything landed
-	said := fmt.Sprintf("saved %s to %s", plural(len(eps), "episode", "episodes"), s.cfg.DownloadDir)
-	if there > 0 {
-		said += fmt.Sprintf(", %d already there", there)
+	var said []string
+	if n := len(eps) - len(owes); n > 0 {
+		said = append(said, fmt.Sprintf("saved %s to %s", plural(n, "episode", "episodes"), s.cfg.DownloadDir))
 	}
-	fmt.Println(said)
+	if n := int(repaid.Load()); n > 0 {
+		said = append(said, "fetched missing subtitles for "+plural(n, "episode", "episodes"))
+	}
+	// an episode whose owed sidecars stayed out of reach is on disk all the same
+	switch there := onDisk - int(repaid.Load()); {
+	case there == 0:
+	case len(said) == 0:
+		said = append(said, fmt.Sprintf("%s already in %s", plural(there, "episode", "episodes"), s.cfg.DownloadDir))
+	default:
+		said = append(said, fmt.Sprintf("%d already there", there))
+	}
+	fmt.Println(strings.Join(said, ", "))
 	return nil
 }
 
@@ -201,5 +242,71 @@ func (s saver) from(ctx context.Context, res *upstream.Result, src source, strea
 	}
 	name := episodeName(s.title, ep)
 	cache := cacheDir(s.anilistID, ep, src.Category, src.Code, s.cfg.Quality)
-	return play.Download(ctx, s.media, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
+	missed, err := play.Download(ctx, s.media, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
+
+	// a video that landed without all of its sidecars, whether they failed or
+	// the run was interrupted before them, is owed them from this rendition
+	// a video on disk past a clean return is one that missed sidecars, and past
+	// a failure it is one whose sidecars the failure cut short, since Download
+	// removes a video it refuses
+	video := play.EpisodePath(s.cfg.DownloadDir, name)
+	switch {
+	case err == nil && missed == 0:
+		settle(video)
+	case play.Saved(s.cfg.DownloadDir, name):
+		o := owed{Video: video, Provider: src.Code, Category: src.Category, Server: server(stream)}
+		if err := o.record(); err != nil {
+			log.Warn("missing subtitles not recorded, a rerun will not fetch them", "episode", name, "err", err)
+		}
+	}
+	return missed, err
+}
+
+// resubtitle fetches the sidecars an episode on disk is owed, from the provider
+// and rendition its video came from, and settles its record once none is left
+// missing
+// it reports whether the sidecars were asked for at all and how many failed
+// a provider that no longer lists the episode or any subtitle for it gives no
+// reason to think a later run would do better, so the record is dropped with a
+// warning rather than resolved on every rerun
+func (s saver) resubtitle(ctx context.Context, ep float64, o owed) (bool, int, error) {
+	l, err := s.listing(ctx, ep)
+	if err != nil {
+		return false, 0, err
+	}
+	var e *upstream.Episode
+	if p, ok := l.Providers[o.Provider]; ok {
+		e = find(p.Episodes(o.Category), ep)
+	}
+	if e == nil {
+		log.Warn("provider no longer lists the episode, its missing subtitles are given up", "episode", num(ep), "provider", o.Provider)
+		settle(o.Video)
+		return false, 0, nil
+	}
+	res, err := l.Sources(ctx, e.ID, o.Provider, o.Category)
+	if err != nil {
+		return false, 0, fmt.Errorf("%s: %w", o.Provider, err)
+	}
+	if len(res.Subtitles) == 0 {
+		log.Warn("provider no longer lists subtitles for the episode, its missing ones are given up", "episode", num(ep), "provider", o.Provider)
+		settle(o.Video)
+		return false, 0, nil
+	}
+
+	// sidecars take the referer of the stream the video came from, and any
+	// stream of the provider's when that one is gone
+	referer := ""
+	i := slices.IndexFunc(res.Streams, func(st upstream.Stream) bool { return st.Playable() && server(st) == o.Server })
+	if i < 0 {
+		i = slices.IndexFunc(res.Streams, upstream.Stream.Playable)
+	}
+	if i >= 0 {
+		referer = res.Streams[i].Referer
+	}
+	subs := upstream.Order(res.Subtitles, s.cfg.Lang)
+	missed, err := play.Sidecars(ctx, s.media, s.px.Subtitles(subs, referer), s.cfg.DownloadDir, episodeName(s.title, ep))
+	if err == nil && missed == 0 {
+		settle(o.Video)
+	}
+	return true, missed, err
 }

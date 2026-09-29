@@ -27,8 +27,9 @@ import (
 type Progress func(done, total int64, share float64)
 
 // Download writes the video and one sidecar per subtitle track
-// an episode already on disk is skipped whole, so sidecar subtitles are only
-// fetched together with a fresh video download
+// an episode already on disk is skipped whole, since the rendition of a file on
+// disk is unknown here and a soft sidecar over a hardsub doubles the
+// subtitles, so a caller owing one its sidecars fetches them with Sidecars
 // cache names a directory for hls segments, so an interrupted episode resumes
 // from what it already fetched, and an empty cache disables that
 // it reports how many sidecars failed so the caller can summarize the run, and
@@ -38,8 +39,7 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	name = safeName(name)
-	dest := episodePath(dir, name)
+	dest := EpisodePath(dir, name)
 	// dest only ever appears via a .part rename, so it is always complete
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		if prog != nil {
@@ -65,7 +65,15 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 		os.Remove(dest)
 		return 0, err
 	}
+	return Sidecars(ctx, hc, subs, dir, name)
+}
 
+// Sidecars writes one sidecar per subtitle track next to the named episode
+// under dir, replacing any already there, and reports how many failed
+// a failure is warned rather than returned, since the video is the deliverable,
+// and only a canceled run is an error
+func Sidecars(ctx context.Context, hc *http.Client, subs []upstream.Subtitle, dir, name string) (int, error) {
+	name = safeName(name)
 	var missed int
 	seen := map[string]int{}
 	for _, sub := range subs {
@@ -90,13 +98,13 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 // Saved reports whether the named episode is already on disk under dir, the
 // test Download skips an episode by
 func Saved(dir, name string) bool {
-	fi, err := os.Stat(episodePath(dir, safeName(name)))
+	fi, err := os.Stat(EpisodePath(dir, name))
 	return err == nil && fi.Size() > 0
 }
 
-// episodePath is where the episode a safe name names lands under dir
-func episodePath(dir, name string) string {
-	return filepath.Join(dir, name+".mp4")
+// EpisodePath is the file the named episode lands in under dir
+func EpisodePath(dir, name string) string {
+	return filepath.Join(dir, safeName(name)+".mp4")
 }
 
 // grab streams url to dest atomically

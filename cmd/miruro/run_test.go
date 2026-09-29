@@ -165,10 +165,11 @@ func deadCDN(t *testing.T, prefix string) *httptest.Server {
 	return srv
 }
 
-// newSaver wires a saver against b with a proxy and a download directory, and
-// returns that directory
+// newSaver wires a saver against b with a proxy, a download directory and a
+// state directory of its own, and returns the download directory
 func newSaver(t *testing.T, b *stub) (saver, string) {
 	t.Helper()
+	stateRoot(t)
 	px, err := play.StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
@@ -704,6 +705,129 @@ func TestDownloadLeavesEpisodesOnDiskAlone(t *testing.T) {
 	}
 	if n := b.listed(); n != 1 {
 		t.Errorf("a finished range was listed again, %d listings in all", n)
+	}
+}
+
+// a sidecar that failed is owed to its episode, and the next run over it fetches
+// the sidecar from the provider the video came from without the video again
+func TestDownloadFetchesOwedSubtitles(t *testing.T) {
+	var up atomic.Bool
+	var videos atomic.Int64
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/live.mp4":
+			videos.Add(1)
+			io.WriteString(w, episodeBody)
+		case r.URL.Path == "/en.vtt" && up.Load():
+			io.WriteString(w, "WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cdn.Close()
+
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1}}, replies: map[string]reply{
+		"bonk": func(upstream.Category) (*upstream.Result, error) {
+			return &upstream.Result{
+				Streams:   []upstream.Stream{{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "HD-1"}},
+				Subtitles: []upstream.Subtitle{{File: cdn.URL + "/en.vtt", Label: "English", Lang: "en"}},
+			}, nil
+		},
+	}}
+	sv, dir := newSaver(t, b)
+	side := filepath.Join(dir, "Show - E1.en.vtt")
+	ctx := context.Background()
+
+	out := printed(t, func() error { return sv.download(ctx, []float64{1}, Pin{}) })
+	if want := fmt.Sprintf("saved 1 episode to %s\n", dir); out != want {
+		t.Errorf("first run printed %q, want %q", out, want)
+	}
+	if _, err := os.Stat(side); err == nil {
+		t.Fatal("the sidecar landed while its host was down")
+	}
+
+	up.Store(true)
+	out = printed(t, func() error { return sv.download(ctx, []float64{1}, Pin{}) })
+	if want := "fetched missing subtitles for 1 episode\n"; out != want {
+		t.Errorf("second run printed %q, want %q", out, want)
+	}
+	if body, err := os.ReadFile(side); err != nil || !strings.HasPrefix(string(body), "WEBVTT") {
+		t.Errorf("sidecar holds %q (%v), want the track", body, err)
+	}
+	if n := videos.Load(); n != 1 {
+		t.Errorf("the video was fetched %d times, want once", n)
+	}
+
+	out = printed(t, func() error { return sv.download(ctx, []float64{1}, Pin{}) })
+	if want := fmt.Sprintf("1 episode already in %s\n", dir); out != want {
+		t.Errorf("third run printed %q, want %q", out, want)
+	}
+	if n := b.listed(); n != 2 {
+		t.Errorf("listed %d times, want the download and the owed sidecar and nothing after", n)
+	}
+}
+
+// a run interrupted between the video and its sidecars leaves the episode on
+// disk, so the sidecars it never reached are owed as much as failed ones
+func TestSaveOwesTheSidecarsAnInterruptedRunMissed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/live.mp4" {
+			io.WriteString(w, episodeBody)
+			return
+		}
+		// the user interrupts while the sidecar is on its way
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer cdn.Close()
+
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1}}, replies: map[string]reply{
+		"bonk": func(upstream.Category) (*upstream.Result, error) {
+			return &upstream.Result{
+				Streams:   []upstream.Stream{{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "HD-1"}},
+				Subtitles: []upstream.Subtitle{{File: cdn.URL + "/en.vtt", Label: "English", Lang: "en"}},
+			}, nil
+		},
+	}}
+	sv, dir := newSaver(t, b)
+	if _, _, _, err := sv.save(ctx, 1, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the interruption", err)
+	}
+	savedEpisode(t, dir)
+	o, ok := owing(filepath.Join(dir, "Show - E1.mp4"))
+	if !ok {
+		t.Fatal("the interrupted sidecar is owed nothing")
+	}
+	if o.Provider != "bonk" || o.Category != upstream.Sub || o.Server != "HD-1" {
+		t.Errorf("owed %+v, want bonk's sub rendition from HD-1", o)
+	}
+}
+
+// an owed sidecar whose provider no longer lists the episode is given up once
+// rather than resolved on every rerun, and the episode counts as on disk
+func TestDownloadGivesUpOwedSubtitlesThatAreGone(t *testing.T) {
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1}}, replies: map[string]reply{}}
+	sv, dir := newSaver(t, b)
+	video := filepath.Join(dir, "Show - E1.mp4")
+	if err := os.WriteFile(video, []byte(episodeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (owed{Video: video, Provider: "gone", Category: upstream.Sub, Server: "HD-1"}).record(); err != nil {
+		t.Fatal(err)
+	}
+
+	said := captureLog(t)
+	out := printed(t, func() error { return sv.download(context.Background(), []float64{1}, Pin{}) })
+	if want := fmt.Sprintf("1 episode already in %s\n", dir); out != want {
+		t.Errorf("printed %q, want %q", out, want)
+	}
+	if !strings.Contains(said.String(), "provider no longer lists the episode") {
+		t.Errorf("the log does not say why the subtitles were given up:\n%s", said)
+	}
+	if _, ok := owing(video); ok {
+		t.Error("the record outlived a provider that no longer lists the episode")
 	}
 }
 
