@@ -92,7 +92,7 @@ func (s source) result() *upstream.Result {
 		res.Subtitles = append(res.Subtitles, upstream.Subtitle{
 			File:    browserURL(sub.File),
 			Label:   sub.Label,
-			Lang:    sub.Language,
+			Lang:    upstream.Language(sub.Language, sub.Label),
 			Default: sub.Default,
 		})
 	}

@@ -43,7 +43,8 @@ type Stream struct {
 type Subtitle struct {
 	File  string
 	Label string
-	// Lang is the api's language tag, "en" or "pt-BR", empty when it names none
+	// Lang is the track's language tag, "en" or "pt-BR", read by Language from
+	// what the provider sent, empty when it names none
 	Lang string
 	// Default marks the track the provider itself flags as the one to show
 	Default bool
