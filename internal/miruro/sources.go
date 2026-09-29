@@ -35,6 +35,11 @@ type source struct {
 	Servers []struct {
 		Server  string            `json:"server"`
 		Headers map[string]string `json:"headers"`
+		// Embed is the provider's own player, whose address can say what the
+		// streams are meant to sound like
+		Embed struct {
+			URL string `json:"url"`
+		} `json:"embed"`
 		Streams []struct {
 			URL     string `json:"url"`
 			Format  string `json:"format"`
@@ -67,6 +72,7 @@ func (s source) result() *upstream.Result {
 		if !ok {
 			continue
 		}
+		voice := audioLang(sv.Embed.URL)
 		for _, st := range sv.Streams {
 			// the kind is a closed set, so a container nothing here plays is
 			// dropped where it arrives rather than carried as a free string
@@ -75,11 +81,12 @@ func (s source) result() *upstream.Result {
 				continue
 			}
 			res.Streams = append(res.Streams, upstream.Stream{
-				URL:     browserURL(st.URL),
-				Kind:    kind,
-				Quality: st.Quality,
-				Referer: ref,
-				Server:  sv.Server,
+				URL:       browserURL(st.URL),
+				Kind:      kind,
+				Quality:   st.Quality,
+				Referer:   ref,
+				Server:    sv.Server,
+				AudioLang: voice,
 			})
 		}
 	}
@@ -97,6 +104,17 @@ func (s source) result() *upstream.Result {
 		})
 	}
 	return res
+}
+
+// audioLang is the language a server's embed player is told to sound in, the ln
+// parameter hop's player takes, ja-JP on its soft sub and en-US on its dub over
+// the one master both share, empty when the embed names none
+func audioLang(embed string) string {
+	u, err := url.Parse(embed)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("ln")
 }
 
 // referer is the referer a server's streams are fetched with, and whether the

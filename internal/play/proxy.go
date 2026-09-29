@@ -92,6 +92,9 @@ type target struct {
 	// Audio marks a body of an audio rendition a master names apart from its
 	// video, which every child of that rendition's playlist inherits
 	Audio bool `json:"a,omitempty"`
+	// Lang is the language a master's audio renditions default to, the one
+	// the provider means, empty to leave the master's own default
+	Lang string `json:"l,omitempty"`
 }
 
 // Proxy relays provider streams over localhost, so a player sees plain HTTP/1.1
@@ -208,7 +211,7 @@ func (p *Proxy) URL(s upstream.Stream) string { return p.url(s, 0) }
 
 func (p *Proxy) url(s upstream.Stream, tally uint64) string {
 	if s.Kind == upstream.HLS {
-		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height, Tally: tally})
+		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height, Tally: tally, Lang: s.AudioLang})
 	}
 	return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: media, Tally: tally})
 }

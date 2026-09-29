@@ -37,6 +37,7 @@ func (p *Proxy) rewrite(body []byte, from target, base *url.URL) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	body = preferAudio(body, from.Lang)
 	child := childKind(body)
 
 	var out bytes.Buffer
@@ -93,6 +94,69 @@ func filterMaster(body []byte, height int) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %v", errPlaylist, err)
 	}
 	return out.Bytes(), nil
+}
+
+// preferAudio marks the audio renditions of lang as the default of a master and
+// every other one as not, so the player, ffmpeg and the segment cache all take
+// the sound the provider means
+// a master with no rendition in lang is left as it is, since unmarking its
+// default would leave each of them to guess
+func preferAudio(body []byte, lang string) []byte {
+	if lang == "" || !isMaster(body) {
+		return body
+	}
+	audio := func(line string) (bool, bool) {
+		if !strings.HasPrefix(line, "#EXT-X-MEDIA:") {
+			return false, false
+		}
+		a := attributes(line)
+		return a["TYPE"] == "AUDIO", upstream.SameLanguage(a["LANGUAGE"], lang)
+	}
+	meant := false
+	for line := range strings.SplitSeq(string(body), "\n") {
+		_, ok := audio(strings.TrimSpace(line))
+		meant = meant || ok
+	}
+	if !meant {
+		return body
+	}
+
+	var out bytes.Buffer
+	sc := lines(body)
+	for sc.Scan() {
+		line := sc.Text()
+		switch isAudio, ok := audio(strings.TrimSpace(line)); {
+		case ok:
+			// a rendition marked default has to be one a player may pick on its
+			// own, so AUTOSELECT follows wherever the tag carries it
+			line = setAttr(setAttr(line, "DEFAULT", "YES"), "AUTOSELECT", "YES")
+		case isAudio:
+			line = setAttr(line, "DEFAULT", "NO")
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.Bytes()
+}
+
+// setAttr sets an enumerated attribute of an HLS tag, appending it when the tag
+// carries none, except AUTOSELECT, which only a tag already carrying it needs
+func setAttr(line, key, value string) string {
+	re := enumAttrs[key]
+	if re.MatchString(line) {
+		return re.ReplaceAllString(line, "${1}"+key+"="+value)
+	}
+	if key == "AUTOSELECT" {
+		return line
+	}
+	return strings.TrimRight(line, " \r") + "," + key + "=" + value
+}
+
+// enumAttrs finds an enumerated attribute by name, anchored on the separator so
+// DEFAULT is not found inside another name
+var enumAttrs = map[string]*regexp.Regexp{
+	"DEFAULT":    regexp.MustCompile(`([:,])DEFAULT=[A-Z]*`),
+	"AUTOSELECT": regexp.MustCompile(`([:,])AUTOSELECT=[A-Z]*`),
 }
 
 func hasVariant(body []byte, height int) bool {

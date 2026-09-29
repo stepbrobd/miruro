@@ -41,7 +41,7 @@ const play = `{"episode_number":1,"requested_track":null,"tracks":[
 			{"language":"en","label":"English","file":"https://subst.example/en.vtt","format":"vtt","default":true},
 			{"language":"pt","label":"Portugues","file":"https:///subbl.example/1_pt.srt","format":"srt","default":false},
 			{"language":"en","label":"sprites","file":"https://subst.example/thumbs.jpg","format":"jpg","default":false}],
-		 "servers":[{"server":"Vid","headers":{"Referer":"https://krussdomi.com/"},"streams":[
+		 "servers":[{"server":"Vid","headers":{"Referer":"https://krussdomi.com/"},"embed":{"url":"https://krussdomi.com/cat-player/player?id=x&source=vidstream&ln=ja-JP"},"streams":[
 			{"url":"https://hls.example/master.m3u8","format":"hls","quality":null},
 			{"url":"https://hls.example/master.mpd","format":"dash","quality":null},
 			{"url":"","format":"hls","quality":null}]}]},
@@ -54,7 +54,7 @@ const play = `{"episode_number":1,"requested_track":null,"tracks":[
 			{"server":"X","headers":{},"streams":[{"url":"https://x.example/x.m3u8","format":"hls"}]}]}]},
 	{"track":"dub","providers":[
 		{"provider":"kickassanime","subtitles":[],"servers":[
-			{"server":"Vid","headers":{"Referer":"https://krussdomi.com/"},"streams":[{"url":"https://hls.example/dub.m3u8","format":"hls"}]}]},
+			{"server":"Vid","headers":{"Referer":"https://krussdomi.com/"},"embed":{"url":"https://krussdomi.com/cat-player/player?id=x&source=vidstream&ln=en-US"},"streams":[{"url":"https://hls.example/master.m3u8","format":"hls"}]}]},
 		{"provider":"animepahe","subtitles":[],"servers":[
 			{"server":"animepahe","headers":{"Referer":"https://kwik.cx/"},"streams":[{"url":"https://vault.example/uwu.m3u8","format":"hls","quality":"720p"}]}]}]},
 	{"track":"raw","providers":[
@@ -98,9 +98,18 @@ func TestListing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	streams := []upstream.Stream{{URL: "https://hls.example/master.m3u8", Kind: upstream.HLS, Referer: "https://krussdomi.com/", Server: "Vid"}}
+	streams := []upstream.Stream{{URL: "https://hls.example/master.m3u8", Kind: upstream.HLS, Referer: "https://krussdomi.com/", Server: "Vid", AudioLang: "ja-JP"}}
 	if !reflect.DeepEqual(res.Streams, streams) {
 		t.Errorf("streams = %+v, want %+v", res.Streams, streams)
+	}
+	// the dub is the same master meant to sound in another language, which only
+	// the embed says
+	dub, err := c.Sources(context.Background(), id, "hop", upstream.Dub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dub.Streams) != 1 || dub.Streams[0].URL != streams[0].URL || dub.Streams[0].AudioLang != "en-US" {
+		t.Errorf("dub streams = %+v, want the one master meant in en-US", dub.Streams)
 	}
 	subs := []upstream.Subtitle{
 		{File: "https://subst.example/en.vtt", Label: "English", Lang: "en", Default: true},
@@ -126,7 +135,7 @@ func TestListing(t *testing.T) {
 	}
 
 	// the table is read once, and every resolution asks the play resource again
-	want := []string{"/api/config", playPath, playPath, playPath, playPath}
+	want := []string{"/api/config", playPath, playPath, playPath, playPath, playPath}
 	if got := asked(); !slices.Equal(got, want) {
 		t.Errorf("asked %v, want %v", got, want)
 	}

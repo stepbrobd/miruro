@@ -44,3 +44,24 @@ func TestLanguage(t *testing.T) {
 		}
 	}
 }
+
+// a rendition names its language in ISO 639-2 where an embed names it as a
+// BCP 47 tag, and the two have to meet
+func TestSameLanguage(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"eng", "en-US", true},
+		{"jpn", "ja-JP", true},
+		{"ENG", "en", true},
+		{"ger", "de", true},
+		{"eng", "ja-JP", false},
+		{"", "", false},
+		{"en", "", false},
+	} {
+		if got := SameLanguage(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameLanguage(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

@@ -206,6 +206,73 @@ func TestRewriteRestrictsToStreamHeight(t *testing.T) {
 	}
 }
 
+// hop's dub and soft sub share one master of eight languages with Japanese
+// marked default, so the language the provider means has to become the
+// default, or every player and download takes Japanese on a dub run
+func TestRewriteDefaultsToTheMeantAudio(t *testing.T) {
+	var master strings.Builder
+	master.WriteString("#EXTM3U\n")
+	for range 2 {
+		for _, lang := range []string{"hin", "eng", "jpn"} {
+			def := ""
+			if lang == "jpn" {
+				def = "DEFAULT=YES,"
+			}
+			master.WriteString(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="` + lang + `",` + def + `LANGUAGE="` + lang + `",URI="` + lang + `.m3u8"` + "\n")
+		}
+	}
+	master.WriteString(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,LANGUAGE="eng",URI="subs.m3u8"` + "\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"stereo\",SUBTITLES=\"subs\"\nv.m3u8\n")
+	u, err := url.Parse("https://cdn.example/master.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite := func(lang string) map[string][]string {
+		t.Helper()
+		out, err := fakeProxy().rewrite([]byte(master.String()), target{Referer: "https://ref/", Lang: lang}, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flags := map[string][]string{}
+		for line := range strings.SplitSeq(string(out), "\n") {
+			if a := attributes(line); strings.HasPrefix(line, "#EXT-X-MEDIA:") {
+				flags[a["TYPE"]+" "+a["LANGUAGE"]] = append(flags[a["TYPE"]+" "+a["LANGUAGE"]], a["DEFAULT"])
+			}
+		}
+		return flags
+	}
+
+	dub := rewrite("en-US")
+	for key, want := range map[string]string{"AUDIO eng": "YES", "AUDIO jpn": "NO", "AUDIO hin": "NO", "SUBTITLES eng": "YES"} {
+		if got := dub[key]; len(got) == 0 || got[0] != want || got[len(got)-1] != want {
+			t.Errorf("%s is DEFAULT=%v on a dub, want %s", key, got, want)
+		}
+	}
+	// a language the master does not carry leaves its own default standing
+	if got := rewrite("ko")["AUDIO jpn"]; len(got) != 2 || got[0] != "YES" {
+		t.Errorf("jpn is DEFAULT=%v for an absent language, want its own YES", got)
+	}
+	if got := rewrite("")["AUDIO eng"]; len(got) != 2 || got[0] != "" {
+		t.Errorf("eng is DEFAULT=%v with no language meant, want untouched", got)
+	}
+}
+
+// setAttr replaces an enumerated attribute where the tag carries it, adds
+// DEFAULT where it does not, and never invents an AUTOSELECT
+func TestSetAttr(t *testing.T) {
+	for _, tc := range []struct{ line, key, value, want string }{
+		{`#EXT-X-MEDIA:TYPE=AUDIO,DEFAULT=YES,URI="a"`, "DEFAULT", "NO", `#EXT-X-MEDIA:TYPE=AUDIO,DEFAULT=NO,URI="a"`},
+		{`#EXT-X-MEDIA:TYPE=AUDIO,URI="a"`, "DEFAULT", "YES", `#EXT-X-MEDIA:TYPE=AUDIO,URI="a",DEFAULT=YES`},
+		{`#EXT-X-MEDIA:TYPE=AUDIO,AUTOSELECT=NO,URI="a"`, "AUTOSELECT", "YES", `#EXT-X-MEDIA:TYPE=AUDIO,AUTOSELECT=YES,URI="a"`},
+		{`#EXT-X-MEDIA:TYPE=AUDIO,URI="a"`, "AUTOSELECT", "YES", `#EXT-X-MEDIA:TYPE=AUDIO,URI="a"`},
+		{`#EXT-X-MEDIA:DEFAULT=NO,TYPE=AUDIO` + "\r", "DEFAULT", "YES", `#EXT-X-MEDIA:DEFAULT=YES,TYPE=AUDIO` + "\r"},
+	} {
+		if got := setAttr(tc.line, tc.key, tc.value); got != tc.want {
+			t.Errorf("setAttr(%q, %s, %s) = %q, want %q", tc.line, tc.key, tc.value, got, tc.want)
+		}
+	}
+}
+
 // EXT-X-MEDIA names a media playlist whatever the uri looks like, so an
 // extensionless rendition still has to be rewritten as one
 func TestRewriteExtensionlessRendition(t *testing.T) {

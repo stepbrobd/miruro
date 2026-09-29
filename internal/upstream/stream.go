@@ -38,6 +38,11 @@ type Stream struct {
 	// most streams carry no such flag, so only an explicit false sets this and
 	// an absent one stays worth trying
 	Dead bool
+	// AudioLang is the language the provider means the stream to sound in, where
+	// one master carries its audio in several, empty when it names none
+	// hop serves its dub and its soft sub from one master of eight languages
+	// with Japanese marked default, and only this tells the two apart
+	AudioLang string
 }
 
 type Subtitle struct {
@@ -105,6 +110,13 @@ func (s Subtitle) speaks(lang string) bool {
 }
 
 // primary is the language subtag before any region or script
+// SameLanguage reports whether two tags name one language whatever code set
+// each is in, so eng names what en-US does
+func SameLanguage(a, b string) bool {
+	a, b = shortCode(primary(strings.TrimSpace(a))), shortCode(primary(strings.TrimSpace(b)))
+	return a != "" && strings.EqualFold(a, b)
+}
+
 func primary(tag string) string {
 	if i := strings.IndexAny(tag, "-_"); i >= 0 {
 		return tag[:i]
