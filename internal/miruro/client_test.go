@@ -121,11 +121,12 @@ func TestErrorTaxonomy(t *testing.T) {
 			wantMsg: "status 404",
 		},
 		{
-			name:    "a mask that does not decode is an error",
+			name:    "a mask that does not decode is recoverable",
 			status:  http.StatusOK,
 			ctype:   "application/octet-stream",
 			body:    []byte("a body long enough to hold a gzip header and still not be one"),
-			wantErr: gzip.ErrHeader,
+			wantErr: upstream.ErrUnreachable,
+			wantMsg: "gzip: invalid header",
 		},
 	}
 	for _, tc := range cases {
@@ -181,8 +182,24 @@ func TestRefusesOversizedBody(t *testing.T) {
 
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
 	_, err := c.get(context.Background(), "/x")
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("want an over-cap error, got %v", err)
+	if !errors.Is(err, upstream.ErrUnreachable) || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("want a recoverable over-cap error, got %v", err)
+	}
+}
+
+// a body that dies after its headers came from a host that answered, so it is
+// the backend's failure and keeps the typed surface, with the cause beside it
+func TestBodyThatDiesIsRecoverable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		io.WriteString(w, "{\"data\":")
+	}))
+	defer srv.Close()
+
+	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	_, err := c.get(context.Background(), "/x")
+	if !errors.Is(err, upstream.ErrUnreachable) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want %v wrapping %v", err, upstream.ErrUnreachable, io.ErrUnexpectedEOF)
 	}
 }
 

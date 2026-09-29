@@ -165,16 +165,18 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 	}
 	defer resp.Body.Close()
 
+	// every failure past this point came from a host that answered, so it is
+	// the backend's, and ErrUnreachable keeps the typed surface whole while the
+	// cause stays matchable beside it
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		// the headers already arrived, so this host answered
-		return nil, refused, err
+		return nil, refused, fmt.Errorf("%w: miruro %s: %w", upstream.ErrUnreachable, req.URL.Path, err)
 	}
 	if len(body) > maxBody {
-		return nil, refused, fmt.Errorf("miruro response exceeds %d bytes", maxBody)
+		return nil, refused, fmt.Errorf("%w: miruro %s exceeds %d bytes", upstream.ErrUnreachable, req.URL.Path, maxBody)
 	}
 
 	kind := mediaType(resp.Header)
@@ -192,7 +194,7 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 	// the provider table among them, as plain json
 	if kind == "application/octet-stream" {
 		if body, err = unmask(body); err != nil {
-			return nil, refused, err
+			return nil, refused, fmt.Errorf("%w: miruro %s: %w", upstream.ErrUnreachable, req.URL.Path, err)
 		}
 	}
 	return body, served, nil
