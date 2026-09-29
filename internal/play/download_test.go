@@ -78,6 +78,55 @@ func TestDownloadHLSWritesPlayableMP4(t *testing.T) {
 	}
 }
 
+// a fragmented mp4 stream names an init segment every segment depends on, which
+// whole-file caching cannot reproduce, so the download falls back to ffmpeg
+// through the proxy and still lands whole, the init segment relayed untouched
+// and the fragments passed by the decoy strip, which looks for transport
+// stream packets alone
+func TestDownloadFallsBackForFragmentedMP4(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	src := t.TempDir()
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=3",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*1)", "-c:a", "aac",
+		"-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+		"-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+		"-hls_segment_filename", filepath.Join(src, "seg%d.m4s"),
+		filepath.Join(src, "media.m3u8"))
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("cannot synthesize a fragmented mp4 stream: %v: %s", err, out)
+	}
+	cdn := httptest.NewServer(http.FileServer(http.Dir(src)))
+	defer cdn.Close()
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	dir, cache := t.TempDir(), filepath.Join(t.TempDir(), "cache")
+	tl := px.Tally()
+	s := tl.Stream(upstream.Stream{URL: cdn.URL + "/media.m3u8", Kind: upstream.HLS})
+	if _, err := Download(context.Background(), http.DefaultClient, s, nil, dir, "Show - E1", cache, nil); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	dest := filepath.Join(dir, "Show - E1.mp4")
+	if !streams(t, dest, "v") || !streams(t, dest, "a") {
+		t.Error("the episode lacks picture or sound")
+	}
+	if _, err := os.Stat(cache); !os.IsNotExist(err) {
+		t.Errorf("a stream the cache refuses left a cache directory: %v", err)
+	}
+	if tl.Served() == 0 || tl.Refused() != 0 {
+		t.Errorf("served %d refused %d, want the fragments relayed and none refused", tl.Served(), tl.Refused())
+	}
+}
+
 // ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
 // and exits zero on a silent episode, so the download has to refuse the result
 // itself rather than keep a file nobody can watch
