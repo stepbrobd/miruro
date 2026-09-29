@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -686,5 +687,68 @@ func TestCachedHLSRefusesAnEmptyCacheRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("the working directory was wiped: %v", err)
+	}
+}
+
+// a segment listing no running time at all is still a known length, where one
+// naming none leaves the whole unknown
+func TestLengthCountsASegmentOfNoRunningTime(t *testing.T) {
+	pl, err := parsePlaylist([]byte("#EXTM3U\n#EXTINF:0,\ns0.ts\n#EXTINF:2.0,\ns1.ts\n#EXT-X-ENDLIST\n"), "https://cdn.example/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pl.length(); got != 2 {
+		t.Errorf("length = %v, want the 2s the playlist lists", got)
+	}
+}
+
+// nobody announces an hls episode's byte total, so the cache path tells how
+// far it got as a share of the running time the playlist lists, which reaches
+// the whole once every segment is on disk and counts what a resumed run
+// already had
+func TestFetchSegmentsReportsTheShareOfRunningTime(t *testing.T) {
+	seg := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(seg) }))
+	defer srv.Close()
+
+	body := "#EXTM3U\n#EXTINF:6.0,\ns0.ts\n#EXTINF:2.0,\ns1.ts\n#EXTINF:2.0,\ns2.ts\n#EXT-X-ENDLIST\n"
+	pl, err := parsePlaylist([]byte(body), srv.URL+"/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// a resumed run already has the long first segment
+	if err := os.WriteFile(filepath.Join(dir, segName(0)), seg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var shares []float64
+	prog := func(_, total int64, share float64) {
+		mu.Lock()
+		defer mu.Unlock()
+		if total != 0 {
+			t.Errorf("reported a byte total of %d nobody announced", total)
+		}
+		shares = append(shares, share)
+	}
+	if err := fetchSegments(context.Background(), http.DefaultClient, pl, dir, prog); err != nil {
+		t.Fatal(err)
+	}
+	if len(shares) == 0 || shares[0] < 0.6 {
+		t.Errorf("shares = %v, want the first report to count the cached segment", shares)
+	}
+	if last := slices.Max(shares); last != 1 {
+		t.Errorf("shares = %v, want the whole running time at the end", shares)
+	}
+
+	// a segment naming no duration leaves the length unknown rather than
+	// letting a partial sum run past the end
+	unknown, err := parsePlaylist([]byte("#EXTM3U\ns0.ts\n#EXTINF:2.0,\ns1.ts\n#EXT-X-ENDLIST\n"), srv.URL+"/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unknown.length(); got != 0 {
+		t.Errorf("length = %v, want 0 when a segment names no duration", got)
 	}
 }

@@ -20,9 +20,11 @@ import (
 	"ysun.co/miruro/internal/upstream"
 )
 
-// Progress reports bytes written so far and the total when known
+// Progress reports bytes written so far and the total when known, and share,
+// the part of the episode's running time written, for an hls download whose
+// byte total nobody announces, zero when that is not known either
 // total is 0 for hls where the final size is not announced ahead of time
-type Progress func(done, total int64)
+type Progress func(done, total int64, share float64)
 
 // Download writes the video and one sidecar per subtitle track
 // an episode already on disk is skipped whole, so sidecar subtitles are only
@@ -41,7 +43,7 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 	// dest only ever appears via a .part rename, so it is always complete
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		if prog != nil {
-			prog(fi.Size(), fi.Size())
+			prog(fi.Size(), fi.Size(), 0)
 		}
 		return 0, nil
 	}
@@ -163,7 +165,7 @@ type reader struct {
 func (r *reader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	r.done += int64(n)
-	r.prog(r.done, r.total)
+	r.prog(r.done, r.total, 0)
 	return n, err
 }
 
@@ -275,7 +277,7 @@ func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string)
 	for sc.Scan() {
 		if size, ok := strings.CutPrefix(sc.Text(), "total_size="); ok && prog != nil {
 			if n, err := strconv.ParseInt(size, 10, 64); err == nil {
-				prog(n, 0)
+				prog(n, 0, 0)
 			}
 		}
 	}

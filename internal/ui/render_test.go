@@ -91,8 +91,9 @@ func TestDownloadsFitEveryWidth(t *testing.T) {
 			labels: labels,
 			width:  2,
 			bars:   bars(3),
-			done:   []int64{1 << 20, 0, 0},
+			done:   []int64{1 << 20, 1 << 20, 0},
 			total:  []int64{1 << 22, 0, 0},
+			share:  []float64{0, 0.25, 0},
 			errs:   []error{nil, nil, errors.New("download http://127.0.0.1:55636/2b5b440f4e857cf2267552a94a268888/eyJ1IjoiaHR0cHM6Ly9obHMuYW5pZGIuYXBwL3N0cmVhbS90NEx3WGVYellMY1VqcEh5Tk53OU9DWjlMRHNQQkZrQWlNSUtFNmoxdGV0STE3di05U3RrRFhXVXVnRFZJRlVML21hc3Rlci5tM3U4OiBzdGF0dXMgNDI5")},
 			fin:    []bool{false, false, true},
 			seen:   []string{"WARN download failed, trying the next stream episode=3 provider=pewe err=\"status 429\""},
@@ -129,6 +130,7 @@ func TestCaptureViews(t *testing.T) {
 		bars:   bars(2),
 		done:   []int64{3 << 20, 1 << 20},
 		total:  []int64{8 << 20, 0},
+		share:  make([]float64, 2),
 		errs:   make([]error, 2),
 		fin:    make([]bool, 2),
 		term:   width,
@@ -203,7 +205,7 @@ func TestViewsFitTheScreenHeight(t *testing.T) {
 
 		var d tea.Model = downloads{
 			labels: []string{"E1", "E2", "E3"}, width: 2, bars: bars(3),
-			done: []int64{1, 2, 3}, total: []int64{9, 9, 9},
+			done: []int64{1, 2, 3}, total: []int64{9, 9, 9}, share: make([]float64, 3),
 			errs: make([]error, 3), fin: make([]bool, 3), seen: records,
 		}
 		d, _ = d.Update(tea.WindowSizeMsg{Width: 80, Height: rows})
@@ -224,7 +226,7 @@ func TestDownloadsKeepTheLogWhenTasksOverflow(t *testing.T) {
 		}
 		m := downloads{
 			labels: labels, width: 4, bars: bars(n),
-			done: make([]int64, n), total: make([]int64, n),
+			done: make([]int64, n), total: make([]int64, n), share: make([]float64, n),
 			errs: make([]error, n), fin: make([]bool, n),
 			seen: []string{"WARN download failed, trying the next stream episode=3"},
 		}
@@ -279,7 +281,7 @@ func TestTheNewestRecordSurvivesAShortTerminal(t *testing.T) {
 
 		var d tea.Model = downloads{
 			labels: []string{"E1", "E2", "E3"}, width: 2, bars: bars(3),
-			done: []int64{1, 2, 3}, total: []int64{9, 9, 9},
+			done: []int64{1, 2, 3}, total: []int64{9, 9, 9}, share: make([]float64, 3),
 			errs: make([]error, 3), fin: make([]bool, 3), seen: records,
 		}
 		d, _ = d.Update(tea.WindowSizeMsg{Width: 80, Height: rows})

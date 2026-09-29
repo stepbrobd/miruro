@@ -21,6 +21,7 @@ var ErrCanceled = errors.New("canceled")
 type progressMsg struct {
 	i           int
 	done, total int64
+	share       float64
 }
 
 type doneMsg struct {
@@ -32,12 +33,15 @@ type downloads struct {
 	labels []string
 	// width sizes the label column
 	// term is the full terminal width and rows its height
-	width  int
-	term   int
-	rows   int
-	bars   []progress.Model
-	done   []int64
-	total  []int64
+	width int
+	term  int
+	rows  int
+	bars  []progress.Model
+	done  []int64
+	total []int64
+	// share is the part of a task's running time written, for one whose byte
+	// total is not known
+	share  []float64
 	errs   []error
 	fin    []bool
 	remain int
@@ -56,7 +60,7 @@ func listen(ch chan tea.Msg) tea.Cmd {
 func (m downloads) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case progressMsg:
-		m.done[msg.i], m.total[msg.i] = msg.done, msg.total
+		m.done[msg.i], m.total[msg.i], m.share[msg.i] = msg.done, msg.total, msg.share
 		return m, listen(m.ch)
 	case doneMsg:
 		if !m.fin[msg.i] {
@@ -95,7 +99,10 @@ func (m downloads) View() string {
 		case m.fin[i]:
 			b.WriteString(fmt.Sprintf("  %s %s  done\n", ok(true), name))
 		case m.total[i] > 0:
-			b.WriteString(m.progressRow(i, name))
+			b.WriteString(m.progressRow(i, name, float64(m.done[i])/float64(m.total[i]), size(m.done[i], m.total[i])))
+			b.WriteByte('\n')
+		case m.share[i] > 0:
+			b.WriteString(m.progressRow(i, name, m.share[i], Bytes(m.done[i])))
 			b.WriteByte('\n')
 		default:
 			b.WriteString(cut(fmt.Sprintf("  %s %s", name, Bytes(m.done[i])), columns(m.term)))
@@ -150,7 +157,7 @@ func plural(n int, one, many string) string {
 // a task the user interrupts before it finishes is returned as ErrCanceled
 // by the time Downloads returns no goroutine it spawned is still running and
 // every child process a task started has been reaped
-func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64)) error) []error {
+func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64, share float64)) error) []error {
 	n := len(labels)
 	// a view with no rows would wait for a completion that never arrives
 	if n == 0 {
@@ -187,6 +194,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 			bars:   make([]progress.Model, n),
 			done:   make([]int64, n),
 			total:  make([]int64, n),
+			share:  make([]float64, n),
 			errs:   make([]error, n),
 			fin:    make([]bool, n),
 			remain: n,
@@ -220,7 +228,7 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 // schedule runs every task under the worker limit
 // worker i writes results[i] exactly once before its wg.Done, so the slice is
 // fully populated when schedule returns
-func schedule(ctx context.Context, labels []string, workers int, task func(context.Context, int, func(int64, int64)) error, ch chan tea.Msg, results []error) {
+func schedule(ctx context.Context, labels []string, workers int, task func(context.Context, int, func(int64, int64, float64)) error, ch chan tea.Msg, results []error) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -235,7 +243,7 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 
 			var mu sync.Mutex
 			var last time.Time
-			report := func(done, total int64) {
+			report := func(done, total int64, share float64) {
 				// reports arrive from several goroutines at once
 				mu.Lock()
 				now := time.Now()
@@ -249,7 +257,7 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 				}
 				// a dropped update only costs a repaint
 				select {
-				case ch <- progressMsg{i, done, total}:
+				case ch <- progressMsg{i, done, total, share}:
 				case <-ctx.Done():
 				}
 			}
@@ -269,10 +277,10 @@ func schedule(ctx context.Context, labels []string, workers int, task func(conte
 	wg.Wait()
 }
 
-// progressRow draws one running download, sized to the terminal it is drawn for
-func (m downloads) progressRow(i int, name string) string {
+// progressRow draws one running download at frac of the way, sized to the
+// terminal it is drawn for, with tail saying how much that is
+func (m downloads) progressRow(i int, name string, frac float64, tail string) string {
 	head := "  " + name + " "
-	tail := size(m.done[i], m.total[i])
 	room := barRoom(m.term, m.width)
 	if room < minBar {
 		// with no bar the row carries no styling, so it can simply be cut
@@ -280,7 +288,7 @@ func (m downloads) progressRow(i int, name string) string {
 	}
 	bar := m.bars[i]
 	bar.Width = room
-	return head + bar.ViewAs(float64(m.done[i])/float64(m.total[i])) + "  " + tail
+	return head + bar.ViewAs(frac) + "  " + tail
 }
 
 // errLine renders one failed task as a single line that fits the terminal

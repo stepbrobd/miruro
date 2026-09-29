@@ -276,7 +276,7 @@ func TestDownloadSkipsExistingEpisode(t *testing.T) {
 	missed, err := Download(context.Background(), hc,
 		upstream.Stream{URL: "http://unused/video.mp4", Kind: upstream.MP4},
 		[]upstream.Subtitle{{File: "http://unused/sub.vtt", Label: "English"}},
-		dir, name, "", func(d, tot int64) { done, total = d, tot })
+		dir, name, "", func(d, tot int64, _ float64) { done, total = d, tot })
 	if err != nil {
 		t.Fatalf("an existing episode failed the rerun: %v", err)
 	}

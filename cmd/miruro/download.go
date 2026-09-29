@@ -41,7 +41,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 
 	sv := saver{runState: s, px: px, media: local, pin: pin}
 
-	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
+	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64, share float64)) error {
 		src, want, missed, err := sv.save(dctx, eps[i], report)
 		if err != nil {
 			return err

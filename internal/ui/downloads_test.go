@@ -114,7 +114,7 @@ func TestErrLineNarrowTerm(t *testing.T) {
 // a view with no rows would wait on a completion that never comes
 func TestDownloadsWithNothingToDraw(t *testing.T) {
 	ran := false
-	errs := Downloads(context.Background(), nil, 1, func(context.Context, int, func(int64, int64)) error {
+	errs := Downloads(context.Background(), nil, 1, func(context.Context, int, func(int64, int64, float64)) error {
 		ran = true
 		return nil
 	})
@@ -127,9 +127,9 @@ func TestDownloadsCompletion(t *testing.T) {
 	want := []error{nil, errors.New("boom"), nil, errors.New("split")}
 	labels := []string{"a", "b", "c", "d"}
 
-	errs := Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64)) error {
-		report(1, 2)
-		report(2, 2)
+	errs := Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64, share float64)) error {
+		report(1, 2, 0)
+		report(2, 2, 0)
 		return want[i]
 	})
 
@@ -159,7 +159,7 @@ func TestDownloadsCancellation(t *testing.T) {
 
 	res := make(chan []error, 1)
 	go func() {
-		res <- Downloads(ctx, labels, len(labels), func(ctx context.Context, i int, report func(done, total int64)) error {
+		res <- Downloads(ctx, labels, len(labels), func(ctx context.Context, i int, report func(done, total int64, share float64)) error {
 			started.Done()
 			<-ctx.Done()
 			return ctx.Err()
@@ -182,7 +182,7 @@ func TestDownloadsJoinsWorkers(t *testing.T) {
 	labels := []string{"a", "b", "c", "d", "e"}
 	flags := make([]atomic.Bool, len(labels))
 
-	Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64)) error {
+	Downloads(context.Background(), labels, 2, func(ctx context.Context, i int, report func(done, total int64, share float64)) error {
 		// stagger the returns so a missing join has goroutines to leave behind
 		time.Sleep(time.Duration(i) * time.Millisecond)
 		flags[i].Store(true)
@@ -248,13 +248,14 @@ func TestBytes(t *testing.T) {
 // branches that never ran in a test are the ones a completed run is made of
 func TestDownloadsRenderEveryRowState(t *testing.T) {
 	m := downloads{
-		labels: []string{"E1", "E2", "E3", "E4"},
+		labels: []string{"E1", "E2", "E3", "E4", "E5"},
 		width:  2,
-		bars:   bars(4),
-		done:   []int64{1 << 20, 0, 0, 0},
-		total:  []int64{1 << 22, 0, 0, 0},
-		errs:   []error{nil, nil, nil, errors.New("download refused: status 404")},
-		fin:    []bool{false, false, true, true},
+		bars:   bars(5),
+		done:   []int64{1 << 20, 0, 0, 0, 2 << 20},
+		total:  []int64{1 << 22, 0, 0, 0, 0},
+		share:  []float64{0, 0, 0, 0, 0.5},
+		errs:   []error{nil, nil, nil, errors.New("download refused: status 404"), nil},
+		fin:    []bool{false, false, true, true, false},
 		term:   80,
 	}
 	view := m.View()
@@ -263,9 +264,16 @@ func TestDownloadsRenderEveryRowState(t *testing.T) {
 		"E2 0 B\n",   // running with none, and no bar drawn from a zero total
 		"E3", "done", // finished clean
 		"E4", "status 404", // finished with a failure
+		"E5", "2.0 MB", // an hls download, its bytes and no total it cannot know
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view does not carry %q:\n%s", want, view)
+		}
+	}
+	// the share draws a bar where a bare byte count would draw none
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.Contains(line, "E5") && (strings.Contains(line, " / ") || strings.TrimSpace(line) == "E5 2.0 MB") {
+			t.Errorf("the hls row drew no bar or claimed a total: %q", line)
 		}
 	}
 	if rows := strings.Count(view, "\n"); rows != len(m.labels) {

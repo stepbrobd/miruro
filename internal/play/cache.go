@@ -346,6 +346,19 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 	return pl, nil
 }
 
+// length is the running time of the whole playlist, zero when a segment names
+// none, since a share of a partial sum would run past the end
+func (pl *mediaPlaylist) length() float64 {
+	total := 0.0
+	for _, d := range pl.durations {
+		if d < 0 {
+			return 0
+		}
+		total += d
+	}
+	return total
+}
+
 // segName is the cached file for segment i
 // the index is the identity because the playlist order is what the remux
 // replays, and a signed URL is not stable across runs
@@ -462,21 +475,36 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 	var (
 		mu    sync.Mutex
 		done  int64
+		ran   float64
 		first error
 		sem   = make(chan struct{}, segWorkers)
 		wg    sync.WaitGroup
 		fatal = make(chan struct{})
 	)
+	// nobody announces the byte total of an hls episode, while every segment's
+	// running time is in the playlist, so the part written is told as a share
+	// of that
+	length := pl.length()
+	share := func(ran float64) float64 {
+		if length <= 0 {
+			return 0
+		}
+		return ran / length
+	}
 
 	// already cached bytes count toward progress so a resumed run does not
-	// restart its bar from zero
+	// restart its bar from zero, and a cached segment counts once, here, since
+	// the fetch below finds it on disk and writes nothing
+	cached := make([]bool, len(pl.segAt))
 	for n := range pl.segAt {
-		if fi, err := os.Stat(filepath.Join(dir, segName(n))); err == nil {
+		if fi, err := os.Stat(filepath.Join(dir, segName(n))); err == nil && fi.Size() > 0 {
+			cached[n] = true
 			done += fi.Size()
+			ran += max(pl.durations[n], 0)
 		}
 	}
 	if prog != nil {
-		prog(done, 0)
+		prog(done, 0, share(ran))
 	}
 
 spawn:
@@ -507,11 +535,14 @@ spawn:
 				return
 			}
 			done += written
-			d := done
+			if !cached[n] {
+				ran += max(pl.durations[n], 0)
+			}
+			d, r := done, ran
 			mu.Unlock()
 			// prog can block on ui delivery, so it never runs under mu
 			if prog != nil {
-				prog(d, 0)
+				prog(d, 0, share(r))
 			}
 		}(n, pl.lines[at])
 	}
