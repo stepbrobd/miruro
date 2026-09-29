@@ -80,8 +80,8 @@ const template = `# miruro configuration
 # use dub instead of sub
 # dub = false
 
-# pipe origins to try, in order, replacing the built-in list
-# mirrors = ["https://www.miruro.ru", "https://www.miruro.to", "https://www.miruro.bz", "https://www.miruro.tv"]
+# api origins to try, in order, replacing the built-in list
+# mirrors = ["https://www.miruro.to", "https://www.miruro.bz", "https://www.miruro.cx", "https://www.miruro.tv"]
 
 # upstreams to resolve against, in the order their providers are merged
 # backends = ["miruro"]

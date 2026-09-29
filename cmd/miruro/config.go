@@ -19,7 +19,7 @@ type config struct {
 	Lang        string `toml:"lang"`
 	DownloadDir string `toml:"download"`
 	Dub         bool   `toml:"dub"`
-	// Mirrors replaces the built-in pipe origins, in the order they are tried
+	// Mirrors replaces the built-in api origins, in the order they are tried
 	// a domain blocked at the resolver costs a timeout per run, so reordering
 	// belongs to whoever is behind that resolver
 	Mirrors []string `toml:"mirrors"`
@@ -137,7 +137,7 @@ func lookup(name string) string {
 
 // origins keeps the mirrors that name an http or https host
 // a typo would otherwise fail every request against it with a scheme error,
-// which reads like the pipe is down rather than like the config is wrong
+// which reads like the api is down rather than like the config is wrong
 func origins(mirrors []string) []string {
 	var out []string
 	for _, m := range mirrors {

@@ -30,14 +30,13 @@ import (
 const maxBody = 64 << 20
 
 // mirrors are the domains that front one miruro backend, which answers every
-// one of them with the same bytes
-// www.miruro.com publishes this list and is not itself an api host
-// the order leads with .ru on MiruroAPI's report that it carries the softest
-// Cloudflare rules, which is unverified here
+// one of them with the same bytes, in the order www.miruro.com publishes them
+// www.miruro.com is not itself an api host, and in 2026-09 it marked .ru
+// deprecated in favor of the new .cx, so .ru is left out even while it answers
 var mirrors = []string{
-	"https://www.miruro.ru",
 	"https://www.miruro.to",
 	"https://www.miruro.bz",
+	"https://www.miruro.cx",
 	"https://www.miruro.tv",
 }
 
