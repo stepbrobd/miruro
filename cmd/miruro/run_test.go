@@ -239,6 +239,25 @@ func TestAutoResolve(t *testing.T) {
 	})
 }
 
+// the catalog pages at fifteen, so the picker ends in a row asking for the next
+// page while there is one, and only then
+func TestHits(t *testing.T) {
+	media := []upstream.Media{{ID: 1, Romaji: "One"}, {ID: 2, Romaji: "Two"}}
+	rows := hits(media, true)
+	if len(rows) != 3 || !rows[2].more || rows[0].more || rows[0].media.ID != 1 {
+		t.Fatalf("rows = %+v, want both titles then the more row", rows)
+	}
+	if got := hitLabel(rows[2]); got != "more results" {
+		t.Errorf("more row reads %q", got)
+	}
+	if got := hitLabel(rows[0]); got != mediaLabel(media[0]) {
+		t.Errorf("title row reads %q, want the media label", got)
+	}
+	if rows := hits(media, false); len(rows) != 2 {
+		t.Errorf("rows = %+v, want no more row on the last page", rows)
+	}
+}
+
 func TestMediaLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name string

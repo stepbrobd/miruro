@@ -203,14 +203,56 @@ func findAnime(ctx context.Context, client *miruro.Client, args []string) (upstr
 		return upstream.Media{}, errors.New("empty query")
 	}
 
-	media, err := client.Search(ctx, query)
+	media, next, err := client.Search(ctx, query, "")
 	if err != nil {
 		return upstream.Media{}, err
 	}
 	if len(media) == 0 {
 		return upstream.Media{}, fmt.Errorf("no results for %q", query)
 	}
-	return ui.Select("Select anime", media, mediaLabel)
+	// the catalog answers fifteen hits a page, so the picker asks for the next
+	// one on demand rather than every run paying for pages nobody reads
+	for {
+		pick, err := ui.Select("Select anime", hits(media, next != ""), hitLabel)
+		if err != nil {
+			return upstream.Media{}, err
+		}
+		if !pick.more {
+			return pick.media, nil
+		}
+		var page []upstream.Media
+		if page, next, err = client.Search(ctx, query, next); err != nil {
+			return upstream.Media{}, err
+		}
+		media = append(media, page...)
+	}
+}
+
+// hit is one row of the search picker, a title or the row asking for the next
+// page of them
+type hit struct {
+	media upstream.Media
+	more  bool
+}
+
+// hits lays the titles found so far out for the picker, with the row asking
+// for more last when the catalog has more
+func hits(media []upstream.Media, more bool) []hit {
+	out := make([]hit, 0, len(media)+1)
+	for _, m := range media {
+		out = append(out, hit{media: m})
+	}
+	if more {
+		out = append(out, hit{more: true})
+	}
+	return out
+}
+
+func hitLabel(h hit) string {
+	if h.more {
+		return "more results"
+	}
+	return mediaLabel(h.media)
 }
 
 // all is every upstream this build resolves against, in the order the merged

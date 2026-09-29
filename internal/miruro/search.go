@@ -65,20 +65,29 @@ func (t title) media(id int) upstream.Media {
 	return m
 }
 
-// Search resolves a query to anime through the catalog's anime resource
+// Search resolves a query to anime through the catalog's anime resource, one
+// page at a time
+// cursor is empty for the first page and the one the previous page returned for
+// the next, the way the site's own search scrolls, and the cursor returned is
+// empty once there is no next page
 // the resource is anime only, where the pipe's search mixed in manga
-func (c *Client) Search(ctx context.Context, query string) ([]upstream.Media, error) {
+func (c *Client) Search(ctx context.Context, query, cursor string) ([]upstream.Media, string, error) {
 	q := url.Values{"q": {query}, "limit": {strconv.Itoa(searchPage)}}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
 	body, err := c.get(ctx, "/api/v1/anime?"+q.Encode())
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var hits struct {
-		Data []title `json:"data"`
+		Data       []title `json:"data"`
+		NextCursor string  `json:"next_cursor"`
+		HasMore    bool    `json:"has_more"`
 	}
 	if err := json.Unmarshal(body, &hits); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	media := make([]upstream.Media, 0, len(hits.Data))
 	for _, t := range hits.Data {
@@ -88,5 +97,9 @@ func (c *Client) Search(ctx context.Context, query string) ([]upstream.Media, er
 		}
 		media = append(media, t.media(id))
 	}
-	return media, nil
+	next := ""
+	if hits.HasMore {
+		next = hits.NextCursor
+	}
+	return media, next, nil
 }

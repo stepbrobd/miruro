@@ -258,9 +258,12 @@ func TestSearch(t *testing.T) {
 				"next_cursor":"n","has_more":true}`)))
 		})
 
-		media, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "attack on titan")
+		media, next, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "attack on titan", "")
 		if err != nil {
 			t.Fatal(err)
+		}
+		if next != "n" {
+			t.Errorf("next = %q, want the cursor the page named", next)
 		}
 		want := []upstream.Media{
 			{ID: 16498, Romaji: "Shingeki no Kyojin", English: "Attack on Titan", Episodes: 25, Format: "TV"},
@@ -277,6 +280,29 @@ func TestSearch(t *testing.T) {
 		}
 	})
 
+	// the next page is asked for with the cursor the last one named, which is
+	// the shape the site's own search sends, and the last page names none
+	t.Run("pages with the cursor", func(t *testing.T) {
+		var asked *http.Request
+		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			asked = r
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write(mask(t, []byte(`{"data":[{"id":"z","external_ids":{"anilist":["5"]},"title":{"romaji":"Last"},"format":"TV"}],
+				"next_cursor":"stale","has_more":false}`)))
+		})
+
+		media, next, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan", "c1_abc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q := asked.URL.Query(); q.Get("cursor") != "c1_abc" || q.Get("q") != "titan" || q.Get("limit") != "15" || len(q) != 3 {
+			t.Errorf("query = %v, want the term, the page size and the cursor", q)
+		}
+		if len(media) != 1 || next != "" {
+			t.Errorf("media = %v, next = %q, want the last page and no cursor past it", media, next)
+		}
+	})
+
 	t.Run("a refused search names the reason", func(t *testing.T) {
 		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/problem+json")
@@ -284,7 +310,7 @@ func TestSearch(t *testing.T) {
 			io.WriteString(w, `{"type":"about:blank","title":"Bad Request","status":400,"detail":"Unsupported catalog request."}`)
 		})
 
-		_, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan")
+		_, _, err := (&Client{Bases: []string{srv.URL}, HTTP: srv.Client()}).Search(ctx, "titan", "")
 		if !errors.Is(err, upstream.ErrUnreachable) || !strings.Contains(err.Error(), "Unsupported catalog request") {
 			t.Errorf("err = %v, want the upstream reason", err)
 		}
