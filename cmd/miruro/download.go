@@ -17,14 +17,16 @@ import (
 )
 
 func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
-	px, err := play.StartProxy(ctx)
+	px, err := play.StartProxy(ctx, s.hc)
 	if err != nil {
 		return err
 	}
 	defer px.Close()
 
-	// bound only the header wait so a slow episode is not truncated mid-body
-	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}}
+	// the proxy listens on loopback, which the run's guarded client refuses to
+	// dial, so the episode is read through a client of its own that bounds only
+	// the header wait, so a slow episode is not truncated mid-body
+	local := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}}
 
 	labels := make([]string, len(eps))
 	for i, ep := range eps {
@@ -37,7 +39,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	// worker i alone writes swapped[i], published by Downloads joining them
 	swapped := make([]bool, len(eps))
 
-	sv := saver{runState: s, px: px, media: hc, pin: pin}
+	sv := saver{runState: s, px: px, media: local, pin: pin}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
 		src, want, missed, err := sv.save(dctx, eps[i], report)
@@ -99,8 +101,9 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 
 // saver holds what every episode of one download run shares
 // media is named apart from runState.hc because the two clients differ on
-// purpose: this one drops the whole-request timeout so a long episode is not
-// cut mid-body, and a field called hc here would shadow the other silently
+// purpose: this one reads the episode from the proxy on loopback, which the
+// guarded runState.hc refuses to dial, and a field called hc here would shadow
+// the other silently
 type saver struct {
 	*runState
 	px    *play.Proxy
@@ -135,7 +138,7 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 
 		// one provider serves an episode from several hosts, so a dead default
 		// stream is not a dead provider
-		for _, stream := range upstream.Rank(ctx, s.media, res, s.cfg.Quality) {
+		for _, stream := range upstream.Rank(ctx, s.hc, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
 				return src, want, missed, nil

@@ -58,7 +58,7 @@ func TestProxyServesDisguisedSegmentToMPV(t *testing.T) {
 		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", base)
 	})
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestProxyServesNormalizedHLS(t *testing.T) {
 		}
 	})
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestProxyRewritesAgainstRedirectedURL(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestProxyNormalizesSegmentDespiteClientRange(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestProxyRefusesOversizedPlaylist(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestProxyRelaysRange(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestProxyAnnouncesTheLengthOfABufferedBody(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestProxySubtitleURLIsReadableAndRelays(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 // a target the relay cannot address never reached an upstream, so answering it
 // as a gateway failure would have the downloader retry what cannot succeed
 func TestProxyRefusesAnUnaddressableTarget(t *testing.T) {
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,6 +456,42 @@ func TestProxyRefusesAnUnaddressableTarget(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s answered %d, want %d", raw, resp.StatusCode, http.StatusBadRequest)
 		}
+	}
+}
+
+// a payload names whatever a provider's playlist named, so one pointing at this
+// machine or its network is forbidden rather than fetched, and forbidden rather
+// than failed so the downloader does not retry it
+// the playlist case matters most, since the children it names are rewritten
+// into payloads without passing anything but the rewriter
+func TestProxyRefusesAPrivateTarget(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the relay reached a loopback server at %s", r.URL.Path)
+	}))
+	defer local.Close()
+
+	px, err := StartProxy(context.Background(), upstream.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for _, u := range []string{
+		px.proxied(local.URL+"/seg.ts", "", segment),
+		px.URL(upstream.Stream{URL: local.URL + "/master.m3u8", Kind: upstream.HLS}),
+		px.Opaque(local.URL+"/en.vtt", ""),
+	} {
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s answered %d, want %d", u, resp.StatusCode, http.StatusForbidden)
+		}
+	}
+	if px.Refused() != 1 {
+		t.Errorf("refused = %d, want the one picture body counted", px.Refused())
 	}
 }
 
@@ -475,7 +511,7 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +545,7 @@ func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer origin.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +572,7 @@ func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +619,7 @@ func TestProxyRefused(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +668,7 @@ func TestProxySendsTheOriginWithTheReferer(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +702,7 @@ func TestProxyRefusesAWrongToken(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +762,7 @@ func TestProxyForwardsARangeOnlyForARelayedBody(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +814,7 @@ func TestProxyCountsARelayedBodyOnce(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := StartProxy(context.Background())
+	px, err := StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}

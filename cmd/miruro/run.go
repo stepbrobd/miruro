@@ -20,7 +20,9 @@ import (
 
 // runState is the state shared by every episode in one command
 type runState struct {
-	// hc fetches a master playlist when a quality pick needs one expanded
+	// hc fetches what a provider names, a master playlist a quality pick expands
+	// and every body the stream proxy relays, refusing anything off the public
+	// internet
 	hc *http.Client
 	// backends are asked per episode which providers serve it
 	backends  upstream.Backends
@@ -181,7 +183,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	state := &runState{
-		hc: client.HTTP, backends: backends, cat: cat, anilistID: media.ID, title: title,
+		hc: upstream.Public(), backends: backends, cat: cat, anilistID: media.ID, title: title,
 		category: category, cfg: cfg, fallback: fallback,
 	}
 	if flagDownload {

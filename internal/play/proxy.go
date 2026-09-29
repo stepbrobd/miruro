@@ -106,7 +106,9 @@ type Proxy struct {
 
 // StartProxy binds a relay on an ephemeral localhost port
 // it serves until ctx is canceled or Close is called
-func StartProxy(ctx context.Context) (*Proxy, error) {
+// hc fetches every upstream body, and a run hands it upstream.Public so a
+// provider cannot point the relay at this machine or its network
+func StartProxy(ctx context.Context, hc *http.Client) (*Proxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -117,12 +119,8 @@ func StartProxy(ctx context.Context) (*Proxy, error) {
 		return nil, err
 	}
 
-	// clone the default transport to keep HTTP/2 via ALPN, which the WAF needs
-	// bound the header wait so a stalled CDN does not wedge a fetch indefinitely
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.ResponseHeaderTimeout = 30 * time.Second
 	p := &Proxy{
-		hc:      &http.Client{Transport: tr},
+		hc:      hc,
 		token:   hex.EncodeToString(tok),
 		timeout: bufferedTimeout,
 		done:    make(chan struct{}),
@@ -420,7 +418,8 @@ func (p *Proxy) fetch(ctx context.Context, r *http.Request, t target) (*http.Res
 // that retries has to tell a dead url from a hiccup, and every failure looking
 // like a 502 makes a 404 look worth retrying
 // a target the relay cannot address is refused like a payload it cannot decode,
-// since no request left for an upstream and none ever could
+// since no request left for an upstream and none ever could, and a target off
+// the public internet is forbidden outright, so neither is retried
 // anything else is a transport failure, which is what a 502 means
 func mirrored(err error) int {
 	var s status
@@ -429,6 +428,8 @@ func mirrored(err error) int {
 		return int(s)
 	case errors.Is(err, errTarget):
 		return http.StatusBadRequest
+	case errors.Is(err, upstream.ErrPrivate):
+		return http.StatusForbidden
 	}
 	return http.StatusBadGateway
 }

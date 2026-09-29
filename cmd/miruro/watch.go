@@ -14,7 +14,7 @@ import (
 )
 
 func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float64, pin Pin, player play.Player) error {
-	px, err := play.StartProxy(ctx)
+	px, err := play.StartProxy(ctx, s.hc)
 	if err != nil {
 		return err
 	}

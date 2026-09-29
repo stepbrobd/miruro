@@ -168,7 +168,7 @@ func deadCDN(t *testing.T, prefix string) *httptest.Server {
 // returns that directory
 func newSaver(t *testing.T, b *stub) (saver, string) {
 	t.Helper()
-	px, err := play.StartProxy(context.Background())
+	px, err := play.StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestPlayStreams(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := play.StartProxy(ctx)
+	px, err := play.StartProxy(ctx, http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +793,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := play.StartProxy(ctx)
+	px, err := play.StartProxy(ctx, http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -875,7 +875,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	px, err := play.StartProxy(ctx)
+	px, err := play.StartProxy(ctx, http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,7 +928,7 @@ func TestAbandonStalled(t *testing.T) {
 	defer restore()
 	startGrace, refusalBudget, refusalCheck = 5*time.Second, 3, 10*time.Millisecond
 
-	px, err := play.StartProxy(context.Background())
+	px, err := play.StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}

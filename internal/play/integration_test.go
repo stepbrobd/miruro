@@ -96,7 +96,7 @@ func cacheable(ctx context.Context, t *testing.T, client *miruro.Client, px *Pro
 			why = fmt.Sprintf("did not resolve %s: %v", cat, err)
 			continue
 		}
-		ranked := upstream.Rank(ctx, client.HTTP, res, "")
+		ranked := upstream.Rank(ctx, upstream.Public(), res, "")
 		if len(ranked) == 0 {
 			why = "no selectable stream"
 			continue
@@ -137,7 +137,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 
 	client := miruro.New()
 
-	px, err := StartProxy(ctx)
+	px, err := StartProxy(ctx, upstream.Public())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 
 	client := miruro.New()
 
-	px, err := StartProxy(ctx)
+	px, err := StartProxy(ctx, upstream.Public())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 			if res == nil {
 				t.Skipf("no title shipped a sidecar on this provider: %s", why)
 			}
-			ranked := upstream.Rank(ctx, client.HTTP, res, "")
+			ranked := upstream.Rank(ctx, upstream.Public(), res, "")
 			if len(ranked) == 0 {
 				t.Skip("no selectable stream")
 			}
