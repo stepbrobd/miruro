@@ -23,7 +23,7 @@ import (
 func Rank(ctx context.Context, hc *http.Client, r *Result, quality string) []Stream {
 	var hls, mp4 []Stream
 	for _, s := range r.Streams {
-		if !playable(s) {
+		if !s.Playable() {
 			continue
 		}
 		switch s.Kind {

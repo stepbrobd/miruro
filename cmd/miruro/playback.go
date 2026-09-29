@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -23,6 +24,10 @@ type playback struct {
 	kind play.Kind
 	// watch decides when a stream that shows nothing is stopped
 	watch watchdog
+	// skip holds the streams the user moved past for this episode, and shown
+	// receives each one handed to the player, so the menu knows which is on screen
+	skip  map[feed]bool
+	shown *feed
 	// launch runs the player on one stream, addressed through the proxy under
 	// tl, with the subtitles chosen for the provider that served it, a field so
 	// a test needs no player binary
@@ -42,13 +47,19 @@ func (p playback) run(pctx context.Context, res *upstream.Result, src source) er
 			subs = nil
 		}
 
-		if ranked := upstream.Rank(pctx, p.hc, res, p.cfg.Quality); len(ranked) > 0 {
+		ranked := slices.DeleteFunc(upstream.Rank(pctx, p.hc, res, p.cfg.Quality), func(s upstream.Stream) bool {
+			return p.skip[feed{src.Code, server(s)}]
+		})
+		if len(ranked) > 0 {
 			log.Info("playing", "title", p.title, "ep", num(p.ep), "provider", src.Code,
 				"server", server(ranked[0]), "rendition", src.Category,
 				"player", p.kind, "subs", len(subs))
 
 			var played bool
 			played, last = p.watch.playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream, tl *play.Tally) error {
+				if p.shown != nil {
+					*p.shown = feed{src.Code, server(s)}
+				}
 				return p.launch(ctx, s, tl, subs)
 			})
 			if last == nil || pctx.Err() != nil || played {
@@ -118,6 +129,10 @@ func server(s upstream.Stream) string {
 	}
 	return "unnamed"
 }
+
+// feed names a stream of an episode by the provider serving it and its server,
+// since a server name such as HD-1 recurs from one provider to the next
+type feed struct{ provider, server string }
 
 // watchdog decides when a running player whose stream shows nothing is stopped
 // each playback carries its own, so a test shortening the bounds cannot rewrite

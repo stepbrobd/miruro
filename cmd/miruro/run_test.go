@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -404,17 +405,19 @@ func TestEpisodeFlagTakesAnOpenStart(t *testing.T) {
 func TestControls(t *testing.T) {
 	numbers := []float64{1, 2, 3}
 	for _, tc := range []struct {
-		name string
-		ep   float64
-		want []string
+		name    string
+		ep      float64
+		servers int
+		want    []string
 	}{
-		{"first has no previous", 1, []string{"next", "replay", "select", "change provider", "quit"}},
-		{"middle has both", 2, []string{"next", "replay", "previous", "select", "change provider", "quit"}},
-		{"last has no next", 3, []string{"replay", "previous", "select", "change provider", "quit"}},
+		{"first has no previous", 1, 1, []string{"next", "replay", "select", "change provider", "quit"}},
+		{"middle has both", 2, 1, []string{"next", "replay", "previous", "select", "change provider", "quit"}},
+		{"last has no next", 3, 1, []string{"replay", "previous", "select", "change provider", "quit"}},
+		{"a second server offers another stream", 2, 2, []string{"next", "replay", "previous", "select", "change stream", "change provider", "quit"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := controls(numbers, tc.ep); !slices.Equal(got, tc.want) {
-				t.Errorf("controls(ep %v) = %v, want %v", tc.ep, got, tc.want)
+			if got := controls(numbers, tc.ep, tc.servers); !slices.Equal(got, tc.want) {
+				t.Errorf("controls(ep %v, %d servers) = %v, want %v", tc.ep, tc.servers, got, tc.want)
 			}
 		})
 	}
@@ -431,6 +434,7 @@ func TestApply(t *testing.T) {
 		{"previous", step{ep: 1}, false},
 		{"replay", step{ep: 2}, false},
 		{"select", step{reselect: true}, false},
+		{"change stream", step{ep: 2, restream: true}, false},
 		{"change provider", step{ep: 2, reprovide: true}, false},
 		{"quit", step{}, true},
 	} {
@@ -440,6 +444,53 @@ func TestApply(t *testing.T) {
 				t.Errorf("apply(%q) = (%+v, %v), want (%+v, %v)", tc.action, got, quit, tc.want, tc.wantQuit)
 			}
 		})
+	}
+}
+
+// a server listing several qualities is one host to move past, neither a dead
+// stream nor an embed is one to move to, and a skip names the provider it was
+// made under
+func TestHosts(t *testing.T) {
+	res := &upstream.Result{Streams: []upstream.Stream{
+		{URL: "https://a/720.mp4", Kind: upstream.MP4, Server: "HD-1", Quality: "720p"},
+		{URL: "https://a/1080.mp4", Kind: upstream.MP4, Server: "HD-1", Quality: "1080p"},
+		{URL: "https://b/master.m3u8", Kind: upstream.HLS, Server: "HD-2"},
+		{URL: "https://c/master.m3u8", Kind: upstream.HLS, Server: "HD-3", Dead: true},
+		{URL: "https://d/e/1", Kind: upstream.Embed, Server: "Vidstream"},
+	}}
+	for _, tc := range []struct {
+		name    string
+		skipped map[feed]bool
+		want    int
+	}{
+		{"nothing skipped", nil, 2},
+		{"the server moved past", map[feed]bool{{"kiwi", "HD-1"}: true}, 1},
+		{"the same server under another provider", map[feed]bool{{"hop", "HD-1"}: true}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hosts(res, "kiwi", tc.skipped); got != tc.want {
+				t.Errorf("hosts = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// change stream keeps adding the stream on screen to what is skipped, one that
+// never reached the screen adds nothing, and any other step lets go of it all
+func TestMoveOn(t *testing.T) {
+	a, b := feed{"bonk", "HD-1"}, feed{"bonk", "HD-2"}
+	skipped := moveOn(nil, step{ep: 2, restream: true}, a)
+	skipped = moveOn(skipped, step{ep: 2, restream: true}, b)
+	if want := map[feed]bool{a: true, b: true}; !maps.Equal(skipped, want) {
+		t.Errorf("skipped = %v, want %v", skipped, want)
+	}
+	if got := moveOn(skipped, step{ep: 2, restream: true}, feed{}); len(got) != 2 {
+		t.Errorf("a stream never shown changed what is skipped to %v", got)
+	}
+	for _, next := range []step{{ep: 3}, {ep: 2}, {reselect: true}, {ep: 2, reprovide: true}} {
+		if got := moveOn(map[feed]bool{a: true}, next, b); got != nil {
+			t.Errorf("step %+v kept %v skipped", next, got)
+		}
 	}
 }
 
@@ -996,6 +1047,72 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	}
 	if !slices.Equal(tried, []string{"Yt-mp4"}) {
 		t.Errorf("tried %v, want only the stream that played", tried)
+	}
+}
+
+// change stream replays the episode past the streams moved past, and one that
+// leaves a provider nothing moves on to the next as a dead one would
+func TestPlaybackSkipsTheStreamsMovedPast(t *testing.T) {
+	ctx := context.Background()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+
+	px, err := play.StartProxy(ctx, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	// bonk and pewe both name a server HD-1, so a skip has to say whose it is
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {8}, "pewe": {8}}, replies: map[string]reply{
+		"bonk": streams(
+			upstream.Stream{URL: cdn.URL + "/a.m3u8", Kind: upstream.HLS, Server: "HD-1", Default: true},
+			upstream.Stream{URL: cdn.URL + "/b.m3u8", Kind: upstream.HLS, Server: "HD-2"}),
+		"pewe": streams(upstream.Stream{URL: cdn.URL + "/c.m3u8", Kind: upstream.HLS, Server: "HD-1"}),
+	}}
+	st := resolver(upstream.Sub, b)
+	st.cfg = config{Quality: "best"}
+
+	for _, tc := range []struct {
+		name  string
+		skip  map[feed]bool
+		tried []string
+		shown feed
+	}{
+		{"the provider's next server", map[feed]bool{{"bonk", "HD-1"}: true}, []string{"HD-2"}, feed{"bonk", "HD-2"}},
+		{"the next provider once none is left", map[feed]bool{{"bonk", "HD-1"}: true, {"bonk", "HD-2"}: true}, []string{"HD-1"}, feed{"pewe", "HD-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tried []string
+			var shown feed
+			stage := playback{
+				runState: st,
+				px:       px,
+				watch:    patience(),
+				pin:      Pin{Code: "bonk", Variant: Hard},
+				ep:       8,
+				skip:     tc.skip,
+				shown:    &shown,
+				launch: func(ctx context.Context, s upstream.Stream, tl *play.Tally, _ []upstream.Subtitle) error {
+					return fakePlay(t, &tried)(ctx, s, tl)
+				},
+			}
+			res, err := b.Sources(ctx, "bonk-8", "bonk", upstream.Sub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stage.run(ctx, res, offer{Pin: stage.pin, declared: true}.source(upstream.Sub)); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if !slices.Equal(tried, tc.tried) {
+				t.Errorf("tried %v, want %v", tried, tc.tried)
+			}
+			if shown != tc.shown {
+				t.Errorf("shown %+v, want %+v", shown, tc.shown)
+			}
+		})
 	}
 }
 

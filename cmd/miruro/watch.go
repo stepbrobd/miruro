@@ -24,6 +24,9 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 	ep := queue[0]
 	queue = queue[1:]
 
+	// skipped holds the streams change stream moved past for the episode on
+	// screen, which any other step lets go of
+	var skipped map[feed]bool
 	for {
 		res, src, carry, err := s.resolve(ctx, ep, pin)
 		if err != nil {
@@ -43,8 +46,10 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 			mediaTitle += " - " + d.Title
 		}
 
+		var shown feed
 		stage := playback{
 			runState: s, px: px, pin: pin, ep: ep, kind: player.Kind, watch: patience(),
+			skip: skipped, shown: &shown,
 			launch: func(pctx context.Context, stream upstream.Stream, tl *play.Tally, subs []upstream.Subtitle) error {
 				return player.Play(pctx, tl.Stream(stream), px.Subtitles(subs, stream.Referer), skips, mediaTitle)
 			},
@@ -53,7 +58,7 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 		e := entry{AnilistID: s.anilistID, Title: s.title, Provider: pin.String(), Category: s.category, Episode: ep}
 		action, err := playAndControl(ctx, controlMenu,
 			fmt.Sprintf("Episode %s of %s", num(ep), s.title),
-			controls(numbers, ep),
+			controls(numbers, ep, hosts(res, src.Code, skipped)),
 			len(queue) > 0,
 			func(pctx context.Context) error { return stage.run(pctx, res, src) },
 			func() error { return st.save(e) },
@@ -73,6 +78,7 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 		if quit {
 			return nil
 		}
+		skipped = moveOn(skipped, next, shown)
 		if next.reprovide {
 			pin = Pin{}
 		}
@@ -164,9 +170,45 @@ type step struct {
 	ep        float64
 	reprovide bool
 	reselect  bool
+	// restream replays the episode on the provider's next stream
+	restream bool
 }
 
-func controls(numbers []float64, ep float64) []string {
+// moveOn is what change stream leaves skipped for the next pass of an episode:
+// the stream on screen joins the ones already moved past, one that never
+// reached the screen adds nothing, and any other step lets go of them all
+func moveOn(skipped map[feed]bool, next step, shown feed) map[feed]bool {
+	switch {
+	case !next.restream:
+		return nil
+	case shown == (feed{}):
+		return skipped
+	}
+	if skipped == nil {
+		skipped = map[feed]bool{}
+	}
+	skipped[shown] = true
+	return skipped
+}
+
+// hosts counts the servers a provider's result can still play from past the
+// ones skipped, one however many qualities a server lists, since moving past a
+// stream moves past its server
+func hosts(res *upstream.Result, provider string, skipped map[feed]bool) int {
+	left := map[string]bool{}
+	for _, s := range res.Streams {
+		if s.Playable() && !skipped[feed{provider, server(s)}] {
+			left[server(s)] = true
+		}
+	}
+	return len(left)
+}
+
+// controls is the action menu for one episode
+// change stream is offered while the provider has a server besides the one
+// about to play, since a stream that dies partway keeps its player and the
+// provider's other hosts are otherwise out of reach
+func controls(numbers []float64, ep float64, servers int) []string {
 	_, hasNext := neighbor(numbers, ep, +1)
 	_, hasPrev := neighbor(numbers, ep, -1)
 
@@ -178,7 +220,11 @@ func controls(numbers []float64, ep float64) []string {
 	if hasPrev {
 		actions = append(actions, "previous")
 	}
-	return append(actions, "select", "change provider", "quit")
+	actions = append(actions, "select")
+	if servers > 1 {
+		actions = append(actions, "change stream")
+	}
+	return append(actions, "change provider", "quit")
 }
 
 // apply maps a menu action to the next step, quit included
@@ -194,6 +240,8 @@ func apply(action string, numbers []float64, ep float64) (step, bool) {
 		return step{ep: ep}, false
 	case "select":
 		return step{reselect: true}, false
+	case "change stream":
+		return step{ep: ep, restream: true}, false
 	case "change provider":
 		return step{ep: ep, reprovide: true}, false
 	default:

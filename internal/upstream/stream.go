@@ -55,7 +55,8 @@ type Result struct {
 	Subtitles []Subtitle
 }
 
-func playable(s Stream) bool {
+// Playable reports whether Rank would try s, a live hls or mp4 stream
+func (s Stream) Playable() bool {
 	return !s.Dead && (s.Kind == HLS || s.Kind == MP4)
 }
 
@@ -64,7 +65,7 @@ func playable(s Stream) bool {
 // than accept it and fail later outside the fallback loop
 // the two agree on dead streams for the same reason
 func (r *Result) Playable() bool {
-	return slices.ContainsFunc(r.Streams, playable)
+	return slices.ContainsFunc(r.Streams, Stream.Playable)
 }
 
 // Order returns subs with the track a player should show first at the front
