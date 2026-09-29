@@ -245,7 +245,7 @@ func TestProviderCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("an unlabelled provider is known by its id", func(t *testing.T) {
+	t.Run("an unlabeled provider is known by its id", func(t *testing.T) {
 		srv, _ := api(t, map[string]string{"/api/config": `{"streaming":{"newcomer":{"label":"","visible":true}}}`})
 		codes, err := client(srv).providerCodes(ctx)
 		if err != nil || codes["newcomer"] != "newcomer" {

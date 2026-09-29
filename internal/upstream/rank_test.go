@@ -116,6 +116,24 @@ func TestRankHead(t *testing.T) {
 		}
 	})
 
+	// worst reads the heights off the master when the streams name none, and
+	// restricts the master rather than following the variant out of it
+	t.Run("worst over an unlabeled master takes its shortest height", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, "#EXTM3U\n"+
+				"#EXT-X-STREAM-INF:BANDWIDTH=3,RESOLUTION=1920x1080\nindex-1080.m3u8\n"+
+				"#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=640x360\nindex-360.m3u8\n"+
+				"#EXT-X-STREAM-INF:BANDWIDTH=2,RESOLUTION=1280x720\nindex-720.m3u8\n")
+		}))
+		defer srv.Close()
+
+		r := &Result{Streams: []Stream{{URL: srv.URL + "/master.m3u8", Kind: HLS}}}
+		s := top(t, srv.Client(), r, "worst")
+		if s.URL != srv.URL+"/master.m3u8" || s.Height != 360 || s.Quality != "360p" {
+			t.Errorf("selected %+v, want the master restricted to 360", s)
+		}
+	})
+
 	t.Run("failed master expansion falls back to the first hls", func(t *testing.T) {
 		srv := httptest.NewServer(http.NotFoundHandler())
 		defer srv.Close()

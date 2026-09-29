@@ -51,7 +51,7 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 		}
 
 		e := entry{AnilistID: s.anilistID, Title: s.title, Provider: pin.String(), Category: s.category, Episode: ep}
-		action, err := playAndControl(ctx,
+		action, err := playAndControl(ctx, controlMenu,
 			fmt.Sprintf("Episode %s of %s", num(ep), s.title),
 			controls(numbers, ep),
 			len(queue) > 0,
@@ -88,12 +88,22 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 	}
 }
 
+// menuFunc raises the action menu over a playback, with ui.Control's contract:
+// a dismissal is "" and ended, and a pick is the action and whether playback
+// was already over
+type menuFunc func(ctx context.Context, title string, actions []string, wait func() bool) (string, bool, error)
+
+// controlMenu is the menu a run raises, the terminal's own
+func controlMenu(ctx context.Context, title string, actions []string, wait func() bool) (string, bool, error) {
+	return ui.Control(ctx, title, actions, wait)
+}
+
 // playAndControl runs one playback with the action menu raised over it and
 // joins both before returning the picked action, "" on a dismissal
 // the menu is up while the player runs, so a pick races playback ending
 // an early pick interrupts the player, a clean end mid-batch dismisses the
 // menu to auto-advance
-func playAndControl(ctx context.Context, title string, actions []string, batch bool, run func(context.Context) error, save func() error) (string, error) {
+func playAndControl(ctx context.Context, raise menuFunc, title string, actions []string, batch bool, run func(context.Context) error, save func() error) (string, error) {
 	pctx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	var perr, werr error
@@ -111,7 +121,7 @@ func playAndControl(ctx context.Context, title string, actions []string, batch b
 		<-done
 		return outcome(perr, batch)
 	}
-	action, ended, err := ui.Control(ctx, title, actions, wait)
+	action, ended, err := raise(ctx, title, actions, wait)
 	stop()
 	<-done
 	if err != nil {

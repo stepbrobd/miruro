@@ -250,3 +250,36 @@ func TestFilterMasterKeepsEverythingWithoutAHeight(t *testing.T) {
 		t.Errorf("height 1080 kept the wrong variants:\n%s", got)
 	}
 }
+
+// a playlist written with CRLF endings names the same children, and a carriage
+// return left on a url would send the proxy somewhere else entirely
+func TestRewriteReadsACRLFPlaylist(t *testing.T) {
+	body := "#EXTM3U\r\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\r\n#EXTINF:4.0,\r\nseg0.ts\r\n#EXT-X-ENDLIST\r\n"
+	p := fakeProxy()
+	out := rewritten(p, body, "https://cdn.example/a/media.m3u8")
+	var urls []string
+	for line := range strings.SplitSeq(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-KEY"):
+			urls = append(urls, strings.SplitN(strings.SplitN(line, `URI="`, 2)[1], `"`, 2)[0])
+		case strings.HasPrefix(line, "http://"):
+			urls = append(urls, line)
+		}
+	}
+	want := []string{"https://cdn.example/a/key.bin", "https://cdn.example/a/seg0.ts"}
+	if len(urls) != len(want) {
+		t.Fatalf("rewrote %d urls, want %d:\n%s", len(urls), len(want), out)
+	}
+	for i, u := range urls {
+		tgt, err := p.decode(strings.TrimPrefix(u, "http://127.0.0.1:9999"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tgt.URL != want[i] {
+			t.Errorf("child %d reaches %q, want %q", i, tgt.URL, want[i])
+		}
+	}
+	if strings.Contains(out, "\r") {
+		t.Errorf("a carriage return survived the rewrite:\n%q", out)
+	}
+}

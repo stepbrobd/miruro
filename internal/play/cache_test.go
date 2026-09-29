@@ -15,7 +15,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // zeros streams an endless zero body for over-cap tests
@@ -750,5 +752,44 @@ func TestFetchSegmentsReportsTheShareOfRunningTime(t *testing.T) {
 	}
 	if got := unknown.length(); got != 0 {
 		t.Errorf("length = %v, want 0 when a segment names no duration", got)
+	}
+}
+
+// one dead segment makes the remux incomplete, so the first to fail is named
+// and nothing past it is started, where every later segment would be fetched
+// for an episode already lost
+func TestFetchSegmentsStopsAtTheFirstFailure(t *testing.T) {
+	seg := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8)
+	var fetched atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched.Add(1)
+		if r.URL.Path == "/s1.ts" {
+			http.NotFound(w, r)
+			return
+		}
+		// the live segments are slow, so the failure lands while they are running
+		time.Sleep(50 * time.Millisecond)
+		w.Write(seg)
+	}))
+	defer srv.Close()
+
+	var body strings.Builder
+	body.WriteString("#EXTM3U\n")
+	const n = 40
+	for i := range n {
+		fmt.Fprintf(&body, "#EXTINF:1.0,\ns%d.ts\n", i)
+	}
+	body.WriteString("#EXT-X-ENDLIST\n")
+	pl, err := parsePlaylist([]byte(body.String()), srv.URL+"/media.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = fetchSegments(context.Background(), http.DefaultClient, pl, t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "segment 1:") {
+		t.Fatalf("err = %v, want the first failed segment named", err)
+	}
+	if got := fetched.Load(); got >= n {
+		t.Errorf("fetched %d of %d segments after the first one failed", got, n)
 	}
 }

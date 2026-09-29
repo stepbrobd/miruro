@@ -914,17 +914,38 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 
 // captureLog points the log at a buffer for the length of a test, at a level
 // that keeps everything the playback writes
-func captureLog(t *testing.T) *bytes.Buffer {
+// the proxy's handlers log from their own goroutines, and one still finishing
+// a request the player dropped writes while the test reads, so the buffer is
+// locked
+func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()
-	var b bytes.Buffer
+	b := &lockedBuffer{}
 	level := log.GetLevel()
-	log.SetOutput(&b)
+	log.SetOutput(b)
 	log.SetLevel(log.DebugLevel)
 	t.Cleanup(func() {
 		log.SetOutput(os.Stderr)
 		log.SetLevel(level)
 	})
-	return &b
+	return b
+}
+
+// lockedBuffer is a log sink a test may read while writers are still running
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // a stream that produced picture and then failed is the user's to deal with,
@@ -1173,6 +1194,142 @@ func TestWatchdogHearsASilentStream(t *testing.T) {
 				t.Errorf("a stream showing picture was abandoned:\n%s", said)
 			}
 		})
+	}
+}
+
+// the menu is raised while the player runs, so what the run saves and what it
+// returns depends on which of the two ended first, and on how
+func TestPlayAndControl(t *testing.T) {
+	ctx := context.Background()
+	exitErr := exec.Command("false").Run()
+
+	// until canceled is a player the user is still watching
+	untilCanceled := func(pctx context.Context) error {
+		<-pctx.Done()
+		return pctx.Err()
+	}
+	dismissing := func(_ context.Context, _ string, _ []string, wait func() bool) (string, bool, error) {
+		if wait() {
+			return "", true, nil
+		}
+		// the user picks once the playback is over and the menu stayed up
+		return "replay", true, nil
+	}
+
+	t.Run("an early pick stops the player and still counts as watched", func(t *testing.T) {
+		saved := 0
+		early := func(context.Context, string, []string, func() bool) (string, bool, error) { return "next", false, nil }
+		action, err := playAndControl(ctx, early, "E1", []string{"next"}, false, untilCanceled, func() error { saved++; return nil })
+		if err != nil || action != "next" {
+			t.Fatalf("action = %q, %v, want next", action, err)
+		}
+		if saved != 1 {
+			t.Errorf("saved %d times, want the interrupted episode recorded once", saved)
+		}
+	})
+
+	t.Run("a player that never ran ends the run with its reason", func(t *testing.T) {
+		saved := 0
+		never := errors.New("exec: mpv: not found")
+		action, err := playAndControl(ctx, dismissing, "E1", nil, true,
+			func(context.Context) error { return never }, func() error { saved++; return nil })
+		if !errors.Is(err, never) || action != "" {
+			t.Fatalf("action = %q, err = %v, want the launch failure", action, err)
+		}
+		if saved != 0 {
+			t.Errorf("saved %d times for an episode that never played", saved)
+		}
+	})
+
+	t.Run("a player that failed keeps the menu and saves nothing", func(t *testing.T) {
+		saved := 0
+		said := captureLog(t)
+		action, err := playAndControl(ctx, dismissing, "E1", []string{"replay"}, true,
+			func(context.Context) error { return exitErr }, func() error { saved++; return nil })
+		if err != nil || action != "replay" {
+			t.Fatalf("action = %q, %v, want the pick made after the failure", action, err)
+		}
+		if saved != 0 {
+			t.Errorf("saved %d times for a failed playback", saved)
+		}
+		if !strings.Contains(said.String(), "player exited") {
+			t.Errorf("the failure left no line in scrollback:\n%s", said)
+		}
+	})
+
+	t.Run("a history that cannot be saved is said and does not end the run", func(t *testing.T) {
+		said := captureLog(t)
+		action, err := playAndControl(ctx, dismissing, "E1", nil, true,
+			func(context.Context) error { return nil }, func() error { return errors.New("read-only file system") })
+		if err != nil || action != "" {
+			t.Fatalf("action = %q, %v, want a clean dismissal mid-batch", action, err)
+		}
+		if !strings.Contains(said.String(), "history not saved") {
+			t.Errorf("the failed save was not said:\n%s", said)
+		}
+	})
+}
+
+// the cache directory names every part of the key that picks a rendition, and
+// what a provider sends in those parts cannot leave the cache root
+func TestCacheDir(t *testing.T) {
+	root := stateRoot(t)
+	got := cacheDir(154587, 12.5, upstream.Ssub, "hop", "")
+	if want := filepath.Join(root, "miruro", "segments", "154587-e12.5-ssub-hop-best"); got != want {
+		t.Errorf("cacheDir = %q, want %q", got, want)
+	}
+	if got := safeKey("1-e1-sub-../../x y:z-best"); got != "1-e1-sub-.._.._x_y_z-best" {
+		t.Errorf("safeKey = %q, want one path component", got)
+	}
+	if dir := cacheDir(1, 1, upstream.Sub, "../../etc", "720p"); filepath.Dir(dir) != filepath.Join(root, "miruro", "segments") {
+		t.Errorf("a provider code left the cache root: %q", dir)
+	}
+}
+
+// an upstream that accepts and never answers counts neither a body nor a
+// refusal, so only the grace stops the player, the case the grace exists for
+func TestWatchdogGivesUpOnAStreamThatNeverAnswers(t *testing.T) {
+	hang := make(chan struct{})
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		}
+	}))
+	defer cdn.Close()
+	defer close(hang)
+
+	px, err := play.StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	said := captureLog(t)
+	wd := watchdog{grace: 200 * time.Millisecond, budget: 3, check: 10 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() {
+		_, err := wd.playStreams(context.Background(), px, []upstream.Stream{{URL: cdn.URL + "/v.mp4", Kind: upstream.MP4, Server: "HD-1"}},
+			func(pctx context.Context, s upstream.Stream, tl *play.Tally) error {
+				req, _ := http.NewRequestWithContext(pctx, http.MethodGet, tl.Stream(s).URL, nil)
+				if resp, err := http.DefaultClient.Do(req); err == nil {
+					resp.Body.Close()
+				}
+				<-pctx.Done()
+				return errors.New("signal: killed")
+			})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stream that showed nothing reported success")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the player was never stopped")
+	}
+	if !strings.Contains(said.String(), "showed nothing in time") {
+		t.Errorf("the grace did not say why it stopped the player:\n%s", said)
 	}
 }
 
