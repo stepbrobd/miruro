@@ -16,18 +16,30 @@ import (
 // realPause is the production backoff, captured before TestMain replaces it
 var realPause = pause
 
-// the suite drives the retry paths on purpose, so it must not sleep through the
-// real backoff
-// TestRetrySchedule covers the durations that are skipped here
+// the suite drives the retry and segment paths on purpose, so it must not sleep
+// through the real backoff or the pacing between segment requests
+// TestRetrySchedule and TestPacerSpacesRequests cover what is skipped here
 func TestMain(m *testing.M) {
-	pause = func(int) time.Duration { return 0 }
+	pause = func(int, error) time.Duration { return 0 }
+	paced.gap = 0
 	os.Exit(m.Run())
 }
 
+// a 429 waits out the window the CDN counts over, where the doubling backoff
+// alone would spend every attempt inside it
 func TestRetrySchedule(t *testing.T) {
-	for n, want := range map[int]time.Duration{1: time.Second, 2: 2 * time.Second} {
-		if got := realPause(n); got != want {
-			t.Errorf("pause(%d) = %v, want %v", n, got, want)
+	for _, tc := range []struct {
+		n    int
+		err  error
+		want time.Duration
+	}{
+		{1, status(http.StatusBadGateway), time.Second},
+		{2, status(http.StatusBadGateway), 2 * time.Second},
+		{1, fmt.Errorf("segment 3: %w", status(http.StatusTooManyRequests)), throttled},
+		{2, status(http.StatusTooManyRequests), throttled},
+	} {
+		if got := realPause(tc.n, tc.err); got != tc.want {
+			t.Errorf("pause(%d, %v) = %v, want %v", tc.n, tc.err, got, tc.want)
 		}
 	}
 }

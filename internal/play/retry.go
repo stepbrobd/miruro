@@ -14,9 +14,23 @@ import (
 // used to abort a whole episode
 const attempts = 3
 
-// pause is the wait before retry n, counting from one
+// pause is the wait before retry n, counting from one, after err
+// a 429 waits out the window a CDN counts requests over, since every retry
+// inside it is refused as well
 // it is a variable so a test can drop the wait rather than sleep through it
-var pause = func(n int) time.Duration { return time.Duration(1<<(n-1)) * time.Second }
+var pause = func(n int, err error) time.Duration {
+	d := time.Duration(1<<(n-1)) * time.Second
+	var s status
+	if errors.As(err, &s) && s == http.StatusTooManyRequests {
+		d = max(d, throttled)
+	}
+	return d
+}
+
+// throttled is the least wait after a 429
+// hop's CDN refuses past about 250 requests in ten seconds and serves again
+// 11s after the burst, measured 2026-09-29
+const throttled = 12 * time.Second
 
 // errTooLarge marks a body over its cap
 // a cap guards against a hostile or broken upstream rather than a hiccup, so
@@ -43,7 +57,7 @@ func retry(ctx context.Context, op func() error) error {
 		}
 		if n > 0 {
 			select {
-			case <-time.After(pause(n)):
+			case <-time.After(pause(n, err)):
 			case <-ctx.Done():
 				return ctx.Err()
 			}

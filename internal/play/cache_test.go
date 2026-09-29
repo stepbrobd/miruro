@@ -80,6 +80,51 @@ func newHLSFixture(t *testing.T) *hlsFixture {
 
 func (f *hlsFixture) url() string { return f.srv.URL + "/media.m3u8" }
 
+// newAudioHLSFixture synthesizes a stream whose sound comes in a rendition of
+// its own, video and audio segments apart under one master, the shape hop
+// serves
+func newAudioHLSFixture(t *testing.T) *hlsFixture {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=3",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+		"-map", "0:v", "-map", "1:a",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*1)",
+		"-c:a", "aac",
+		"-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+		"-var_stream_map", "v:0,agroup:aud a:0,agroup:aud,default:yes",
+		"-master_pl_name", "master.m3u8",
+		"-hls_segment_filename", filepath.Join(dir, "seg_%v_%d.ts"),
+		filepath.Join(dir, "media_%v.m3u8"))
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("cannot synthesize an hls stream with an audio rendition: %v: %s", err, out)
+	}
+	f := &hlsFixture{dir: dir, hits: map[string]int{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.hit(filepath.Base(r.URL.Path))
+		http.ServeFile(w, r, filepath.Join(dir, filepath.Base(r.URL.Path)))
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// fetched counts the names starting with prefix requested since before
+func (f *hlsFixture) fetched(prefix string, before map[string]int) int {
+	n := 0
+	for name, c := range f.counts() {
+		if strings.HasPrefix(name, prefix) && c > before[name] {
+			n++
+		}
+	}
+	return n
+}
+
 // a title starting with a dash under the relative default directory reads as
 // an ffmpeg option, and every hls download of it used to fail at the remux
 func TestRunFFmpegNamesTheOutputAbsolutely(t *testing.T) {
@@ -195,6 +240,29 @@ func TestReconcileWipesMismatchedCache(t *testing.T) {
 	}
 }
 
+// a cache holding the sound apart from the picture is another shape of the
+// episode, so a playlist that starts naming a rendition does not resume on
+// what the other shape cached
+func TestReconcileWipesACacheOfAnotherShape(t *testing.T) {
+	dir := t.TempDir()
+	video := func() *mediaPlaylist { return &mediaPlaylist{segAt: []int{0, 1}, durations: []float64{10, 10}} }
+	if err := reconcile(dir, video()); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, segName(0))
+	if err := os.WriteFile(stale, []byte("segment with its own sound"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apart := video()
+	apart.audio = &mediaPlaylist{segAt: []int{0, 1}, durations: []float64{10, 10}, prefix: "a"}
+	if err := reconcile(dir, apart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a segment cached without a rendition survived a playlist that names one")
+	}
+}
+
 func TestReconcileKeepsMatchingCache(t *testing.T) {
 	dir := t.TempDir()
 	pl := &mediaPlaylist{segAt: []int{0, 1}, durations: []float64{10.010, 9.5}}
@@ -232,8 +300,8 @@ func TestResolvePlaylistRejectsByterange(t *testing.T) {
 func TestBestVariantTakesAnUnlabeledVariant(t *testing.T) {
 	master := "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n720/index.m3u8\n"
 	got, err := bestVariant([]byte(master), "https://cdn.example/master.m3u8")
-	if err != nil || got != "https://cdn.example/720/index.m3u8" {
-		t.Errorf("bestVariant = %q, %v", got, err)
+	if err != nil || got.uri != "https://cdn.example/720/index.m3u8" || got.audio != "" {
+		t.Errorf("bestVariant = %+v, %v", got, err)
 	}
 	if _, err := bestVariant([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n"), "https://cdn.example/m.m3u8"); err == nil {
 		t.Error("a master naming no variant resolved")
@@ -312,8 +380,10 @@ func TestResolvePlaylistRefusesUnreproducibleShapes(t *testing.T) {
 		name string
 		body string
 	}{
-		{"separate audio rendition", "#EXTM3U\n" +
-			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",URI="audio.m3u8"` + "\n" +
+		{"a video rendition group", "#EXTM3U\n" +
+			`#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="cam",NAME="angle",URI="angle.m3u8"` + "\n" +
+			"#EXT-X-STREAM-INF:BANDWIDTH=800000,VIDEO=\"cam\"\nvideo.m3u8\n"},
+		{"an audio group the master never describes", "#EXTM3U\n" +
 			"#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"aud\"\nvideo.m3u8\n"},
 		{"init segment", "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.0,\nseg.m4s\n#EXT-X-ENDLIST\n"},
 		{"rotating keys", "#EXTM3U\n" +
@@ -329,6 +399,146 @@ func TestResolvePlaylistRefusesUnreproducibleShapes(t *testing.T) {
 				t.Errorf("want errNoCache, got %v", err)
 			}
 		})
+	}
+}
+
+// an audio rendition is cached by the same rules as the video, so one this
+// package cannot reproduce sends the whole episode to ffmpeg rather than
+// leaving a file with picture and no sound
+func TestResolvePlaylistRefusesAnAudioRenditionItCannotCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/master.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n"+
+				`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="jp",DEFAULT=YES,URI="audio.m3u8"`+"\n"+
+				"#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"aud\"\nvideo.m3u8\n")
+		case "/audio.m3u8":
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.0,\na.m4s\n#EXT-X-ENDLIST\n")
+		default:
+			fmt.Fprint(w, "#EXTM3U\n#EXTINF:1.0,\nv.ts\n#EXT-X-ENDLIST\n")
+		}
+	}))
+	defer srv.Close()
+	if _, err := resolvePlaylist(context.Background(), http.DefaultClient, srv.URL+"/master.m3u8"); !errors.Is(err, errNoCache) {
+		t.Errorf("want errNoCache, got %v", err)
+	}
+}
+
+// the rendition a download keeps is the one a player would pick, and hop lists
+// eight languages in one group with the original marked default, twice over
+func TestBestVariantFollowsTheAudioAPlayerWould(t *testing.T) {
+	const base = "https://cdn.example/master.m3u8"
+	var hop strings.Builder
+	hop.WriteString("#EXTM3U\n")
+	for range 2 {
+		for _, lang := range []string{"hin", "eng", "jpn", "spa"} {
+			def := ""
+			if lang == "jpn" {
+				def = "DEFAULT=YES,"
+			}
+			hop.WriteString(fmt.Sprintf(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="%[1]s, stereo",%[2]sLANGUAGE="%[1]s",URI="%[1]s.m3u8"`+"\n", lang, def))
+		}
+	}
+	hop.WriteString(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",DEFAULT=YES,URI="subs.m3u8"` + "\n" +
+		"#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=9000000,BANDWIDTH=1000000,AUDIO=\"stereo\",SUBTITLES=\"subs\"\nlow.m3u8\n" +
+		"#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=100,BANDWIDTH=5000000,AUDIO=\"stereo\",SUBTITLES=\"subs\"\nhigh.m3u8\n")
+
+	for _, tc := range []struct {
+		name, master string
+		want         variant
+	}{
+		{"the default of the variant's group, by bandwidth rather than its average", hop.String(),
+			variant{uri: "https://cdn.example/high.m3u8", audio: "https://cdn.example/jpn.m3u8"}},
+		{"one marked for automatic selection without a default", "#EXTM3U\n" +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="x",URI="x.m3u8"` + "\n" +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="y",AUTOSELECT=YES,URI="y.m3u8"` + "\n" +
+			"#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8\n",
+			variant{uri: "https://cdn.example/v.m3u8", audio: "https://cdn.example/y.m3u8"}},
+		{"the first of the group whatever another group marks", "#EXTM3U\n" +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="other",NAME="z",DEFAULT=YES,URI="z.m3u8"` + "\n" +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="x",URI="x.m3u8"` + "\n" +
+			"#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8\n",
+			variant{uri: "https://cdn.example/v.m3u8", audio: "https://cdn.example/x.m3u8"}},
+		{"none where the rendition is the variant's own sound", "#EXTM3U\n" +
+			`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",DEFAULT=YES` + "\n" +
+			"#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8\n",
+			variant{uri: "https://cdn.example/v.m3u8"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := bestVariant([]byte(tc.master), base)
+			if err != nil || got != tc.want {
+				t.Errorf("bestVariant = %+v, %v, want %+v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// a quoted value keeps its commas, and a name is matched whole, so BANDWIDTH
+// is not read out of AVERAGE-BANDWIDTH
+func TestAttributes(t *testing.T) {
+	got := attributes(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Hindi, dubbed",DEFAULT=YES,URI="a.m3u8?x=1,2"`)
+	want := map[string]string{"TYPE": "AUDIO", "GROUP-ID": "stereo", "NAME": "Hindi, dubbed", "DEFAULT": "YES", "URI": "a.m3u8?x=1,2"}
+	if !maps.Equal(got, want) {
+		t.Errorf("attributes = %v, want %v", got, want)
+	}
+	if got := attributes("#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=7,BANDWIDTH=9"); got["BANDWIDTH"] != "9" {
+		t.Errorf("BANDWIDTH = %q, want 9", got["BANDWIDTH"])
+	}
+	if got := attributes("#EXTM3U"); len(got) != 0 {
+		t.Errorf("a tag with no list read as %v", got)
+	}
+}
+
+// a stream whose sound comes apart downloads both into the cache and remuxes
+// them into one file with picture and sound, and a resumed run refetches only
+// the audio segment it lacks
+func TestCachedHLSFetchesTheAudioRendition(t *testing.T) {
+	f := newAudioHLSFixture(t)
+	out := t.TempDir()
+	cache := filepath.Join(out, "cache")
+	dest := filepath.Join(out, "show.mp4")
+	ctx := context.Background()
+	master := f.srv.URL + "/master.m3u8"
+
+	pl, err := resolvePlaylist(ctx, http.DefaultClient, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.audio == nil || len(pl.audio.segAt) < 2 {
+		t.Fatalf("the audio rendition was not followed: %+v", pl.audio)
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(cache, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchSegments(ctx, http.DefaultClient, pl, cache, nil); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Cached(cache)
+	if err != nil || c.Have != c.Want || c.Want != len(pl.segAt)+len(pl.audio.segAt) {
+		t.Errorf("cache holds %+v (%v), want every video and audio segment counted", c, err)
+	}
+	if err := os.Remove(filepath.Join(cache, pl.audio.seg(0))); err != nil {
+		t.Fatal(err)
+	}
+
+	before := f.counts()
+	if err := cachedHLS(ctx, http.DefaultClient, master, dest, cache, nil); err != nil {
+		t.Fatalf("resumed download: %v", err)
+	}
+	if n := f.fetched("seg_1_", before); n != 1 {
+		t.Errorf("resume refetched %d audio segments, want exactly the missing one", n)
+	}
+	if n := f.fetched("seg_0_", before); n != 0 {
+		t.Errorf("resume refetched %d video segments already cached", n)
+	}
+	if !streams(t, dest, "v") || !streams(t, dest, "a") {
+		t.Error("the episode lacks picture or sound")
+	}
+	if _, err := os.Stat(cache); !os.IsNotExist(err) {
+		t.Errorf("the segment cache outlived a finished download: %v", err)
 	}
 }
 
@@ -755,6 +965,153 @@ func TestFetchSegmentsReportsTheShareOfRunningTime(t *testing.T) {
 	}
 }
 
+// with the sound apart, the part of the running time written is the part where
+// picture and sound are both in, so a resumed run holding the whole picture and
+// none of the sound has written none of it
+func TestFetchSegmentsReportsTheShareBothHaveReached(t *testing.T) {
+	seg := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(seg) }))
+	defer srv.Close()
+
+	pl, err := parsePlaylist([]byte("#EXTM3U\n#EXTINF:6.0,\nv0.ts\n#EXTINF:4.0,\nv1.ts\n#EXT-X-ENDLIST\n"), srv.URL+"/video.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.audio, err = parsePlaylist([]byte("#EXTM3U\n#EXTINF:5.0,\na0.ts\n#EXTINF:5.0,\na1.ts\n#EXT-X-ENDLIST\n"), srv.URL+"/audio.m3u8"); err != nil {
+		t.Fatal(err)
+	}
+	pl.audio.prefix = "a"
+	dir := t.TempDir()
+	for n := range pl.segAt {
+		if err := os.WriteFile(filepath.Join(dir, pl.seg(n)), seg, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	var shares []float64
+	prog := func(_, _ int64, share float64) {
+		mu.Lock()
+		defer mu.Unlock()
+		shares = append(shares, share)
+	}
+	if err := fetchSegments(context.Background(), http.DefaultClient, pl, dir, prog); err != nil {
+		t.Fatal(err)
+	}
+	if len(shares) == 0 || shares[0] != 0 {
+		t.Errorf("shares = %v, want none of the running time before any sound", shares)
+	}
+	if last := slices.Max(shares); last != 1 {
+		t.Errorf("shares = %v, want the whole running time at the end", shares)
+	}
+	for n := range pl.audio.segAt {
+		if _, err := os.Stat(filepath.Join(dir, "a"+segName(n))); err != nil {
+			t.Errorf("audio segment %d not cached under its prefix: %v", n, err)
+		}
+	}
+}
+
+// requests are spaced from when each asks, so a caller that waited elsewhere
+// does not bank its turns into a burst, and a canceled caller stops waiting
+func TestPacerSpacesRequests(t *testing.T) {
+	p := &pacer{gap: 20 * time.Millisecond}
+	ctx := context.Background()
+	start := time.Now()
+	for range 5 {
+		if err := p.wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if took := time.Since(start); took < 80*time.Millisecond {
+		t.Errorf("five turns took %v, want at least four gaps", took)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	start = time.Now()
+	for range 3 {
+		p.wait(ctx)
+	}
+	if took := time.Since(start); took < 40*time.Millisecond {
+		t.Errorf("three turns after an idle spell took %v, want at least two gaps", took)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	p.gap = time.Hour
+	p.wait(ctx)
+	if err := p.wait(canceled); !errors.Is(err, context.Canceled) {
+		t.Errorf("a canceled wait returned %v", err)
+	}
+}
+
+// an audio segment that fails is named as one, since the video's index alone
+// would send the reader to the wrong playlist
+func TestFetchSegmentsNamesAFailedAudioSegment(t *testing.T) {
+	seg := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/a0.ts" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(seg)
+	}))
+	defer srv.Close()
+	pl, err := parsePlaylist([]byte("#EXTM3U\n#EXTINF:1.0,\nv0.ts\n#EXT-X-ENDLIST\n"), srv.URL+"/video.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.audio, err = parsePlaylist([]byte("#EXTM3U\n#EXTINF:1.0,\na0.ts\n#EXT-X-ENDLIST\n"), srv.URL+"/audio.m3u8"); err != nil {
+		t.Fatal(err)
+	}
+	pl.audio.prefix = "a"
+	if err := fetchSegments(context.Background(), http.DefaultClient, pl, t.TempDir(), nil); err == nil || !strings.HasPrefix(err.Error(), "audio segment 0:") {
+		t.Errorf("err = %v, want the audio segment named", err)
+	}
+}
+
+// a playlist whose running time is unknown reports none of it as written, where
+// a share of an unknown whole would be infinite or no number at all, and a
+// segment file left empty by a failed run is no segment and counts for nothing
+func TestFetchSegmentsReportsOnlyAShareItKnows(t *testing.T) {
+	seg := bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(seg) }))
+	defer srv.Close()
+	shares := func(body string, cached ...int) []float64 {
+		t.Helper()
+		pl, err := parsePlaylist([]byte(body), srv.URL+"/media.m3u8")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		for _, n := range cached {
+			if err := os.WriteFile(filepath.Join(dir, segName(n)), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var mu sync.Mutex
+		var got []float64
+		prog := func(_, _ int64, share float64) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, share)
+		}
+		if err := fetchSegments(context.Background(), http.DefaultClient, pl, dir, prog); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	for _, s := range shares("#EXTM3U\ns0.ts\n#EXTINF:2.0,\ns1.ts\n#EXT-X-ENDLIST\n") {
+		if s != 0 {
+			t.Errorf("reported a share of %v of an unknown running time", s)
+		}
+	}
+	got := shares("#EXTM3U\n#EXTINF:2.0,\ns0.ts\n#EXTINF:2.0,\ns1.ts\n#EXT-X-ENDLIST\n", 0)
+	if len(got) == 0 || got[0] != 0 || slices.Max(got) != 1 {
+		t.Errorf("shares = %v, want an empty leftover counted as nothing and the whole at the end", got)
+	}
+}
+
 // one dead segment makes the remux incomplete, so the first to fail is named
 // and nothing past it is started, where every later segment would be fetched
 // for an episode already lost
@@ -786,7 +1143,7 @@ func TestFetchSegmentsStopsAtTheFirstFailure(t *testing.T) {
 	}
 
 	err = fetchSegments(context.Background(), http.DefaultClient, pl, t.TempDir(), nil)
-	if err == nil || !strings.Contains(err.Error(), "segment 1:") {
+	if err == nil || !strings.HasPrefix(err.Error(), "segment 1:") {
 		t.Fatalf("err = %v, want the first failed segment named", err)
 	}
 	if got := fetched.Load(); got >= n {

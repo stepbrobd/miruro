@@ -105,7 +105,9 @@ func cacheable(ctx context.Context, t *testing.T, client *miruro.Client, px *Pro
 			why = fmt.Sprintf("kind %s does not exercise the segment cache", ranked[0].Kind)
 			continue
 		}
-		pl, err := resolvePlaylist(ctx, px.hc, px.Stream(ranked[0]).URL)
+		// the proxy listens on loopback, which its own guarded client refuses to
+		// dial, so its urls are read with a plain one, as the download command does
+		pl, err := resolvePlaylist(ctx, http.DefaultClient, px.Stream(ranked[0]).URL)
 		if err != nil {
 			why = fmt.Sprintf("playlist not reachable: %v", err)
 			continue
@@ -150,7 +152,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if pl == nil {
 				t.Skipf("no title reached the cache path on this provider: %s", why)
 			}
-			t.Logf("segments=%d encrypted=%v", len(pl.segAt), pl.encrypted)
+			t.Logf("segments=%d encrypted=%v audio=%v", len(pl.segAt), pl.encrypted, pl.audio != nil)
 			pl = head(pl, segmentSample)
 
 			dir := t.TempDir()
@@ -163,14 +165,20 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err := reconcile(cache, pl); err != nil {
 				t.Fatalf("reconcile: %v", err)
 			}
-			key, err := cacheKey(ctx, px.hc, pl, cache)
+			key, err := cacheKey(ctx, http.DefaultClient, pl, cache)
 			if err != nil {
 				t.Fatalf("key: %v", err)
 			}
 			if pl.keyURI != "" && key == "" {
 				t.Fatal("an encrypted playlist cached no key")
 			}
-			if err := fetchSegments(ctx, px.hc, pl, cache, nil); err != nil {
+			var audioKey string
+			if pl.audio != nil {
+				if audioKey, err = cacheKey(ctx, http.DefaultClient, pl.audio, cache); err != nil {
+					t.Fatalf("audio key: %v", err)
+				}
+			}
+			if err := fetchSegments(ctx, http.DefaultClient, pl, cache, nil); err != nil {
 				// a CDN that refuses a segment is the same upstream condition the
 				// checks above skip on, and bonk's ad-CDN does it routinely
 				var code status
@@ -197,7 +205,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err := os.Remove(gone); err != nil {
 				t.Fatal(err)
 			}
-			if err := fetchSegments(ctx, px.hc, pl, cache, nil); err != nil {
+			if err := fetchSegments(ctx, http.DefaultClient, pl, cache, nil); err != nil {
 				var code status
 				if errors.As(err, &code) {
 					t.Skipf("resume not reachable, an upstream condition: %v", err)
@@ -212,8 +220,8 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 				t.Errorf("resumed segment is %d bytes, was %d", after.Size(), before.Size())
 			}
 
-			local := filepath.Join(cache, "local.m3u8")
-			if err := os.WriteFile(local, []byte(pl.localize(cache, key)), 0o644); err != nil {
+			local, err := writeLocal(cache, pl, key, audioKey)
+			if err != nil {
 				t.Fatal(err)
 			}
 			if err := remux(ctx, local, dest); err != nil {
@@ -226,6 +234,9 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			// yet holds no picture, so the streams are checked rather than assumed
 			if !streams(t, dest, "v") {
 				t.Error("remuxed file carries no video stream")
+			}
+			if pl.audio != nil && !streams(t, dest, "a") {
+				t.Error("remuxed file carries no audio stream from its rendition")
 			}
 			if _, err := os.Stat(dest + ".part"); !os.IsNotExist(err) {
 				t.Error("the .part file was left behind")
@@ -265,10 +276,14 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 		keyAt:     pl.keyAt,
 		keyURI:    pl.keyURI,
 		encrypted: pl.encrypted,
+		prefix:    pl.prefix,
 	}
 	if out.keyAt >= cut {
 		// staying marked encrypted only relaxes the TS check
 		out.keyAt, out.keyURI = -1, ""
+	}
+	if pl.audio != nil {
+		out.audio = head(pl.audio, n)
 	}
 	return out
 }

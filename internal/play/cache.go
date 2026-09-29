@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -30,6 +31,45 @@ var errNoCache = errors.New("playlist not cacheable")
 // stays deliberately small
 const segWorkers = 4
 
+// paced spaces the segment requests of every download in the process
+// hop's CDN refuses past about 250 requests in ten seconds, which four workers
+// on its small audio segments reached in eight, and 20 a second is slower than
+// the bandwidth on anything but segments that small
+var paced = &pacer{gap: 50 * time.Millisecond}
+
+// pacer spaces requests at least gap apart across the goroutines sharing it
+// a turn is counted from when it is asked for, so time spent waiting on
+// anything else is never banked into a burst
+type pacer struct {
+	gap  time.Duration
+	mu   sync.Mutex
+	next time.Time
+}
+
+// wait holds the caller until its turn, or until ctx ends
+func (p *pacer) wait(ctx context.Context) error {
+	p.mu.Lock()
+	at := time.Now()
+	if p.next.After(at) {
+		at = p.next
+	}
+	p.next = at.Add(p.gap)
+	p.mu.Unlock()
+
+	d := time.Until(at)
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // aesKeyLen is the one key size AES-128 media streams use, per RFC 8216
 const aesKeyLen = 16
 
@@ -41,10 +81,7 @@ const maxTextBody = 16 << 20
 // ten thousand four-second segments is over eleven hours of video
 const maxSegments = 10000
 
-var (
-	bandwidthAttr = regexp.MustCompile(`BANDWIDTH=(\d+)`)
-	durationAttr  = regexp.MustCompile(`^#EXTINF:\s*([0-9.]+)`)
-)
+var durationAttr = regexp.MustCompile(`^#EXTINF:\s*([0-9.]+)`)
 
 // mediaPlaylist is a media playlist split into the lines to reproduce and the
 // segments to fetch
@@ -59,6 +96,12 @@ type mediaPlaylist struct {
 	// encrypted means an EXT-X-KEY with a method other than NONE applies to
 	// the segments, even when the key is inline or not fetchable
 	encrypted bool
+	// prefix names this playlist's files in the cache directory, empty for the
+	// video and "a" for the audio rendition cached beside it
+	prefix string
+	// audio is the rendition the video plays its sound from, nil when the
+	// video's own segments carry it
+	audio *mediaPlaylist
 }
 
 // manifest records what the cache directory holds
@@ -67,6 +110,10 @@ type mediaPlaylist struct {
 type manifest struct {
 	Count     int       `json:"count"`
 	Durations []float64 `json:"durations"`
+	// Audio describes the audio rendition cached beside the video, absent when
+	// the video carries its own sound, which every cache written before
+	// renditions were cached does, so those still match their playlists
+	Audio *manifest `json:"audio,omitempty"`
 }
 
 // Cache is what one segment cache directory holds
@@ -102,6 +149,9 @@ func Cached(dir string) (Cache, error) {
 		var m manifest
 		if json.Unmarshal(data, &m) == nil {
 			c.Want = m.Count
+			if m.Audio != nil {
+				c.Want += m.Audio.Count
+			}
 		}
 	}
 	return c, nil
@@ -141,12 +191,18 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 	if err != nil {
 		return err
 	}
+	var audioKey string
+	if pl.audio != nil {
+		if audioKey, err = cacheKey(ctx, hc, pl.audio, dir); err != nil {
+			return err
+		}
+	}
 	if err := fetchSegments(ctx, hc, pl, dir, prog); err != nil {
 		return err
 	}
 
-	local := filepath.Join(dir, "local.m3u8")
-	if err := os.WriteFile(local, []byte(pl.localize(dir, key)), 0o644); err != nil {
+	local, err := writeLocal(dir, pl, key, audioKey)
+	if err != nil {
 		return err
 	}
 	// the remux reports its own output size, which would send the bar backwards
@@ -170,30 +226,48 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 }
 
 // resolvePlaylist fetches srcURL and follows a master playlist one level down
-// to the highest bandwidth variant
+// to the highest bandwidth variant, and to the audio rendition that variant
+// plays with when its sound comes in a playlist of its own
 func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*mediaPlaylist, error) {
 	body, err := fetchText(ctx, hc, srcURL)
 	if err != nil {
 		return nil, err
 	}
-	// base is the playlist the segments belong to, which is the variant once one
-	// is followed, since its children resolve against its own directory
-	base := srcURL
-	if isMaster(body) {
-		// a rendition group carries audio or subtitles in their own playlists, and
-		// following only the video variant would silently drop them
-		if bytes.Contains(body, []byte("#EXT-X-MEDIA")) {
-			return nil, errNoCache
-		}
-		variant, err := bestVariant(body, srcURL)
-		if err != nil {
-			return nil, err
-		}
-		if body, err = fetchText(ctx, hc, variant); err != nil {
-			return nil, err
-		}
-		base = variant
+	if !isMaster(body) {
+		return mediaOf(body, srcURL, "")
 	}
+	v, err := bestVariant(body, srcURL)
+	if err != nil {
+		return nil, err
+	}
+	pl, err := fetchMedia(ctx, hc, v.uri, "")
+	if err != nil || v.audio == "" {
+		return pl, err
+	}
+	if pl.audio, err = fetchMedia(ctx, hc, v.audio, "a"); err != nil {
+		return nil, err
+	}
+	return pl, nil
+}
+
+// fetchMedia fetches a media playlist a master names, whose children resolve
+// against its own address rather than the master's
+func fetchMedia(ctx context.Context, hc *http.Client, rawURL, prefix string) (*mediaPlaylist, error) {
+	body, err := fetchText(ctx, hc, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	// a master naming another master is a nesting nothing here follows, and
+	// parsing it as media would take its variants for segments
+	if isMaster(body) {
+		return nil, errNoCache
+	}
+	return mediaOf(body, rawURL, prefix)
+}
+
+// mediaOf parses a media playlist into the cache under prefix, refusing the
+// shapes that caching whole segment files cannot reproduce
+func mediaOf(body []byte, base, prefix string) (*mediaPlaylist, error) {
 	// a byterange playlist addresses slices of one resource, and an init segment
 	// is a separate resource every segment depends on
 	// neither is reproducible by caching whole segment files alone
@@ -207,7 +281,12 @@ func resolvePlaylist(ctx context.Context, hc *http.Client, srcURL string) (*medi
 	if !bytes.Contains(body, []byte("#EXT-X-ENDLIST")) {
 		return nil, errNoCache
 	}
-	return parsePlaylist(body, base)
+	pl, err := parsePlaylist(body, base)
+	if err != nil {
+		return nil, err
+	}
+	pl.prefix = prefix
+	return pl, nil
 }
 
 // fetchText reads a playlist or a key, retrying a transient failure so a flaky
@@ -245,40 +324,121 @@ func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, erro
 	return body, nil
 }
 
-// bestVariant picks the highest bandwidth rendition of a master playlist
+// variant is what the cache follows out of a master playlist, the video and
+// the audio rendition it plays with, empty when the video carries its sound
+type variant struct {
+	uri, audio string
+}
+
+// bestVariant picks the highest bandwidth variant of a master playlist and the
+// audio rendition of the group it names
 // a master labeling no bandwidth still names its variants, and the first of
 // them is taken rather than none
-func bestVariant(body []byte, base string) (string, error) {
+// a variant whose picture comes from a video group, or whose audio group the
+// master never describes, is refused, since following the variant alone would
+// silently drop what the group carries
+// subtitle and caption groups are left behind on purpose, the sidecars carry
+// the subtitles and captions ride inside the video
+func bestVariant(body []byte, base string) (variant, error) {
 	var (
 		best     string
+		chosen   map[string]string
 		bestRate int64 = -1
 		rate     int64 = -1
+		attrs    map[string]string
+		media    []map[string]string
 	)
 	sc := lines(body)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		switch {
+		case strings.HasPrefix(line, "#EXT-X-MEDIA:"):
+			media = append(media, attributes(line))
 		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
-			rate = -1
-			if m := bandwidthAttr.FindStringSubmatch(line); m != nil {
-				rate, _ = strconv.ParseInt(m[1], 10, 64)
+			attrs, rate = attributes(line), -1
+			if n, err := strconv.ParseInt(attrs["BANDWIDTH"], 10, 64); err == nil {
+				rate = n
 			}
 		case line == "" || strings.HasPrefix(line, "#"):
 			continue
 		default:
 			if best == "" || rate > bestRate {
-				bestRate, best = rate, line
+				bestRate, best, chosen = rate, line, attrs
 			}
-			rate = -1
+			rate, attrs = -1, nil
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return "", err
+		return variant{}, err
 	}
-	if best == "" {
-		return "", errNoCache
+	if best == "" || chosen["VIDEO"] != "" {
+		return variant{}, errNoCache
 	}
-	return upstream.Resolve(base, best)
+	uri, err := upstream.Resolve(base, best)
+	if err != nil {
+		return variant{}, err
+	}
+	group := chosen["AUDIO"]
+	if group == "" {
+		return variant{uri: uri}, nil
+	}
+	pick := audioRendition(media, group)
+	switch {
+	case pick == nil:
+		return variant{}, errNoCache
+	case pick["URI"] == "":
+		// a rendition without a playlist is the sound inside the variant
+		return variant{uri: uri}, nil
+	}
+	audio, err := upstream.Resolve(base, pick["URI"])
+	return variant{uri: uri, audio: audio}, err
+}
+
+// audioRendition picks the rendition of an audio group a player would, the one
+// marked default, else one marked for automatic selection, else the first
+// hop lists eight languages in one group with the original marked default, so
+// this is what keeps a download in the language the episode was made in
+func audioRendition(media []map[string]string, group string) map[string]string {
+	var in []map[string]string
+	for _, m := range media {
+		if m["TYPE"] == "AUDIO" && m["GROUP-ID"] == group {
+			in = append(in, m)
+		}
+	}
+	for _, flag := range []string{"DEFAULT", "AUTOSELECT"} {
+		for _, m := range in {
+			if m[flag] == "YES" {
+				return m
+			}
+		}
+	}
+	if len(in) > 0 {
+		return in[0]
+	}
+	return nil
+}
+
+// attributes reads the attribute list of an HLS tag, keeping a quoted value
+// whole, commas and all, and without its quotes
+func attributes(line string) map[string]string {
+	out := map[string]string{}
+	_, list, _ := strings.Cut(line, ":")
+	for list != "" {
+		key, rest, ok := strings.Cut(list, "=")
+		if !ok {
+			break
+		}
+		list = rest
+		var value string
+		if rest, quoted := strings.CutPrefix(list, `"`); quoted {
+			value, list, _ = strings.Cut(rest, `"`)
+			list = strings.TrimPrefix(list, ",")
+		} else {
+			value, list, _ = strings.Cut(list, ",")
+		}
+		out[strings.TrimSpace(key)] = value
+	}
+	return out
 }
 
 func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
@@ -364,6 +524,27 @@ func (pl *mediaPlaylist) length() float64 {
 // replays, and a signed URL is not stable across runs
 func segName(i int) string { return fmt.Sprintf("%05d.ts", i) }
 
+// seg is the cached file for segment i of this playlist
+func (p *mediaPlaylist) seg(i int) string { return p.prefix + segName(i) }
+
+// what names this playlist's segments in an error
+func (p *mediaPlaylist) what() string {
+	if p.prefix != "" {
+		return "audio segment"
+	}
+	return "segment"
+}
+
+// manifest is the record of what this playlist caches, its audio included
+func (p *mediaPlaylist) manifest() manifest {
+	m := manifest{Count: len(p.segAt), Durations: p.durations}
+	if p.audio != nil {
+		a := p.audio.manifest()
+		m.Audio = &a
+	}
+	return m
+}
+
 // localize renders the playlist against the cache directory
 // every tag is reproduced untouched so EXT-X-MEDIA-SEQUENCE still lines up with
 // the segments, which is what the AES-128 IV derivation depends on
@@ -371,7 +552,7 @@ func (p *mediaPlaylist) localize(dir, key string) string {
 	lines := make([]string, len(p.lines))
 	copy(lines, p.lines)
 	for n, at := range p.segAt {
-		lines[at] = filepath.Join(dir, segName(n))
+		lines[at] = filepath.Join(dir, p.seg(n))
 	}
 	if key != "" && p.keyAt >= 0 {
 		// literal, since a '$' in the cache path is a path character and not a
@@ -381,11 +562,36 @@ func (p *mediaPlaylist) localize(dir, key string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// writeLocal renders the cached playlists into dir and returns the one the
+// remux reads
+// a video with its sound apart is joined to it by a master the way the one it
+// came from did, which keeps the two one input, so the remux keeps the offset
+// between their timestamps where two inputs would each be started at zero
+func writeLocal(dir string, pl *mediaPlaylist, key, audioKey string) (string, error) {
+	local := filepath.Join(dir, "local.m3u8")
+	if err := os.WriteFile(local, []byte(pl.localize(dir, key)), 0o644); err != nil {
+		return "", err
+	}
+	if pl.audio == nil {
+		return local, nil
+	}
+	audio := filepath.Join(dir, "audio.m3u8")
+	if err := os.WriteFile(audio, []byte(pl.audio.localize(dir, audioKey)), 0o644); err != nil {
+		return "", err
+	}
+	master := filepath.Join(dir, "master.m3u8")
+	body := "#EXTM3U\n" +
+		`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="` + audio + "\"\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"audio\"\n" +
+		local + "\n"
+	return master, os.WriteFile(master, []byte(body), 0o644)
+}
+
 // reconcile drops a cache directory describing different content
 // the caller keys the directory by title, episode, provider and quality, so a
 // mismatch here means the provider re-encoded rather than that the URL rotated
 func reconcile(dir string, pl *mediaPlaylist) error {
-	want := manifest{Count: len(pl.segAt), Durations: pl.durations}
+	want := pl.manifest()
 	path := filepath.Join(dir, "manifest.json")
 
 	data, err := os.ReadFile(path)
@@ -414,6 +620,11 @@ func reconcile(dir string, pl *mediaPlaylist) error {
 
 func (m manifest) matches(other manifest) bool {
 	if m.Count != other.Count || len(m.Durations) != len(other.Durations) {
+		return false
+	}
+	// a cache holding sound apart from the picture, or not, is another shape
+	// of the episode whatever the video's segments say
+	if (m.Audio == nil) != (other.Audio == nil) || m.Audio != nil && !m.Audio.matches(*other.Audio) {
 		return false
 	}
 	for i, d := range m.Durations {
@@ -452,7 +663,7 @@ func cacheKey(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir strin
 	if pl.keyURI == "" {
 		return "", nil
 	}
-	path := filepath.Join(dir, "key.bin")
+	path := filepath.Join(dir, pl.prefix+"key.bin")
 	// anything but a whole AES-128 key is a cached error body, refetch it
 	if fi, err := os.Stat(path); err == nil && fi.Size() == aesKeyLen {
 		return path, nil
@@ -472,10 +683,16 @@ func cacheKey(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir strin
 }
 
 func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir string, prog Progress) error {
+	// an audio rendition goes first, a small part of the bytes, so the share it
+	// gates is not held back behind the whole video
+	pls := []*mediaPlaylist{pl}
+	if pl.audio != nil {
+		pls = []*mediaPlaylist{pl.audio, pl}
+	}
 	var (
 		mu    sync.Mutex
 		done  int64
-		ran   float64
+		ran   = make([]float64, len(pls))
 		first error
 		sem   = make(chan struct{}, segWorkers)
 		wg    sync.WaitGroup
@@ -483,68 +700,89 @@ func fetchSegments(ctx context.Context, hc *http.Client, pl *mediaPlaylist, dir 
 	)
 	// nobody announces the byte total of an hls episode, while every segment's
 	// running time is in the playlist, so the part written is told as a share
-	// of that
-	length := pl.length()
-	share := func(ran float64) float64 {
-		if length <= 0 {
-			return 0
+	// of that, and with the sound apart it is the share where picture and sound
+	// are both in, the least of the two
+	lengths := make([]float64, len(pls))
+	for i, p := range pls {
+		lengths[i] = p.length()
+	}
+	share := func() float64 {
+		s := 1.0
+		for i, length := range lengths {
+			if length <= 0 {
+				return 0
+			}
+			s = min(s, ran[i]/length)
 		}
-		return ran / length
+		return s
 	}
 
 	// already cached bytes count toward progress so a resumed run does not
 	// restart its bar from zero, and a cached segment counts once, here, since
 	// the fetch below finds it on disk and writes nothing
-	cached := make([]bool, len(pl.segAt))
-	for n := range pl.segAt {
-		if fi, err := os.Stat(filepath.Join(dir, segName(n))); err == nil && fi.Size() > 0 {
-			cached[n] = true
-			done += fi.Size()
-			ran += max(pl.durations[n], 0)
+	cached := make([][]bool, len(pls))
+	for i, p := range pls {
+		cached[i] = make([]bool, len(p.segAt))
+		for n := range p.segAt {
+			if fi, err := os.Stat(filepath.Join(dir, p.seg(n))); err == nil && fi.Size() > 0 {
+				cached[i][n] = true
+				done += fi.Size()
+				ran[i] += max(p.durations[n], 0)
+			}
 		}
 	}
 	if prog != nil {
-		prog(done, 0, share(ran))
+		prog(done, 0, share())
 	}
 
 spawn:
-	for n, at := range pl.segAt {
-		select {
-		case <-fatal:
-			break spawn
-		case <-ctx.Done():
-			break spawn
-		default:
-		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(n int, src string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, segName(n)), !pl.encrypted)
-			mu.Lock()
-			if err != nil {
-				// one dead segment makes the remux incomplete, so the first to
-				// fail records the reason and stops the rest
-				if first == nil {
-					first = fmt.Errorf("segment %d: %w", n, err)
-					close(fatal)
+	for i, p := range pls {
+		for n, at := range p.segAt {
+			select {
+			case <-fatal:
+				break spawn
+			case <-ctx.Done():
+				break spawn
+			default:
+			}
+			sem <- struct{}{}
+			// a segment already on disk asks nothing of the CDN, so only the
+			// ones still to fetch take a turn
+			if !cached[i][n] {
+				if err := paced.wait(ctx); err != nil {
+					<-sem
+					break spawn
 				}
+			}
+			wg.Add(1)
+			go func(n int, src string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, p.seg(n)), !p.encrypted)
+				mu.Lock()
+				if err != nil {
+					// one dead segment makes the remux incomplete, so the first to
+					// fail records the reason and stops the rest
+					if first == nil {
+						first = fmt.Errorf("%s %d: %w", p.what(), n, err)
+						close(fatal)
+					}
+					mu.Unlock()
+					return
+				}
+				done += written
+				if !cached[i][n] {
+					ran[i] += max(p.durations[n], 0)
+				}
+				d, r := done, share()
 				mu.Unlock()
-				return
-			}
-			done += written
-			if !cached[n] {
-				ran += max(pl.durations[n], 0)
-			}
-			d, r := done, ran
-			mu.Unlock()
-			// prog can block on ui delivery, so it never runs under mu
-			if prog != nil {
-				prog(d, 0, share(r))
-			}
-		}(n, pl.lines[at])
+				// prog can block on ui delivery, so it never runs under mu
+				if prog != nil {
+					prog(d, 0, r)
+				}
+			}(n, p.lines[at])
+		}
 	}
 	wg.Wait()
 
