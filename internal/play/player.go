@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -36,17 +37,23 @@ type Player struct {
 // it errors when nothing supported is installed, so a run fails before any
 // resolution work rather than at first playback
 func Detect(prefer Kind) (Player, error) {
+	return detect(prefer, appDirs())
+}
+
+// detect is Detect over the given application directories, which a test
+// points somewhere it controls
+func detect(prefer Kind, apps []string) (Player, error) {
 	if prefer == MPV || prefer == IINA {
-		if p, ok := lookup(prefer); ok {
+		if p, ok := lookup(prefer, apps); ok {
 			return p, nil
 		}
 	}
 	if runtime.GOOS == "darwin" {
-		if p, ok := lookup(IINA); ok {
+		if p, ok := lookup(IINA, apps); ok {
 			return p, nil
 		}
 	}
-	if p, ok := lookup(MPV); ok {
+	if p, ok := lookup(MPV, apps); ok {
 		return p, nil
 	}
 	if runtime.GOOS == "darwin" {
@@ -55,8 +62,8 @@ func Detect(prefer Kind) (Player, error) {
 	return Player{}, errors.New("no player found, install mpv")
 }
 
-func lookup(k Kind) (Player, bool) {
-	for _, name := range binaries(k) {
+func lookup(k Kind, apps []string) (Player, bool) {
+	for _, name := range binaries(k, apps) {
 		if bin, err := exec.LookPath(name); err == nil {
 			return Player{Kind: k, Bin: bin}, true
 		}
@@ -64,11 +71,34 @@ func lookup(k Kind) (Player, bool) {
 	return Player{}, false
 }
 
-func binaries(k Kind) []string {
-	if runtime.GOOS == "windows" {
+// binaries is every name a player is found under, in order
+// IINA links iina onto the PATH only when its command line tool is installed,
+// and ships the tool itself as iina-cli inside the app either way, so an app
+// installed and never set up for the terminal is still found
+func binaries(k Kind, apps []string) []string {
+	switch {
+	case runtime.GOOS == "windows":
 		return []string{string(k) + ".exe", string(k)}
+	case k == IINA:
+		out := []string{"iina", "iina-cli"}
+		for _, dir := range apps {
+			out = append(out, filepath.Join(dir, "IINA.app", "Contents", "MacOS", "iina-cli"))
+		}
+		return out
 	}
 	return []string{string(k)}
+}
+
+// appDirs is where macOS keeps applications, the system's and the user's
+func appDirs() []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	dirs := []string{"/Applications"}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, "Applications"))
+	}
+	return dirs
 }
 
 func (p Player) Play(ctx context.Context, s upstream.Stream, subs []upstream.Subtitle, skips []upstream.SkipRange, title string) error {

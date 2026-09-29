@@ -49,8 +49,41 @@ func TestTailLast(t *testing.T) {
 // reports rather than returning a bin that cannot exec
 func TestDetectErrorsWithoutPlayers(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if p, err := Detect(""); err == nil {
+	if p, err := detect("", []string{t.TempDir()}); err == nil {
 		t.Errorf("empty PATH still detected %+v", p)
+	}
+}
+
+// IINA puts iina on the PATH only once its command line tool is installed,
+// and every install carries the tool inside the app as iina-cli
+func TestDetectFindsIINAWithoutItsLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no IINA on windows")
+	}
+	script := []byte("#!/bin/sh\n")
+
+	path := t.TempDir()
+	t.Setenv("PATH", path)
+	if err := os.WriteFile(filepath.Join(path, "iina-cli"), script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := detect(IINA, nil)
+	if err != nil || p.Kind != IINA || filepath.Base(p.Bin) != "iina-cli" {
+		t.Errorf("detect = %+v, %v, want the iina-cli on the PATH", p, err)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	apps := t.TempDir()
+	tool := filepath.Join(apps, "IINA.app", "Contents", "MacOS", "iina-cli")
+	if err := os.MkdirAll(filepath.Dir(tool), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tool, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err = detect(IINA, []string{t.TempDir(), apps})
+	if err != nil || p.Bin != tool {
+		t.Errorf("detect = %+v, %v, want the tool inside the app", p, err)
 	}
 }
 
@@ -66,7 +99,7 @@ func TestDetectHonorsPreference(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	p, err := Detect(IINA)
+	p, err := detect(IINA, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +108,7 @@ func TestDetectHonorsPreference(t *testing.T) {
 	}
 
 	// a stale preference falls back to the platform default
-	p, err = Detect("vlc")
+	p, err = detect("vlc", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,5 +208,22 @@ func TestArgsChaptersFile(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(name); !os.IsNotExist(err) {
 		t.Errorf("cleanup left the chapters file behind: %v", err)
+	}
+}
+
+// macOS keeps applications in the system's folder and the user's, and nothing
+// else has either to look in
+func TestAppDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got := appDirs()
+	if runtime.GOOS != "darwin" {
+		if got != nil {
+			t.Errorf("appDirs = %v off macOS, want none", got)
+		}
+		return
+	}
+	if want := []string{"/Applications", filepath.Join(home, "Applications")}; !slices.Equal(got, want) {
+		t.Errorf("appDirs = %v, want %v", got, want)
 	}
 }
