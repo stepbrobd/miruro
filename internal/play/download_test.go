@@ -363,3 +363,30 @@ func TestAudibleCatchesAnAudioTrackThatEndsEarly(t *testing.T) {
 		})
 	}
 }
+
+// the judgment over ffprobe's report, with the rows a real file is hard to
+// make: an audio stream reported with no duration is heard and not measured,
+// and each threshold of the gap holds on its own
+func TestSilence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		streams []probed
+		quiet   bool
+	}{
+		{"no audio at all", []probed{{"video", "1420.0"}}, true},
+		{"audio a dead rendition cut short", []probed{{"video", "1420.0"}, {"audio", "300.0"}}, true},
+		{"audio with no duration beside timed video", []probed{{"video", "1420.0"}, {"audio", "N/A"}}, false},
+		{"audio with an empty duration", []probed{{"video", "1420.0"}, {"audio", ""}}, false},
+		{"a drift under five seconds", []probed{{"video", "1420.0"}, {"audio", "1416.0"}}, false},
+		{"a gap over five seconds but under a tenth of a long video", []probed{{"video", "1420.0"}, {"audio", "1300.0"}}, false},
+		{"a gap over a tenth but under five seconds of a short clip", []probed{{"video", "30.0"}, {"audio", "26.0"}}, false},
+		{"a gap over both", []probed{{"video", "30.0"}, {"audio", "20.0"}}, true},
+		{"the longest of several audio streams counts", []probed{{"video", "1420.0"}, {"audio", "10.0"}, {"audio", "1419.0"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := silence(tc.streams); (err != nil) != tc.quiet {
+				t.Errorf("silence = %v, want quiet %v", err, tc.quiet)
+			}
+		})
+	}
+}

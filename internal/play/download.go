@@ -210,19 +210,32 @@ func audible(ctx context.Context, dest string) error {
 		return nil
 	}
 	var report struct {
-		Streams []struct {
-			CodecType string `json:"codec_type"`
-			Duration  string `json:"duration"`
-		} `json:"streams"`
+		Streams []probed `json:"streams"`
 	}
 	if err := json.Unmarshal(out, &report); err != nil {
 		log.Debug("ffprobe report unreadable, audio not verified", "dest", dest, "err", err)
 		return nil
 	}
+	return silence(report.Streams)
+}
 
+// probed is one stream of ffprobe's report
+type probed struct {
+	CodecType string `json:"codec_type"`
+	// Duration is seconds, or N/A for a container that times its streams
+	// nowhere ffprobe reads per stream
+	Duration string `json:"duration"`
+}
+
+// silence says why the streams ffprobe reported make no audible episode, nil
+// when they do
+// an audio stream reported with no duration is heard and not measured, since
+// measuring it as zero would refuse every such file as falling the whole
+// episode short
+func silence(streams []probed) error {
 	var video, audio float64
 	heard := false
-	for _, s := range report.Streams {
+	for _, s := range streams {
 		d, _ := strconv.ParseFloat(s.Duration, 64)
 		switch s.CodecType {
 		case "video":
