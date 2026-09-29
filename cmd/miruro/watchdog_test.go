@@ -46,3 +46,33 @@ func TestAbandonStalledAtExactlyTheBudget(t *testing.T) {
 		t.Error("a stream refused its whole budget was not abandoned before the grace")
 	}
 }
+
+// a stream whose first body lands between two checks is playing when the grace
+// runs out, and the watch must not abandon it for having shown nothing
+func TestAbandonStalledSparesAStreamThatJustPlayed(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+	px, err := play.StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	tl := px.Tally()
+	resp, err := http.Get(tl.Stream(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}).URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// no check runs before the grace, so the grace alone decides
+	wd := watchdog{grace: 20 * time.Millisecond, budget: 8, check: time.Hour}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if <-wd.abandonStalled(ctx, tl, "Mp4", func() {}) {
+		t.Error("a stream that had shown picture was abandoned at the grace")
+	}
+}

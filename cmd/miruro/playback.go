@@ -153,7 +153,10 @@ func patience() watchdog {
 // so a stream whose CDN refuses every one runs forever without a frame and the
 // player never exits for playStreams to move on
 // once any media body is relayed the user is watching, and a later gap is theirs
-// to deal with rather than grounds for restarting the episode elsewhere
+// to deal with rather than grounds for restarting the episode elsewhere, so the
+// watch only listens for sound from then on: a demuxed stream whose audio
+// rendition relays nothing plays the picture silent, hop's shape, and after a
+// grace of picture that is said once rather than acted on
 // the returned channel yields whether the player was stopped and closes when the
 // watcher is done, and a caller must receive from it before it returns, since
 // nothing else joins the goroutine that reports through note
@@ -166,20 +169,27 @@ func (w watchdog) abandonStalled(ctx context.Context, tl *play.Tally, name strin
 		defer grace.Stop()
 		tick := time.NewTicker(w.check)
 		defer tick.Stop()
+		// listen fires a grace after the first picture, nil until then
+		var listen <-chan time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-grace.C:
-				if tl.Served() == 0 {
+				if listen == nil && tl.Served() == 0 {
 					log.Warn("stream showed nothing in time, abandoning it", "server", name, "after", w.grace)
 					abandoned = true
 					stop()
-				}
-				return
-			case <-tick.C:
-				if tl.Served() > 0 {
 					return
+				}
+			case <-tick.C:
+				if listen != nil {
+					continue
+				}
+				if tl.Served() > 0 {
+					tick.Stop()
+					listen = time.After(w.grace)
+					continue
 				}
 				if n := tl.Refused(); n >= w.budget {
 					log.Warn("stream refused before it played, abandoning it", "server", name, "refused", n)
@@ -187,6 +197,11 @@ func (w watchdog) abandonStalled(ctx context.Context, tl *play.Tally, name strin
 					stop()
 					return
 				}
+			case <-listen:
+				if tl.Silent() {
+					log.Warn("stream plays without sound, its audio rendition relayed nothing", "server", name)
+				}
+				return
 			}
 		}
 	}()

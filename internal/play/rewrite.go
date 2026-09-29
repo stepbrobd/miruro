@@ -174,6 +174,11 @@ func (p *Proxy) tag(line string, base *url.URL, from target) string {
 	if strings.HasPrefix(line, "#EXT-X-MEDIA") || strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF") {
 		k = playlist
 	}
+	// an audio rendition's playlist and every segment it names count as sound,
+	// so a stream whose audio dies can be told from one playing with it
+	if strings.HasPrefix(line, "#EXT-X-MEDIA") && strings.Contains(line, "TYPE=AUDIO") {
+		from.Audio = true
+	}
 	return line[:loc[2]] + p.child(line[loc[2]:loc[3]], base, from, k) + line[loc[3]:]
 }
 
@@ -189,5 +194,5 @@ func (p *Proxy) child(ref string, base *url.URL, from target, k kind) string {
 	if !strings.HasPrefix(abs, "http://") && !strings.HasPrefix(abs, "https://") {
 		return ref
 	}
-	return p.encode(target{URL: abs, Referer: from.Referer, Kind: k, Tally: from.Tally})
+	return p.encode(target{URL: abs, Referer: from.Referer, Kind: k, Tally: from.Tally, Audio: from.Audio})
 }

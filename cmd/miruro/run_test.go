@@ -1083,6 +1083,99 @@ func TestAbandonStalled(t *testing.T) {
 	})
 }
 
+// walkHLS fetches a playlist and everything it names, a playlist's children
+// in turn, the way a player starts a stream, and reports nothing of what came
+// back since the proxy's tally is what a test reads
+func walkHLS(u string) {
+	resp, err := http.Get(u)
+	if err != nil {
+		return
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.HasPrefix(string(body), "#EXTM3U") {
+		return
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.Contains(line, `URI="`):
+			ref := strings.SplitN(strings.SplitN(line, `URI="`, 2)[1], `"`, 2)[0]
+			walkHLS(ref)
+		case line != "" && !strings.HasPrefix(line, "#"):
+			walkHLS(line)
+		}
+	}
+}
+
+// a demuxed stream whose audio rendition relays nothing plays the picture
+// silent, hop's shape, and the watch says so once the picture has run a grace
+// without stopping a player the user is watching
+func TestWatchdogHearsASilentStream(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		audio  int
+		silent bool
+	}{
+		{"audio refused", http.StatusForbidden, true},
+		{"audio playing", http.StatusOK, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/master.m3u8":
+					io.WriteString(w, "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"ja\",DEFAULT=YES,URI=\"audio.m3u8\"\n"+
+						"#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nvideo.m3u8\n")
+				case "/video.m3u8":
+					io.WriteString(w, "#EXTM3U\n#EXTINF:1,\nv0.ts\n#EXT-X-ENDLIST\n")
+				case "/audio.m3u8":
+					io.WriteString(w, "#EXTM3U\n#EXTINF:1,\na0.ts\n#EXT-X-ENDLIST\n")
+				case "/v0.ts":
+					w.Write(bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8))
+				case "/a0.ts":
+					if tc.audio != http.StatusOK {
+						w.WriteHeader(tc.audio)
+						return
+					}
+					w.Write(bytes.Repeat(append([]byte{0x47}, make([]byte, 187)...), 8))
+				}
+			}))
+			defer cdn.Close()
+
+			px, err := play.StartProxy(context.Background(), http.DefaultClient)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer px.Close()
+
+			said := captureLog(t)
+			wd := watchdog{grace: 200 * time.Millisecond, budget: 8, check: 10 * time.Millisecond}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				_, err := wd.playStreams(ctx, px, []upstream.Stream{{URL: cdn.URL + "/master.m3u8", Kind: upstream.HLS, Server: "Vid"}},
+					func(pctx context.Context, s upstream.Stream, tl *play.Tally) error {
+						walkHLS(tl.Stream(s).URL)
+						<-pctx.Done()
+						return errors.New("signal: killed")
+					})
+				done <- err
+			}()
+			time.Sleep(time.Second)
+			cancel()
+			<-done
+
+			warned := strings.Contains(said.String(), "plays without sound")
+			if warned != tc.silent {
+				t.Errorf("warned = %v, want %v:\n%s", warned, tc.silent, said)
+			}
+			if strings.Contains(said.String(), "abandoning") {
+				t.Errorf("a stream showing picture was abandoned:\n%s", said)
+			}
+		})
+	}
+}
+
 // a pinned provider whose backend hiccups is asked once more before the walk
 // leaves it, and only that one and only once
 func TestAutoResolveRetriesThePinOnce(t *testing.T) {

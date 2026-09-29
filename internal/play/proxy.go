@@ -89,6 +89,9 @@ type target struct {
 	// Tally names the stream a body counts against, zero for one nothing counts
 	// every child a playlist names carries its parent's
 	Tally uint64 `json:"t,omitempty"`
+	// Audio marks a body of an audio rendition a master names apart from its
+	// video, which every child of that rendition's playlist inherits
+	Audio bool `json:"a,omitempty"`
 }
 
 // Proxy relays provider streams over localhost, so a player sees plain HTTP/1.1
@@ -120,6 +123,11 @@ type Tally struct {
 	id      uint64
 	served  atomic.Int64
 	refused atomic.Int64
+	// audio counts the audio rendition playlists relayed, and heard the audio
+	// segments among the served bodies, what tells a demuxed stream playing
+	// silent from one playing with sound
+	audio atomic.Int64
+	heard atomic.Int64
 }
 
 // Tally starts counting a stream
@@ -135,6 +143,12 @@ func (t *Tally) Served() int { return int(t.served.Load()) }
 
 // Refused counts the media bodies the upstream would not give up
 func (t *Tally) Refused() int { return int(t.refused.Load()) }
+
+// Silent reports a stream whose player took an audio rendition's playlist and
+// got none of its segments, which plays the picture without sound
+// a master carrying its audio inside the video variants names no rendition,
+// so it is never silent by this measure
+func (t *Tally) Silent() bool { return t.audio.Load() > 0 && t.heard.Load() == 0 }
 
 // URL is the localhost address a player should open for s, counted here
 func (t *Tally) URL(s upstream.Stream) string { return t.px.url(s, t.id) }
@@ -320,7 +334,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Content-Length", strconv.Itoa(len(out)))
-		w.Write(out)
+		if n, _ := w.Write(out); n > 0 && t.Audio {
+			if c := p.tally(t); c != nil {
+				c.audio.Add(1)
+			}
+		}
 	case segment, cipher:
 		// a segment is fetched whole and de-obfuscated
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
@@ -378,19 +396,32 @@ func (o *opening) Write(b []byte) (int, error) {
 // a body that carried nothing is not picture the player can start on, and a
 // payload naming a tally this proxy never handed out counts nowhere
 func (p *Proxy) count(t target, delivered bool) {
-	if !t.Kind.picture() || t.Tally == 0 {
+	if !t.Kind.picture() {
 		return
+	}
+	c := p.tally(t)
+	switch {
+	case c == nil:
+	case delivered:
+		c.served.Add(1)
+		if t.Audio {
+			c.heard.Add(1)
+		}
+	default:
+		c.refused.Add(1)
+	}
+}
+
+// tally is the Tally a target counts against, nil for none this proxy issued
+func (p *Proxy) tally(t target) *Tally {
+	if t.Tally == 0 {
+		return nil
 	}
 	v, ok := p.tallies.Load(t.Tally)
 	if !ok {
-		return
+		return nil
 	}
-	c := v.(*Tally)
-	if delivered {
-		c.served.Add(1)
-	} else {
-		c.refused.Add(1)
-	}
+	return v.(*Tally)
 }
 
 // refuse answers a request the relay could not serve, and says why under
