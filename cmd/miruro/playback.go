@@ -21,6 +21,8 @@ type playback struct {
 	pin  Pin
 	ep   float64
 	kind play.Kind
+	// watch decides when a stream that shows nothing is stopped
+	watch watchdog
 	// launch runs the player on one stream with the subtitles chosen for the
 	// provider that served it, a field so a test needs no player binary
 	launch func(ctx context.Context, s upstream.Stream, subs []upstream.Subtitle) error
@@ -45,7 +47,7 @@ func (p playback) run(pctx context.Context, res *upstream.Result, src source) er
 				"player", p.kind, "subs", len(subs))
 
 			before := p.px.Served()
-			last = playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream) error {
+			last = p.watch.playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream) error {
 				return p.launch(ctx, s, subs)
 			})
 			if last == nil || pctx.Err() != nil || p.px.Served() != before {
@@ -77,12 +79,12 @@ func (p playback) run(pctx context.Context, res *upstream.Result, src source) er
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
 // inside the playback goroutine
-func playStreams(ctx context.Context, px *play.Proxy, ranked []upstream.Stream, play func(context.Context, upstream.Stream) error) error {
+func (w watchdog) playStreams(ctx context.Context, px *play.Proxy, ranked []upstream.Stream, play func(context.Context, upstream.Stream) error) error {
 	var err error
 	for i, s := range ranked {
 		before := px.Served()
 		pctx, stop := context.WithCancel(ctx)
-		settled := abandonStalled(pctx, px, server(s), stop)
+		settled := w.abandonStalled(pctx, px, server(s), stop)
 		err = play(pctx, s)
 		stop()
 		abandoned := <-settled
@@ -111,23 +113,34 @@ func server(s upstream.Stream) string {
 	return "unnamed"
 }
 
-// startGrace is how long a stream has to relay its first media body
-// pewe and bee reached theirs in 1.0s and 2.3s through the proxy on 2026-08-23,
-// so this is an order of magnitude of headroom rather than a tuned value
-// it is a variable so a test can shorten it rather than wait it out
-var startGrace = 20 * time.Second
+// watchdog decides when a running player whose stream shows nothing is stopped
+// each playback carries its own, so a test shortening the bounds cannot rewrite
+// them under a watcher another test left running
+// the zero watchdog stops every stream at once, so a playback always carries
+// patience or a test's own
+type watchdog struct {
+	// grace is how long a stream has to relay its first media body
+	grace time.Duration
+	// budget is how many media bodies a stream may be refused before it has
+	// relayed one
+	budget int
+	// check is how often a running player is asked whether its stream is
+	// getting anything
+	check time.Duration
+}
 
-// refusalBudget is how many media bodies a stream may be refused before it has
-// relayed one
+// patience is the watchdog a run plays with
+// pewe and bee reached their first body in 1.0s and 2.3s through the proxy on
+// 2026-08-23, so the grace is an order of magnitude of headroom rather than a
+// tuned value
 // bee played after two refusals, while bonk and hop reached 25 and 538 in forty
-// seconds without ever relaying one, so this separates them with room to spare
-var refusalBudget = 8
-
-// refusalCheck is how often a running player is asked whether its stream is
-// getting anything
-// a second is far below the wait it replaces and far above the cost of reading
-// two counters
-var refusalCheck = time.Second
+// seconds without ever relaying one, so the budget separates them with room to
+// spare
+// a second between checks is far below the wait it replaces and far above the
+// cost of reading two counters
+func patience() watchdog {
+	return watchdog{grace: 20 * time.Second, budget: 8, check: time.Second}
+}
 
 // abandonStalled stops a player whose stream has shown nothing
 // ffmpeg's hls demuxer skips a segment it cannot fetch and asks for the next,
@@ -138,15 +151,15 @@ var refusalCheck = time.Second
 // the returned channel yields whether the player was stopped and closes when the
 // watcher is done, and a caller must receive from it before it returns, since
 // nothing else joins the goroutine that reports through note
-func abandonStalled(ctx context.Context, px *play.Proxy, name string, stop context.CancelFunc) <-chan bool {
+func (w watchdog) abandonStalled(ctx context.Context, px *play.Proxy, name string, stop context.CancelFunc) <-chan bool {
 	served, refused := px.Served(), px.Refused()
 	settled := make(chan bool, 1)
 	go func() {
 		abandoned := false
 		defer func() { settled <- abandoned; close(settled) }()
-		grace := time.NewTimer(startGrace)
+		grace := time.NewTimer(w.grace)
 		defer grace.Stop()
-		tick := time.NewTicker(refusalCheck)
+		tick := time.NewTicker(w.check)
 		defer tick.Stop()
 		for {
 			select {
@@ -154,7 +167,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, stop conte
 				return
 			case <-grace.C:
 				if px.Served() == served {
-					log.Warn("stream showed nothing in time, abandoning it", "server", name, "after", startGrace)
+					log.Warn("stream showed nothing in time, abandoning it", "server", name, "after", w.grace)
 					abandoned = true
 					stop()
 				}
@@ -163,7 +176,7 @@ func abandonStalled(ctx context.Context, px *play.Proxy, name string, stop conte
 				if px.Served() > served {
 					return
 				}
-				if n := px.Refused() - refused; n >= refusalBudget {
+				if n := px.Refused() - refused; n >= w.budget {
 					log.Warn("stream refused before it played, abandoning it", "server", name, "refused", n)
 					abandoned = true
 					stop()

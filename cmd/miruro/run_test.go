@@ -640,7 +640,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("a stream that never started falls through", func(t *testing.T) {
 		var tried []string
-		if err := playStreams(ctx, px, []upstream.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
+		if err := patience().playStreams(ctx, px, []upstream.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
 			t.Fatalf("the live stream did not play: %v", err)
 		}
 		if !slices.Equal(tried, []string{"HD-1", "HD-2"}) {
@@ -653,7 +653,7 @@ func TestPlayStreams(t *testing.T) {
 	t.Run("a stream that played is not retried", func(t *testing.T) {
 		var tried []string
 		quit := errors.New("player exit 4")
-		err := playStreams(ctx, px, []upstream.Stream{live, dead}, func(ctx context.Context, s upstream.Stream) error {
+		err := patience().playStreams(ctx, px, []upstream.Stream{live, dead}, func(ctx context.Context, s upstream.Stream) error {
 			fakePlay(t, px, &tried)(ctx, s)
 			return quit
 		})
@@ -667,7 +667,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("every stream dead reports the last failure", func(t *testing.T) {
 		var tried []string
-		err := playStreams(ctx, px, []upstream.Stream{dead, dead}, fakePlay(t, px, &tried))
+		err := patience().playStreams(ctx, px, []upstream.Stream{dead, dead}, fakePlay(t, px, &tried))
 		if err == nil {
 			t.Fatal("nothing played, playback must fail")
 		}
@@ -812,6 +812,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	stage := playback{
 		runState: st,
 		px:       px,
+		watch:    patience(),
 		pin:      Pin{Code: "ally", Variant: Hard},
 		ep:       8,
 		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
@@ -895,6 +896,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	stage := playback{
 		runState: st,
 		px:       px,
+		watch:    patience(),
 		pin:      Pin{Code: "ally", Variant: Hard},
 		ep:       8,
 		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
@@ -922,11 +924,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 // served from an ad CDN answering 403, and mpv was still running four minutes
 // later having shown nothing
 func TestAbandonStalled(t *testing.T) {
-	restore := func(g time.Duration, b int, c time.Duration) func() {
-		return func() { startGrace, refusalBudget, refusalCheck = g, b, c }
-	}(startGrace, refusalBudget, refusalCheck)
-	defer restore()
-	startGrace, refusalBudget, refusalCheck = 5*time.Second, 3, 10*time.Millisecond
+	wd := watchdog{grace: 5 * time.Second, budget: 3, check: 10 * time.Millisecond}
 
 	px, err := play.StartProxy(context.Background(), http.DefaultClient)
 	if err != nil {
@@ -956,7 +954,7 @@ func TestAbandonStalled(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- playStreams(context.Background(), px,
+			done <- wd.playStreams(context.Background(), px,
 				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}}, skipping)
 		}()
 		select {
@@ -974,7 +972,7 @@ func TestAbandonStalled(t *testing.T) {
 	t.Run("a stream that plays survives its refusals", func(t *testing.T) {
 		var refused atomic.Int64
 		cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if refused.Load() <= int64(refusalBudget) {
+			if refused.Load() <= int64(wd.budget) {
 				refused.Add(1)
 				w.WriteHeader(http.StatusForbidden)
 				return
@@ -986,7 +984,7 @@ func TestAbandonStalled(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		played := make(chan error, 1)
 		go func() {
-			played <- playStreams(ctx, px,
+			played <- wd.playStreams(ctx, px,
 				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}},
 				func(pctx context.Context, s upstream.Stream) error {
 					// fetch until picture lands, then sit there the way a player
@@ -1015,11 +1013,9 @@ func TestAbandonStalled(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			// still running well past the refusals it spent getting there
 		}
-		if got := int(refused.Load()); got <= refusalBudget {
-			t.Errorf("the stream was refused %d times, want more than the budget of %d", got, refusalBudget)
+		if got := int(refused.Load()); got <= wd.budget {
+			t.Errorf("the stream was refused %d times, want more than the budget of %d", got, wd.budget)
 		}
-		// the watcher reads the tunables this test rewrote, so it has to be done
-		// before the restore runs
 		cancel()
 		<-played
 	})
