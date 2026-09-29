@@ -24,22 +24,82 @@ func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*upstream.
 		return res, src, pin, err
 	}
 
-	avail, err := candidates(s.cat, ep, s.category, s.caps)
+	l, err := s.listing(ctx, ep)
+	if err != nil {
+		return nil, source{}, pin, err
+	}
+	avail, err := candidates(l, ep, s.category)
 	if err != nil {
 		return nil, source{}, pin, err
 	}
 
-	rows := offers(avail, s.caps, s.category, pin)
+	rows := offers(avail, l.Caps, s.category, pin)
 	width := widest(rows)
 	pick, err := ui.Select("Select provider", rows, func(o offer) string { return o.label(width) })
 	if err != nil {
 		return nil, source{}, pin, err
 	}
-	res, src, err := s.autoResolve(ctx, ep, pick.Pin, nil)
+	res, src, err := s.walk(ctx, l, ep, pick.Pin, nil)
 	return res, src, pick.Pin, err
 }
 
-// autoResolve tries the pinned pick first then the rest, never prompting
+// listing asks the backends that listed the title which providers serve one
+// episode
+// a backend that refused this client is not asked again, and its refusal is
+// what comes back when no other backend lists a provider
+// one that cannot answer costs the episode its providers and nothing else
+func (s *runState) listing(ctx context.Context, ep float64) (*upstream.Listing, error) {
+	var ask upstream.Backends
+	var blocked error
+	for _, b := range s.backends {
+		if err := s.refused.get(b); err != nil {
+			blocked = err
+			continue
+		}
+		ask = append(ask, b)
+	}
+
+	l, failed := ask.Listing(ctx, s.cat, ep)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	var errs []error
+	for _, f := range failed {
+		i := slices.IndexFunc(ask, func(b upstream.Backend) bool { return b.Name() == f.Backend })
+		if errors.Is(f.Err, upstream.ErrBlocked) && i >= 0 {
+			if s.refused.add(ask[i], f.Err) {
+				log.Warn("backend refused the run, skipping its providers", "backend", f.Backend, "err", f.Err)
+			}
+			blocked = f.Err
+			continue
+		}
+		errs = append(errs, f)
+	}
+	if len(l.Providers) > 0 {
+		for _, err := range errs {
+			log.Warn("backend did not list the episode", "episode", num(ep), "err", err)
+		}
+		return l, nil
+	}
+	if blocked != nil {
+		return nil, blocked
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return l, nil
+}
+
+// autoResolve lists the episode and walks its providers, never prompting
+func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*upstream.Result, source, error) {
+	l, err := s.listing(ctx, ep)
+	if err != nil {
+		return nil, source{}, err
+	}
+	return s.walk(ctx, l, ep, pin, skip)
+}
+
+// walk tries the pinned pick first then the rest of what l lists
 // skip names providers a caller has already used, so an episode being retried
 // moves on instead of resolving the same dead source again
 // a backend that refuses this client takes its other providers out of the walk
@@ -48,13 +108,19 @@ func (s *runState) resolve(ctx context.Context, ep float64, pin Pin) (*upstream.
 // a provider named in the config or on the command line holds the run to
 // itself, since trading a stated choice for another provider without being
 // asked is what --fallback exists to allow
-func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*upstream.Result, source, error) {
-	avail, err := candidates(s.cat, ep, s.category, s.caps)
+func (s *runState) walk(ctx context.Context, l *upstream.Listing, ep float64, pin Pin, skip map[string]bool) (*upstream.Result, source, error) {
+	avail, err := candidates(l, ep, s.category)
 	if err != nil {
 		return nil, source{}, err
 	}
 
-	rows := orderPinned(offers(avail, s.caps, s.category, pin), pin)
+	// the first walk of an episode says why the pin was passed over, and a walk
+	// retrying the episode has already said it
+	if _, listed := l.Providers[pin.Code]; pin.Code != "" && !listed && s.fallback && len(skip) == 0 {
+		log.Warn("pinned provider does not serve the episode, using the preference order", "provider", pin.Code, "episode", num(ep))
+	}
+
+	rows := orderPinned(offers(avail, l.Caps, s.category, pin), pin)
 	if !s.fallback && pin.Code != "" {
 		// both renditions of the pinned provider stay, since either is still it
 		rows = slices.DeleteFunc(rows, func(o offer) bool { return o.Code != pin.Code })
@@ -62,7 +128,7 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 
 	var last, blocked error
 	for _, o := range rows {
-		p := s.cat.Providers[o.Code]
+		p := l.Providers[o.Code]
 		if skip[o.Code] {
 			continue
 		}
@@ -75,7 +141,7 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 		if e == nil {
 			continue
 		}
-		res, err := s.cat.Sources(ctx, e.ID, o.Code, src.Category)
+		res, err := l.Sources(ctx, e.ID, o.Code, src.Category)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, source{}, ctx.Err()
@@ -121,8 +187,8 @@ func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip ma
 		if last == nil {
 			if skip[pin.Code] {
 				last = fmt.Errorf("%s is the only provider this run may use", pin.Code)
-			} else if _, ok := s.cat.Providers[pin.Code]; !ok {
-				last = fmt.Errorf("%s is not in the catalog for this title", pin.Code)
+			} else if _, ok := l.Providers[pin.Code]; !ok {
+				last = fmt.Errorf("%s does not serve episode %s", pin.Code, num(ep))
 			} else {
 				last = fmt.Errorf("%s carries no stream for episode %s", pin.Code, num(ep))
 			}

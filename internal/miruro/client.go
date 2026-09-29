@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,18 +23,15 @@ import (
 	"ysun.co/miruro/internal/upstream"
 )
 
-const (
-	// maxBody caps a decoded response against a decompression bomb
-	// the largest real payload, One Piece's pipe episodes, decodes to about 8.7 MB
-	maxBody = 64 << 20
-	// maxRaw caps the wire body feeding decode, sized so anything that decodes
-	// within maxBody fits despite the base64 over gzip expansion
-	maxRaw = 96 << 20
-)
+// maxBody caps a response, both as it arrives and once decoded, against an
+// endless body and a decompression bomb
+// the largest real payload, One Piece's 1184 episodes, is 266 KB on the wire and
+// about 1 MB decoded
+const maxBody = 64 << 20
 
 // mirrors are the domains that front one miruro backend, which answers every
 // one of them with the same bytes
-// www.miruro.com publishes this list and is not itself a pipe host
+// www.miruro.com publishes this list and is not itself an api host
 // the order leads with .ru on MiruroAPI's report that it carries the softest
 // Cloudflare rules, which is unverified here
 var mirrors = []string{
@@ -43,12 +39,6 @@ var mirrors = []string{
 	"https://www.miruro.to",
 	"https://www.miruro.bz",
 	"https://www.miruro.tv",
-}
-
-// obfKey is VITE_PIPE_OBF_KEY, applied only when x-obfuscated is 2
-var obfKey = []byte{
-	0x71, 0x95, 0x10, 0x34, 0xf8, 0xfb, 0xcf, 0x53,
-	0xd8, 0x9d, 0xb5, 0x2c, 0xeb, 0x3d, 0xc2, 0x2c,
 }
 
 // catalogKey is what the catalog api xors its gzip bodies with, the bytes of a
@@ -65,12 +55,10 @@ type Client struct {
 	// every later request the same walk
 	base int
 
-	// the capability table is fetched at most once per client
-	// cfgMu is only ever taken before mu
-	cfgMu   sync.Mutex
-	cfg     upstream.Capabilities
-	cfgErr  error
-	cfgDone bool
+	// codes is the provider table, fetched at most once per client
+	// codesMu is only ever taken before mu
+	codesMu sync.Mutex
+	codes   map[string]string
 }
 
 // Name is the backend name, what a config entry and a log line call it
@@ -80,35 +68,14 @@ func New() *Client {
 	// the cloned default transport keeps HTTP/2 via ALPN, which passes the WAF
 	// ResponseHeaderTimeout excludes the body read, so Timeout backstops an
 	// upstream that answers and then stalls mid-body
-	// the largest episodes payload, One Piece at 13278 rows, reads in about 1.2s,
-	// so this bound cannot cut a real response short
+	// the largest payload, One Piece's episode list, reads in about 0.25s, so
+	// this bound cannot cut a real response short
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Client{
 		Bases: slices.Clone(mirrors),
 		HTTP:  &http.Client{Transport: tr, Timeout: 2 * time.Minute},
 	}
-}
-
-type envelope struct {
-	Path   string            `json:"path"`
-	Method string            `json:"method"`
-	Query  map[string]string `json:"query"`
-	// Body is never set and is not dead: the pipe requires the key, so it is
-	// here to be marshalled as null
-	Body any `json:"body"`
-}
-
-// pipe runs an obfuscated secure-pipe GET and returns the decoded JSON body
-func (c *Client) pipe(ctx context.Context, path string, query map[string]string) ([]byte, error) {
-	if query == nil {
-		query = map[string]string{}
-	}
-	env, err := json.Marshal(envelope{Path: path, Method: http.MethodGet, Query: query})
-	if err != nil {
-		return nil, err
-	}
-	return c.get(ctx, "/api/secure/pipe?e="+base64.RawURLEncoding.EncodeToString(env))
 }
 
 // get runs a GET for ref, a path and query under a mirror, and returns the
@@ -199,7 +166,7 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRaw+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
@@ -207,8 +174,8 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 		// the headers already arrived, so this host answered
 		return nil, refused, err
 	}
-	if len(body) > maxRaw {
-		return nil, refused, fmt.Errorf("miruro response exceeds %d bytes", maxRaw)
+	if len(body) > maxBody {
+		return nil, refused, fmt.Errorf("miruro response exceeds %d bytes", maxBody)
 	}
 
 	kind := mediaType(resp.Header)
@@ -222,24 +189,12 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 		return nil, refused, fmt.Errorf("%w: miruro %s answered html", upstream.ErrUnreachable, req.URL.Path)
 	}
 
-	switch obf := resp.Header.Get("x-obfuscated"); {
-	case obf != "":
-		body, err = decode(body, obf)
-	case kind == "application/octet-stream":
-		body, err = unmask(body)
-	}
-	if err != nil {
-		return nil, refused, err
-	}
-
-	// a pipe resource that fails answers 200 with an error object rather than a
-	// status, and every one of them does, so the check belongs here rather than
-	// per caller
-	var fail struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(body, &fail) == nil && fail.Error != "" {
-		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, fail.Error)
+	// the catalog masks what it serves as an octet stream and serves the rest,
+	// the provider table among them, as plain json
+	if kind == "application/octet-stream" {
+		if body, err = unmask(body); err != nil {
+			return nil, refused, err
+		}
 	}
 	return body, served, nil
 }
@@ -300,20 +255,6 @@ func (c *Client) prefer(i int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.base = i
-}
-
-// decode reverses base64url, then the optional xor, then gzip
-func decode(body []byte, obf string) ([]byte, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(string(bytes.TrimRight(body, "=")))
-	if err != nil {
-		return nil, err
-	}
-	if obf == "2" {
-		for i := range raw {
-			raw[i] ^= obfKey[i%len(obfKey)]
-		}
-	}
-	return inflate(raw)
 }
 
 // unmask reverses the catalog api's obfuscation, a repeating xor over gzip

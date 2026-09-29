@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,38 +17,6 @@ import (
 
 	"ysun.co/miruro/internal/upstream"
 )
-
-func obfuscate(t *testing.T, plain []byte, version string) []byte {
-	t.Helper()
-	var gz bytes.Buffer
-	zw := gzip.NewWriter(&gz)
-	if _, err := zw.Write(plain); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	raw := gz.Bytes()
-	if version == "2" {
-		for i := range raw {
-			raw[i] ^= obfKey[i%len(obfKey)]
-		}
-	}
-	return []byte(base64.RawURLEncoding.EncodeToString(raw))
-}
-
-func TestDecode(t *testing.T) {
-	want := []byte(`{"mappings":{"id":21},"providers":{}}`)
-	for _, version := range []string{"1", "2"} {
-		got, err := decode(obfuscate(t, want, version), version)
-		if err != nil {
-			t.Fatalf("version %s: %v", version, err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("version %s: got %s want %s", version, got, want)
-		}
-	}
-}
 
 // mask obfuscates plain the way the catalog api does, gzip then a repeating xor
 func mask(t *testing.T, plain []byte) []byte {
@@ -86,12 +52,11 @@ func TestUnmask(t *testing.T) {
 // the fallback loop back into the block, so every case asserts on the
 // sentinel with errors.Is rather than on message text
 func TestErrorTaxonomy(t *testing.T) {
-	plain := []byte(`{"providers":{"bonk":{}}}`)
+	plain := []byte(`{"data":[],"has_more":false}`)
 	cases := []struct {
 		name    string
 		status  int
 		ctype   string
-		obf     string
 		body    []byte
 		cancel  bool
 		wantErr error
@@ -115,27 +80,6 @@ func TestErrorTaxonomy(t *testing.T) {
 			status:  http.StatusOK,
 			ctype:   "text/html",
 			body:    []byte("<html>challenge</html>"),
-			wantErr: upstream.ErrUnreachable,
-		},
-		{
-			name:   "xor envelope round-trips",
-			status: http.StatusOK,
-			obf:    "2",
-			body:   obfuscate(t, plain, "2"),
-			want:   plain,
-		},
-		{
-			name:   "plain gzip envelope round-trips",
-			status: http.StatusOK,
-			obf:    "1",
-			body:   obfuscate(t, plain, "1"),
-			want:   plain,
-		},
-		{
-			name:    "an error object with an ok status is recoverable",
-			status:  http.StatusOK,
-			obf:     "1",
-			body:    obfuscate(t, []byte(`{"error":"Secure pipe failed"}`), "1"),
 			wantErr: upstream.ErrUnreachable,
 		},
 		{
@@ -190,9 +134,6 @@ func TestErrorTaxonomy(t *testing.T) {
 				if tc.ctype != "" {
 					w.Header().Set("Content-Type", tc.ctype)
 				}
-				if tc.obf != "" {
-					w.Header().Set("x-obfuscated", tc.obf)
-				}
 				w.WriteHeader(tc.status)
 				w.Write(tc.body)
 			}))
@@ -231,15 +172,15 @@ type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) { return len(p), nil }
 
-// an endless chunked pipe body would otherwise buffer until memory runs out
-func TestPipeRefusesOversizedBody(t *testing.T) {
+// an endless chunked body would otherwise buffer until memory runs out
+func TestRefusesOversizedBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.CopyN(w, zeros{}, maxRaw+1)
+		io.CopyN(w, zeros{}, maxBody+1)
 	}))
 	defer srv.Close()
 
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	_, err := c.pipe(context.Background(), "/x", nil)
+	_, err := c.get(context.Background(), "/x")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("want an over-cap error, got %v", err)
 	}
@@ -370,7 +311,7 @@ func serves(body string) http.HandlerFunc {
 
 // every mirror fronts one backend, so the walk exists for the failures a
 // different host can answer
-func TestPipeRotation(t *testing.T) {
+func TestMirrorRotation(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("a blocked mirror hands over and stays handed over", func(t *testing.T) {
@@ -379,7 +320,7 @@ func TestPipeRotation(t *testing.T) {
 		c := &Client{Bases: []string{bad.URL, good.URL}, HTTP: good.Client()}
 
 		for range 3 {
-			if _, err := c.pipe(ctx, "config", nil); err != nil {
+			if _, err := c.get(ctx, "/api/config"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -398,7 +339,7 @@ func TestPipeRotation(t *testing.T) {
 		good := mirror(t, serves(`{"ok":true}`))
 
 		c := &Client{Bases: []string{dead.URL, good.URL}, HTTP: good.Client()}
-		if _, err := c.pipe(ctx, "config", nil); err != nil {
+		if _, err := c.get(ctx, "/api/config"); err != nil {
 			t.Fatal(err)
 		}
 		if got := good.hits.Load(); got != 1 {
@@ -413,7 +354,7 @@ func TestPipeRotation(t *testing.T) {
 		other := mirror(t, serves(`{"ok":true}`))
 
 		c := &Client{Bases: []string{down.URL, other.URL}, HTTP: other.Client()}
-		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, upstream.ErrUnreachable) {
+		if _, err := c.get(ctx, "/api/v1/anime"); !errors.Is(err, upstream.ErrUnreachable) {
 			t.Fatalf("err = %v, want upstream.ErrUnreachable", err)
 		}
 		if got := other.hits.Load(); got != 0 {
@@ -424,7 +365,7 @@ func TestPipeRotation(t *testing.T) {
 	t.Run("blocked everywhere is fatal", func(t *testing.T) {
 		a, b := mirror(t, blocks), mirror(t, blocks)
 		c := &Client{Bases: []string{a.URL, b.URL}, HTTP: a.Client()}
-		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, upstream.ErrBlocked) {
+		if _, err := c.get(ctx, "/api/config"); !errors.Is(err, upstream.ErrBlocked) {
 			t.Fatalf("err = %v, want upstream.ErrBlocked", err)
 		}
 	})
@@ -437,7 +378,7 @@ func TestPipeRotation(t *testing.T) {
 		dead.Close()
 
 		c := &Client{Bases: []string{blocked.URL, dead.URL}, HTTP: blocked.Client()}
-		if _, err := c.pipe(ctx, "config", nil); !errors.Is(err, upstream.ErrBlocked) {
+		if _, err := c.get(ctx, "/api/config"); !errors.Is(err, upstream.ErrBlocked) {
 			t.Fatalf("err = %v, want upstream.ErrBlocked", err)
 		}
 	})
@@ -452,7 +393,7 @@ func TestPipeRotation(t *testing.T) {
 		c := &Client{Bases: []string{bad.URL, down.URL}, HTTP: down.Client()}
 
 		for range 3 {
-			if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, upstream.ErrUnreachable) {
+			if _, err := c.get(ctx, "/api/v1/anime"); !errors.Is(err, upstream.ErrUnreachable) {
 				t.Fatalf("err = %v, want upstream.ErrUnreachable", err)
 			}
 		}
@@ -474,7 +415,7 @@ func TestPipeRotation(t *testing.T) {
 
 		hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 200 * time.Millisecond}}
 		c := &Client{Bases: []string{quiet.URL, other.URL}, HTTP: hc}
-		if _, err := c.pipe(ctx, "sources", nil); !errors.Is(err, upstream.ErrUnreachable) {
+		if _, err := c.get(ctx, "/api/v1/anime"); !errors.Is(err, upstream.ErrUnreachable) {
 			t.Fatalf("err = %v, want upstream.ErrUnreachable", err)
 		}
 		if got := other.hits.Load(); got != 0 {
@@ -483,7 +424,7 @@ func TestPipeRotation(t *testing.T) {
 	})
 
 	t.Run("no mirror configured is recoverable", func(t *testing.T) {
-		if _, err := (&Client{HTTP: http.DefaultClient}).pipe(ctx, "config", nil); !errors.Is(err, upstream.ErrUnreachable) {
+		if _, err := (&Client{HTTP: http.DefaultClient}).get(ctx, "/api/config"); !errors.Is(err, upstream.ErrUnreachable) {
 			t.Fatalf("err = %v, want upstream.ErrUnreachable", err)
 		}
 	})
@@ -491,7 +432,7 @@ func TestPipeRotation(t *testing.T) {
 
 // a rule comparing Origin against Host would reject a header set pinned to one
 // domain the moment the walk moved off it
-func TestPipeOriginFollowsTheMirror(t *testing.T) {
+func TestOriginFollowsTheMirror(t *testing.T) {
 	var origin, referer string
 	srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
 		origin, referer = r.Header.Get("Origin"), r.Header.Get("Referer")
@@ -499,32 +440,10 @@ func TestPipeOriginFollowsTheMirror(t *testing.T) {
 	})
 
 	c := &Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
-	if _, err := c.pipe(context.Background(), "config", nil); err != nil {
+	if _, err := c.get(context.Background(), "/api/config"); err != nil {
 		t.Fatal(err)
 	}
 	if origin != srv.URL || referer != srv.URL+"/" {
 		t.Errorf("origin = %q referer = %q, want them on %q", origin, referer, srv.URL)
-	}
-}
-
-// the pipe wants a body key on every envelope, and Body is the field that puts
-// one there
-// it is never assigned, so nothing but this stops it being read as dead and
-// deleted, which would drop the key and change what the api is sent
-func TestEnvelopeCarriesANullBody(t *testing.T) {
-	out, err := json.Marshal(envelope{Path: "sources", Method: http.MethodGet, Query: map[string]string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var seen map[string]json.RawMessage
-	if err := json.Unmarshal(out, &seen); err != nil {
-		t.Fatal(err)
-	}
-	body, ok := seen["body"]
-	if !ok {
-		t.Fatalf("the envelope carries no body key: %s", out)
-	}
-	if string(body) != "null" {
-		t.Errorf("body = %s, want null", body)
 	}
 }

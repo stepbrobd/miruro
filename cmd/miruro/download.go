@@ -40,14 +40,14 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	sv := saver{runState: s, px: px, media: hc, pin: pin}
 
 	errs := ui.Downloads(ctx, labels, flagParallel, func(dctx context.Context, i int, report func(done, total int64)) error {
-		src, missed, err := sv.save(dctx, eps[i], report)
+		src, want, missed, err := sv.save(dctx, eps[i], report)
 		if err != nil {
 			return err
 		}
 		if missed > 0 {
 			bare.Add(1)
 		}
-		if want, ok := sv.wanted(eps[i]); ok && (src.Category != want.Category || src.Attach != want.Attach) {
+		if want.Code != "" && (src.Category != want.Category || src.Attach != want.Attach) {
 			// the run reports every swapped episode once it ends, so the worker
 			// only records it
 			swapped[i] = true
@@ -112,18 +112,24 @@ type saver struct {
 // after its own retries
 // a provider that resolves and then dies mid-episode is common enough that
 // failing the episode over it would waste the rest of the run
-// it reports the source that served the episode and the sidecars that were
-// lost, the way play.Download does
-func (s saver) save(ctx context.Context, ep float64, report play.Progress) (source, int, error) {
+// it reports the source that served the episode, the one the pin wanted, and
+// the sidecars that were lost, the way play.Download does
+func (s saver) save(ctx context.Context, ep float64, report play.Progress) (source, source, int, error) {
+	l, err := s.listing(ctx, ep)
+	if err != nil {
+		return source{}, source{}, 0, err
+	}
+	want, _ := s.wanted(l, ep)
+
 	tried := map[string]bool{}
 	var last error
 	for {
-		res, src, err := s.autoResolve(ctx, ep, s.pin, tried)
+		res, src, err := s.walk(ctx, l, ep, s.pin, tried)
 		if err != nil {
 			if last != nil {
-				return source{}, 0, last
+				return source{}, want, 0, last
 			}
-			return source{}, 0, err
+			return source{}, want, 0, err
 		}
 		tried[src.Code] = true
 
@@ -132,10 +138,10 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 		for _, stream := range upstream.Rank(ctx, s.media, res, s.cfg.Quality) {
 			missed, err := s.from(ctx, res, src, stream, ep, report)
 			if err == nil {
-				return src, missed, nil
+				return src, want, missed, nil
 			}
 			if ctx.Err() != nil {
-				return source{}, 0, err
+				return source{}, want, 0, err
 			}
 			// name the provider, since the next attempt reports its own failure
 			last = fmt.Errorf("%s: %w", src.Code, err)
@@ -146,16 +152,17 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 
 // wanted is the source the pinned pick would resolve, what an episode that fell
 // elsewhere is measured against when the run reports a rendition swap
-// without a pin there is no expectation to diverge from
-func (s saver) wanted(ep float64) (source, bool) {
+// without a pin there is no expectation to diverge from, and the zero source
+// is what save reports for it
+func (s saver) wanted(l *upstream.Listing, ep float64) (source, bool) {
 	if s.pin.Code == "" {
 		return source{}, false
 	}
-	avail, err := candidates(s.cat, ep, s.category, s.caps)
+	avail, err := candidates(l, ep, s.category)
 	if err != nil {
 		return source{}, false
 	}
-	rows := orderPinned(offers(avail, s.caps, s.category, s.pin), s.pin)
+	rows := orderPinned(offers(avail, l.Caps, s.category, s.pin), s.pin)
 	return rows[0].source(s.category), true
 }
 

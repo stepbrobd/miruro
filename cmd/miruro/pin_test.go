@@ -58,7 +58,6 @@ var testCaps = upstream.Capabilities{
 	"kiwi": {Hard: true},
 	"bee":  {Soft: true},
 	"bonk": {Hard: true, Soft: true},
-	"twin": {Hard: true, Soft: true, Embed: true},
 	"void": {},
 }
 
@@ -228,24 +227,19 @@ func TestOrderPinned(t *testing.T) {
 }
 
 func TestCandidates(t *testing.T) {
-	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
+	l := &upstream.Listing{Providers: map[string]upstream.Provider{
 		"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "k1", Number: 1}}},
-		"twin": {Code: "twin", Sub: []upstream.Episode{{ID: "t1", Number: 1}, {ID: "t2", Number: 2}}},
+		"hop":  {Code: "hop", Dub: []upstream.Episode{{ID: "h1", Number: 1}}},
 	}}
 
-	got, err := candidates(cat, 1, upstream.Sub, testCaps)
+	got, err := candidates(l, 1, upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Code != "kiwi" {
-		t.Errorf("candidates = %v, want the embed dropped", got)
+		t.Errorf("candidates = %v, want only the provider serving the sub", got)
 	}
-
-	// an episode only an embed carries is not the same as an episode nobody has
-	if _, err := candidates(cat, 2, upstream.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "embed") {
-		t.Errorf("err = %v, want the embed reason", err)
-	}
-	if _, err := candidates(cat, 3, upstream.Sub, testCaps); err == nil || !strings.Contains(err.Error(), "no provider") {
+	if _, err := candidates(l, 2, upstream.Sub); err == nil || !strings.Contains(err.Error(), "no provider has episode 2") {
 		t.Errorf("err = %v, want the missing-episode reason", err)
 	}
 }

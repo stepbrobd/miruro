@@ -22,72 +22,71 @@ import (
 
 // titles are the anime the integration run pulls its provider list from
 // provider codes are never written down here, they come from whatever the live
-// catalog carries, but no single title carries all of them, so the run covers
-// the union across a couple of fixed titles
-// tensura was the original and is the only one of the two carrying ANIMEDUNYA
-// shingeki is what reaches pewe
+// listings name, but no single title's episode is served by all of them, so the
+// run covers the union across a couple of fixed titles
 var titles = []int{
 	108511, // Tensei shitara Slime Datta Ken 2nd Season
 	16498,  // Shingeki no Kyojin
 }
 
-// providerMatrix is every provider the live catalogs carry, mapped to every
-// title that has it
-// one provider serves different hosts on different titles, so binding it to the
-// first title found lets one dead host stand in for the provider and take the
-// whole path down with it
-func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) map[string][]upstream.Provider {
-	t.Helper()
-	out := map[string][]upstream.Provider{}
-	for _, id := range titles {
-		cat, err := client.Episodes(ctx, upstream.Media{ID: id})
-		if err != nil {
-			t.Fatalf("catalog %d: %v", id, err)
-		}
-		for code, p := range cat.Providers {
-			out[code] = append(out[code], p)
-		}
-	}
-	if len(out) == 0 {
-		t.Fatal("no provider in any catalog")
-	}
-	t.Logf("provider matrix: %d providers across %d titles", len(out), len(titles))
-	return out
+// carriage is the first episode of one title as one provider serves it
+type carriage struct {
+	provider upstream.Provider
+	caps     upstream.Caps
 }
 
-// rendition is the sub category a provider carries, from its declared
-// capabilities
-// asking for the one it does not carry answers 444, which would skip half the
-// matrix on a condition the run itself created
-// soft wins when a provider declares both, matching what the cli resolves to
-// with no pin, so the run covers the rendition the pick defaults to
-func rendition(caps upstream.Capabilities, code string) upstream.Category {
-	if c, ok := caps[code]; ok && c.Soft {
+// rendition is the sub category the provider serves the episode in
+// soft wins when it serves both, matching what the cli resolves to with no pin,
+// so the run covers the rendition the pick defaults to
+func (c carriage) rendition() upstream.Category {
+	if c.caps.Soft {
 		return upstream.Ssub
 	}
 	return upstream.Sub
 }
 
-// capabilities fetches the provider table, empty when the resource is down so
-// the run falls back to asking every provider for sub
-func capabilities(ctx context.Context, t *testing.T, client *miruro.Client) upstream.Capabilities {
+// providerMatrix is every provider the live listings name, mapped to every
+// title whose first episode it serves
+// one provider serves different hosts on different titles, so binding it to the
+// first title found lets one dead host stand in for the provider and take the
+// whole path down with it
+func providerMatrix(ctx context.Context, t *testing.T, client *miruro.Client) map[string][]carriage {
 	t.Helper()
-	caps, err := client.Capabilities(ctx)
-	if err != nil {
-		t.Logf("capability table unavailable, every provider will be asked for sub: %v", err)
+	out := map[string][]carriage{}
+	for _, id := range titles {
+		cat, err := client.Episodes(ctx, upstream.Media{ID: id})
+		if err != nil {
+			t.Fatalf("catalog %d: %v", id, err)
+		}
+		numbers := cat.Numbers(upstream.Sub)
+		if len(numbers) == 0 {
+			t.Fatalf("catalog %d lists no episode", id)
+		}
+		l, err := client.Listing(ctx, cat.Refs[client.Name()], numbers[0])
+		if err != nil {
+			t.Fatalf("listing %d: %v", id, err)
+		}
+		for code, p := range l.Providers {
+			out[code] = append(out[code], carriage{p, l.Caps[code]})
+		}
 	}
-	return caps
+	if len(out) == 0 {
+		t.Fatal("no provider in any listing")
+	}
+	t.Logf("provider matrix: %d providers across %d titles", len(out), len(titles))
+	return out
 }
 
 // cacheable walks the titles a provider carries and returns the first playlist
 // the cache path can take apart, with why nothing did when none can
 // a provider is only excused once every title it carries has been tried, since
 // each names its own host and one dead host is not a dead provider
-func cacheable(ctx context.Context, t *testing.T, client *miruro.Client, px *Proxy, carried []upstream.Provider, code string, cat upstream.Category) (*mediaPlaylist, string) {
+func cacheable(ctx context.Context, t *testing.T, client *miruro.Client, px *Proxy, carried []carriage, code string) (*mediaPlaylist, string) {
 	t.Helper()
 	why := "no title carries it"
-	for _, provider := range carried {
-		eps := provider.Episodes(cat)
+	for _, c := range carried {
+		cat := c.rendition()
+		eps := c.provider.Episodes(cat)
 		if len(eps) == 0 {
 			why = "carries no " + string(cat) + " episodes"
 			continue
@@ -145,11 +144,9 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 	defer px.Close()
 
 	var covered int
-	caps := capabilities(ctx, t, client)
 	for code, carried := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
-			cat := rendition(caps, code)
-			pl, why := cacheable(ctx, t, client, px, carried, code, cat)
+			pl, why := cacheable(ctx, t, client, px, carried, code)
 			if pl == nil {
 				t.Skipf("no title reached the cache path on this provider: %s", why)
 			}
@@ -278,11 +275,12 @@ func head(pl *mediaPlaylist, n int) *mediaPlaylist {
 
 // shipped walks the titles a provider carries and returns the first result that
 // ships a subtitle, with why none did when none do
-func shipped(ctx context.Context, t *testing.T, client *miruro.Client, carried []upstream.Provider, code string, cat upstream.Category) (*upstream.Result, string) {
+func shipped(ctx context.Context, t *testing.T, client *miruro.Client, carried []carriage, code string) (*upstream.Result, string) {
 	t.Helper()
 	why := "no title carries it"
-	for _, provider := range carried {
-		eps := provider.Episodes(cat)
+	for _, c := range carried {
+		cat := c.rendition()
+		eps := c.provider.Episodes(cat)
 		if len(eps) == 0 {
 			why = "carries no " + string(cat) + " episodes"
 			continue
@@ -320,12 +318,10 @@ func TestIntegrationSubtitleTracks(t *testing.T) {
 	}
 	defer px.Close()
 
-	caps := capabilities(ctx, t, client)
 	var covered int
 	for code, carried := range providerMatrix(ctx, t, client) {
 		t.Run(code, func(t *testing.T) {
-			cat := rendition(caps, code)
-			res, why := shipped(ctx, t, client, carried, code, cat)
+			res, why := shipped(ctx, t, client, carried, code)
 			if res == nil {
 				t.Skipf("no title shipped a sidecar on this provider: %s", why)
 			}

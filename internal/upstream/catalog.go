@@ -9,8 +9,8 @@ import (
 // Category is a closed set
 // an illegal value cannot flow downstream
 // the api serves two subtitled renditions of one episode, the burned-in one
-// under sub and the one with a detachable subtitle file under ssub, and a
-// provider answers 444 for the rendition it does not carry
+// under sub and the one with a detachable subtitle file under ssub, and lists a
+// provider under only the renditions it carries
 type Category string
 
 const (
@@ -29,12 +29,14 @@ const (
 )
 
 type Episode struct {
-	ID     string  `json:"id"`
-	Number float64 `json:"number"`
-	// Title is the episode name, empty when the provider carries none
-	Title string `json:"title"`
+	// ID is what the backend resolves the episode by, set only on the episodes
+	// of a Listing
+	ID     string
+	Number float64
+	// Title is the episode name, empty when the upstream carries none
+	Title string
 	// Filler marks an episode outside the source material
-	Filler bool `json:"filler"`
+	Filler bool
 }
 
 type SkipRange struct {
@@ -44,6 +46,9 @@ type SkipRange struct {
 	End     float64
 }
 
+// Provider is one provider of a Listing
+// Sub carries the episode when the provider serves it subtitled, in either
+// rendition, and Dub when it serves it dubbed
 type Provider struct {
 	Code string
 	// Backend is the upstream that listed the provider and resolves its
@@ -54,8 +59,8 @@ type Provider struct {
 }
 
 // Episodes lists the episodes a provider carries in a category
-// the api lists episodes under sub and dub only, and the ssub rendition is
-// addressed with the ids from the sub list
+// the ssub rendition is a cut of the sub episode, so it is addressed with the
+// ids from the sub list
 func (p Provider) Episodes(cat Category) []Episode {
 	if cat == Dub {
 		return p.Dub
@@ -63,21 +68,58 @@ func (p Provider) Episodes(cat Category) []Episode {
 	return p.Sub
 }
 
+// Catalog is a title as its backends list it, before any provider is asked for
+// one of its episodes
+// Refs is the key each backend that listed the title gave it, which is what
+// the backend's Listing is asked with
 type Catalog struct {
-	Title     string
-	Providers map[string]Provider
-	Aniskip   []SkipRange
+	Title string
+	// Sub and Dub are the episodes the title carries in each category
+	Sub     []Episode
+	Dub     []Episode
+	Aniskip []SkipRange
+	Refs    map[string]string
 }
 
-// Numbers is the sorted union of episode numbers across providers for a category
+// Episodes lists what the title carries in a category, the ssub rendition being
+// a cut of the sub episodes
+func (c *Catalog) Episodes(cat Category) []Episode {
+	if cat == Dub {
+		return c.Dub
+	}
+	return c.Sub
+}
+
+// Numbers is the sorted episode numbers of a category
 func (c *Catalog) Numbers(cat Category) []float64 {
 	seen := map[float64]struct{}{}
-	for _, p := range c.Providers {
-		for _, e := range p.Episodes(cat) {
-			seen[e.Number] = struct{}{}
-		}
+	for _, e := range c.Episodes(cat) {
+		seen[e.Number] = struct{}{}
 	}
 	return slices.Sorted(maps.Keys(seen))
+}
+
+// Details maps every episode number in a category to its record for the picker
+// the backends' records are merged into one per number already, so the first
+// record of a number is the only one
+func (c *Catalog) Details(cat Category) map[float64]Episode {
+	out := make(map[float64]Episode)
+	for _, e := range c.Episodes(cat) {
+		if _, seen := out[e.Number]; !seen {
+			out[e.Number] = e
+		}
+	}
+	return out
+}
+
+// Listing is one episode as its backends serve it, keyed by provider code
+// an upstream names the providers carrying an episode only when asked about
+// that episode, so a Listing is fetched per episode where a Catalog is fetched
+// per title
+type Listing struct {
+	Providers map[string]Provider
+	// Caps is the renditions each provider serves the episode in
+	Caps Capabilities
 }
 
 // order is the provider preference, an author-owned default
@@ -103,39 +145,11 @@ func preference(code string) int {
 	return len(order)
 }
 
-// Details maps every episode number in a category to one record for the picker
-// the first provider in preference order that carries an episode supplies its
-// record
-// a later provider only fills in a title the first left empty, and fills in
-// nothing else, so the preferred provider keeps its filler mark
-func (c *Catalog) Details(cat Category) map[float64]Episode {
-	codes := make([]string, 0, len(c.Providers))
-	for code := range c.Providers {
-		codes = append(codes, code)
-	}
-	slices.SortFunc(codes, byPreference)
-
-	out := make(map[float64]Episode)
-	for _, code := range codes {
-		for _, e := range c.Providers[code].Episodes(cat) {
-			cur, seen := out[e.Number]
-			switch {
-			case !seen:
-				out[e.Number] = e
-			case cur.Title == "" && e.Title != "":
-				cur.Title = e.Title
-				out[e.Number] = cur
-			}
-		}
-	}
-	return out
-}
-
 // Available lists providers carrying the episode in the category, in preference
 // order, with equal ranks by code so runs are reproducible
-func (c *Catalog) Available(number float64, cat Category) []Provider {
+func (l *Listing) Available(number float64, cat Category) []Provider {
 	var out []Provider
-	for _, p := range c.Providers {
+	for _, p := range l.Providers {
 		if slices.ContainsFunc(p.Episodes(cat), func(e Episode) bool { return e.Number == number }) {
 			out = append(out, p)
 		}
@@ -169,7 +183,7 @@ func (m Media) Title() string {
 	return m.Romaji
 }
 
-// Caps is the set of renditions a provider declares it can serve
+// Caps is the set of renditions a provider serves an episode in
 // the api names the burned-in one "sub" and the detachable one "ssub", which
 // reads backwards here, so both are renamed at the parse boundary and nowhere
 // else
@@ -178,11 +192,9 @@ type Caps struct {
 	Hard bool
 	// Soft means the provider ships a subtitle file alongside the stream
 	Soft bool
-	// Embed means an iframe player, which nothing here can play
-	Embed bool
 }
 
-// Capabilities is the provider capability table, keyed by provider code
-// a code the table does not name is undeclared rather than incapable, since the
-// episodes resource serves providers the config resource omits
+// Capabilities is what the providers of a Listing serve, keyed by provider code
+// a code the table does not name is undeclared rather than incapable, since a
+// backend may list a provider without saying which rendition it carries
 type Capabilities map[string]Caps

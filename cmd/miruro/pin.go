@@ -58,8 +58,8 @@ func (p Pin) String() string {
 	return p.Code + ":" + string(p.Variant)
 }
 
-// offer is one row of the provider prompt, a pin plus whether the capability
-// table declared a subtitle variant for that provider
+// offer is one row of the provider prompt, a pin plus whether the listing
+// declared a subtitle variant for that provider
 // an undeclared provider is offered bare, since labeling it with a variant it
 // never promised would state more than is known
 type offer struct {
@@ -102,7 +102,7 @@ func pinFor(config, flag, history string, widen bool) (Pin, bool) {
 // an undeclared provider is offered with its variant unstated, the way its row
 // reads and the way its pin is persisted, and takes the pinned variant when
 // the pin names one, which is the only way an explicit code:hard survives a
-// run that could not reach the table
+// backend that lists providers without their renditions
 func offers(avail []upstream.Provider, caps upstream.Capabilities, category upstream.Category, pin Pin) []offer {
 	out := make([]offer, 0, len(avail))
 	for _, p := range avail {
@@ -204,24 +204,13 @@ func orderPinned(rows []offer, pin Pin) []offer {
 	return out
 }
 
-// candidates lists the providers worth resolving for an episode, those carrying
-// it minus the ones the capability table puts behind an iframe
-// resolving an embed only to have Playable reject it costs a request, and
-// offering one costs the user a pick that cannot work
-func candidates(cat *upstream.Catalog, ep float64, category upstream.Category, caps upstream.Capabilities) ([]upstream.Provider, error) {
-	avail := cat.Available(ep, category)
+// candidates lists the providers worth resolving for an episode
+// a listing names a provider only where it has a stream this program can play,
+// so an embed never reaches the prompt as a pick that cannot work
+func candidates(l *upstream.Listing, ep float64, category upstream.Category) ([]upstream.Provider, error) {
+	avail := l.Available(ep, category)
 	if len(avail) == 0 {
 		return nil, fmt.Errorf("no provider has episode %s", num(ep))
 	}
-	out := make([]upstream.Provider, 0, len(avail))
-	for _, p := range avail {
-		if c, ok := caps[p.Code]; ok && c.Embed {
-			continue
-		}
-		out = append(out, p)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("every provider for episode %s plays in an embed", num(ep))
-	}
-	return out, nil
+	return avail, nil
 }

@@ -1,9 +1,10 @@
 package upstream
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"maps"
+	"slices"
 	"sync"
 )
 
@@ -14,15 +15,15 @@ import (
 type Backend interface {
 	// Name identifies the backend in a log line and a config entry
 	Name() string
-	// Episodes lists what the backend carries for a title
+	// Episodes lists what the backend carries of a title
 	// a backend that carries nothing answers an empty catalog, and an error
 	// means it could not answer at all
 	Episodes(ctx context.Context, m Media) (*Catalog, error)
+	// Listing names the providers serving one episode of a title, ref being the
+	// key the backend's own catalog gave the title
+	Listing(ctx context.Context, ref string, number float64) (*Listing, error)
 	// Sources resolves an episode on one of the backend's own providers
 	Sources(ctx context.Context, episodeID, provider string, cat Category) (*Result, error)
-	// Capabilities is the backend's provider capability table, empty when it
-	// declares nothing
-	Capabilities(ctx context.Context) (Capabilities, error)
 }
 
 // Backends is the ordered set of upstreams one run resolves against
@@ -42,10 +43,8 @@ func (f Failure) Unwrap() error { return f.Err }
 
 // Episodes merges every backend's catalog for a title
 // the backends are asked at once and merged in order, so the title and the
-// skip ranges come from the first that carries them and the provider set is
-// the union
-// a provider code two backends both list is refused from the second, since a
-// resolution could otherwise route to the wrong upstream without a word
+// skip ranges come from the first that carries them, the episodes are the
+// union, and each backend keeps its own key for the title
 func (b Backends) Episodes(ctx context.Context, m Media) (*Catalog, []Failure) {
 	cats := make([]*Catalog, len(b))
 	errs := make([]error, len(b))
@@ -55,8 +54,7 @@ func (b Backends) Episodes(ctx context.Context, m Media) (*Catalog, []Failure) {
 	}
 	wg.Wait()
 
-	out := &Catalog{Providers: map[string]Provider{}}
-	owner := map[string]string{}
+	out := &Catalog{Refs: map[string]string{}}
 	var failed []Failure
 	for i, be := range b {
 		if errs[i] != nil {
@@ -70,43 +68,85 @@ func (b Backends) Episodes(ctx context.Context, m Media) (*Catalog, []Failure) {
 		if len(out.Aniskip) == 0 {
 			out.Aniskip = cat.Aniskip
 		}
-		for code, p := range cat.Providers {
+		out.Sub = union(out.Sub, cat.Sub)
+		out.Dub = union(out.Dub, cat.Dub)
+		// a backend speaks for its own key only, so one cannot point a listing
+		// at another's
+		if ref, ok := cat.Refs[be.Name()]; ok {
+			out.Refs[be.Name()] = ref
+		}
+	}
+	return out, failed
+}
+
+// union adds the episodes of later to those of first, one record per number
+// the first record of a number wins and a later one only fills in a title it
+// left empty, so the earlier backend keeps its filler mark
+func union(first, later []Episode) []Episode {
+	out := slices.Clone(first)
+	at := make(map[float64]int, len(out))
+	for i, e := range out {
+		at[e.Number] = i
+	}
+	for _, e := range later {
+		i, seen := at[e.Number]
+		switch {
+		case !seen:
+			at[e.Number] = len(out)
+			out = append(out, e)
+		case out[i].Title == "" && e.Title != "":
+			out[i].Title = e.Title
+		}
+	}
+	slices.SortStableFunc(out, func(a, b Episode) int { return cmp.Compare(a.Number, b.Number) })
+	return out
+}
+
+// Listing merges what every backend that listed the title serves one episode as
+// the backends are asked at once, and a provider code two backends both list is
+// refused from the second, since a resolution could otherwise route to
+// whichever merged last without a word
+func (b Backends) Listing(ctx context.Context, cat *Catalog, number float64) (*Listing, []Failure) {
+	var asked Backends
+	for _, be := range b {
+		if _, ok := cat.Refs[be.Name()]; ok {
+			asked = append(asked, be)
+		}
+	}
+	lists := make([]*Listing, len(asked))
+	errs := make([]error, len(asked))
+	var wg sync.WaitGroup
+	for i, be := range asked {
+		wg.Go(func() { lists[i], errs[i] = be.Listing(ctx, cat.Refs[be.Name()], number) })
+	}
+	wg.Wait()
+
+	out := &Listing{Providers: map[string]Provider{}, Caps: Capabilities{}}
+	owner := map[string]string{}
+	var failed []Failure
+	for i, be := range asked {
+		if errs[i] != nil {
+			failed = append(failed, Failure{be.Name(), errs[i]})
+			continue
+		}
+		for code, p := range lists[i].Providers {
 			if first, dup := owner[code]; dup {
 				failed = append(failed, Failure{be.Name(), fmt.Errorf("provider %s is already served by %s", code, first)})
 				continue
 			}
 			owner[code] = be.Name()
 			out.Providers[code] = p
+			if c, ok := lists[i].Caps[code]; ok {
+				out.Caps[code] = c
+			}
 		}
-	}
-	return out, failed
-}
-
-// Capabilities merges every backend's capability table
-func (b Backends) Capabilities(ctx context.Context) (Capabilities, []Failure) {
-	tables := make([]Capabilities, len(b))
-	errs := make([]error, len(b))
-	var wg sync.WaitGroup
-	for i, be := range b {
-		wg.Go(func() { tables[i], errs[i] = be.Capabilities(ctx) })
-	}
-	wg.Wait()
-
-	out := Capabilities{}
-	var failed []Failure
-	for i, be := range b {
-		if errs[i] != nil {
-			failed = append(failed, Failure{be.Name(), errs[i]})
-			continue
-		}
-		maps.Copy(out, tables[i])
 	}
 	return out, failed
 }
 
 // Sources resolves an episode through the backend that listed its provider
-func (c *Catalog) Sources(ctx context.Context, episodeID, provider string, cat Category) (*Result, error) {
-	p, ok := c.Providers[provider]
+func (l *Listing) Sources(ctx context.Context, episodeID, provider string, cat Category) (*Result, error) {
+	p, ok := l.Providers[provider]
 	if !ok || p.Backend == nil {
 		return nil, fmt.Errorf("provider %s has no backend", provider)
 	}

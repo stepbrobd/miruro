@@ -21,12 +21,13 @@ import (
 // runState is the state shared by every episode in one command
 type runState struct {
 	// hc fetches a master playlist when a quality pick needs one expanded
-	hc        *http.Client
+	hc *http.Client
+	// backends are asked per episode which providers serve it
+	backends  upstream.Backends
 	cat       *upstream.Catalog
 	anilistID int
 	title     string
 	category  upstream.Category
-	caps      upstream.Capabilities
 	cfg       config
 	// fallback allows the walk past the pinned provider
 	// a provider named in the config or on the command line is a stated choice,
@@ -147,11 +148,11 @@ func run(cmd *cobra.Command, args []string) error {
 	for _, f := range failed {
 		log.Warn("backend did not answer", "backend", f.Backend, "err", f.Err)
 	}
-	if len(cat.Providers) == 0 {
+	if len(cat.Sub) == 0 && len(cat.Dub) == 0 {
 		if len(failed) > 0 {
 			return errors.Join(joined(failed)...)
 		}
-		return fmt.Errorf("no provider carries %s", media.Title())
+		return fmt.Errorf("no backend lists %s", media.Title())
 	}
 	title := media.Title()
 	if cat.Title != "" {
@@ -168,29 +169,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// the capability table decides which rendition each provider is asked for and
-	// which providers play only in an iframe
-	// a run without it asks every provider for the plain category and offers the
-	// embeds it would otherwise drop, so the table is a correction rather than a
-	// requirement
-	caps, failed := backends.Capabilities(ctx)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	for _, f := range failed {
-		log.Warn("provider capabilities unavailable, renditions uncorrected and embeds offered", "backend", f.Backend, "err", f.Err)
-	}
-
 	pin, fallback := pinFor(cfg.Provider, flagProvider, resumed, flagFallback)
-	if pin.Code != "" {
-		if _, ok := cat.Providers[pin.Code]; !ok {
-			if fallback {
-				log.Warn("provider not in the catalog, using the preference order", "provider", pin.Code)
-			} else {
-				log.Warn("provider not in the catalog, pass --fallback to try the rest", "provider", pin.Code)
-			}
-		}
-	}
 	if flagFallback && pin.Code == "" {
 		log.Warn("flag ignored", "flag", "--fallback", "because", "no provider is pinned, so the walk is already on")
 	}
@@ -202,8 +181,8 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	state := &runState{
-		hc: client.HTTP, cat: cat, anilistID: media.ID, title: title,
-		category: category, caps: caps, cfg: cfg, fallback: fallback,
+		hc: client.HTTP, backends: backends, cat: cat, anilistID: media.ID, title: title,
+		category: category, cfg: cfg, fallback: fallback,
 	}
 	if flagDownload {
 		return state.download(ctx, eps, pin)

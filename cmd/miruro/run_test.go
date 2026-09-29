@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,101 +14,135 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/log"
 
-	"ysun.co/miruro/internal/miruro"
 	"ysun.co/miruro/internal/play"
 	"ysun.co/miruro/internal/upstream"
 )
 
-// sourcesServer decodes the pipe envelope and dispatches on the provider in
-// its query, so each fake provider can answer differently
-func sourcesServer(t *testing.T, respond map[string]http.HandlerFunc, hits *atomic.Int64) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits != nil {
-			hits.Add(1)
-		}
-		raw, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("e"))
-		if err != nil {
-			t.Errorf("undecodable envelope: %v", err)
-			http.Error(w, "bad envelope", http.StatusBadRequest)
-			return
-		}
-		var env struct {
-			Query map[string]string `json:"query"`
-		}
-		if err := json.Unmarshal(raw, &env); err != nil {
-			t.Errorf("envelope is not json: %v", err)
-			http.Error(w, "bad envelope", http.StatusBadRequest)
-			return
-		}
-		h, ok := respond[env.Query["provider"]]
-		if !ok {
-			t.Errorf("unexpected provider %q probed", env.Query["provider"])
-			http.Error(w, "unknown provider", http.StatusBadRequest)
-			return
-		}
-		h(w, r)
-	}))
+// reply is how a stub resolves one provider, whatever category it is asked for
+type reply func(upstream.Category) (*upstream.Result, error)
+
+func streams(ss ...upstream.Stream) reply {
+	return func(upstream.Category) (*upstream.Result, error) { return &upstream.Result{Streams: ss}, nil }
 }
 
-const (
-	hlsPayload   = `{"streams":[{"url":"http://cdn/master.m3u8","type":"hls","quality":"1080p"}]}`
-	embedPayload = `{"streams":[{"url":"http://cdn/embed","type":"embed"}]}`
+func fails(err error) reply {
+	return func(upstream.Category) (*upstream.Result, error) { return nil, err }
+}
+
+var (
+	hls       = streams(upstream.Stream{URL: "http://cdn/master.m3u8", Kind: upstream.HLS, Quality: "1080p"})
+	embedOnly = streams(upstream.Stream{URL: "http://cdn/embed", Kind: upstream.Embed})
+	// down is what the client reports for a backend answering a server error
+	down = fails(fmt.Errorf("%w: miruro status 500", upstream.ErrUnreachable))
 )
 
-func serveJSON(payload string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, payload)
+// stub is a backend answering from memory
+// it lists each provider under the sub and dub episodes named for it, with the
+// renditions caps declares, or refuses the listing with listErr, and resolves
+// each provider through replies, recording every listing and resolution it was
+// asked for
+type stub struct {
+	t       *testing.T
+	name    string
+	sub     map[string][]float64
+	dub     map[string][]float64
+	caps    upstream.Capabilities
+	replies map[string]reply
+	listErr error
+
+	mu    sync.Mutex
+	lists int
+	asked []string
+}
+
+func (s *stub) Name() string { return s.name }
+
+func (s *stub) Episodes(context.Context, upstream.Media) (*upstream.Catalog, error) {
+	return &upstream.Catalog{Refs: map[string]string{s.name: s.name}}, nil
+}
+
+func (s *stub) Listing(_ context.Context, _ string, number float64) (*upstream.Listing, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lists++
+	if s.listErr != nil {
+		return nil, s.listErr
 	}
+	l := &upstream.Listing{Providers: map[string]upstream.Provider{}, Caps: upstream.Capabilities{}}
+	add := func(code string, eps []float64, dub bool) {
+		if !slices.Contains(eps, number) {
+			return
+		}
+		p := l.Providers[code]
+		p.Code, p.Backend = code, s
+		e := []upstream.Episode{{ID: code + "-" + num(number), Number: number}}
+		if dub {
+			p.Dub = e
+		} else {
+			p.Sub = e
+		}
+		l.Providers[code] = p
+		if c, ok := s.caps[code]; ok {
+			l.Caps[code] = c
+		}
+	}
+	for code, eps := range s.sub {
+		add(code, eps, false)
+	}
+	for code, eps := range s.dub {
+		add(code, eps, true)
+	}
+	return l, nil
 }
 
-func serveStatus(code int) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) }
+func (s *stub) Sources(_ context.Context, _, provider string, cat upstream.Category) (*upstream.Result, error) {
+	s.mu.Lock()
+	s.asked = append(s.asked, provider+":"+string(cat))
+	r, ok := s.replies[provider]
+	s.mu.Unlock()
+	if !ok {
+		s.t.Errorf("unexpected provider %q probed", provider)
+		return nil, errors.New("unknown provider")
+	}
+	return r(cat)
 }
 
-func serveBlocked(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(http.StatusForbidden)
-	io.WriteString(w, "<html>blocked</html>")
+// probed is every resolution the stub was asked for, as provider:category
+func (s *stub) probed() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.asked)
 }
 
-// Available orders providers by preference, where ally leads bonk, so ally
-// probes first when no pin reorders them
-func twoProviderCatalog(b upstream.Backend) *upstream.Catalog {
-	return served(&upstream.Catalog{
-		Providers: map[string]upstream.Provider{
-			"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-1", Number: 1}}},
-			"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
-		},
-	}, b)
+// listed is how many listings the stub was asked for
+func (s *stub) listed() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lists
 }
 
-// resolver is the state one resolution needs
+// twoProviders lists ally and bonk on episode 1, where the preference order puts
+// ally first, so ally probes first when no pin reorders them
+func twoProviders(t *testing.T, replies map[string]reply) *stub {
+	return &stub{t: t, name: "miruro", sub: map[string][]float64{"ally": {1}, "bonk": {1}}, replies: replies}
+}
+
+// resolver is the state one resolution needs against the given backends
 // fallback is on because these exercise the walk past a provider, and the
 // pinned run that refuses to walk has its own test
-func resolver(cat *upstream.Catalog, category upstream.Category, caps upstream.Capabilities) *runState {
-	return &runState{cat: cat, category: category, caps: caps, fallback: true}
-}
-
-// served points every provider of a hand-written catalog at one backend, the
-// way a fetched catalog arrives
-func served(cat *upstream.Catalog, b upstream.Backend) *upstream.Catalog {
-	for code, p := range cat.Providers {
-		p.Backend = b
-		cat.Providers[code] = p
+func resolver(category upstream.Category, backends ...upstream.Backend) *runState {
+	cat := &upstream.Catalog{Refs: map[string]string{}}
+	for _, b := range backends {
+		cat.Refs[b.Name()] = b.Name()
 	}
-	return cat
-}
-
-// pipe is a miruro client against a fake pipe server
-func pipe(srv *httptest.Server) *miruro.Client {
-	return &miruro.Client{Bases: []string{srv.URL}, HTTP: srv.Client()}
+	return &runState{hc: http.DefaultClient, backends: backends, cat: cat, category: category, fallback: true}
 }
 
 // episodeBody opens with the file type box the download path checks for and
@@ -132,9 +164,9 @@ func deadCDN(t *testing.T, prefix string) *httptest.Server {
 	return srv
 }
 
-// newSaver wires a saver against srv with a proxy and a download directory, and
+// newSaver wires a saver against b with a proxy and a download directory, and
 // returns that directory
-func newSaver(t *testing.T, srv *httptest.Server, cat *upstream.Catalog) (saver, string) {
+func newSaver(t *testing.T, b *stub) (saver, string) {
 	t.Helper()
 	px, err := play.StartProxy(context.Background())
 	if err != nil {
@@ -142,14 +174,9 @@ func newSaver(t *testing.T, srv *httptest.Server, cat *upstream.Catalog) (saver,
 	}
 	t.Cleanup(func() { px.Close() })
 	dir := t.TempDir()
-	client := pipe(srv)
-	state := &runState{
-		hc:       srv.Client(),
-		cat:      served(cat, client),
-		title:    "Show",
-		category: upstream.Sub,
-		cfg:      config{Quality: "best", DownloadDir: dir},
-	}
+	state := resolver(upstream.Sub, b)
+	state.title = "Show"
+	state.cfg = config{Quality: "best", DownloadDir: dir}
 	return saver{runState: state, px: px, media: http.DefaultClient}, dir
 }
 
@@ -165,13 +192,8 @@ func TestAutoResolve(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("falls back when the pinned provider errors", func(t *testing.T) {
-		srv := sourcesServer(t, map[string]http.HandlerFunc{
-			"bonk": serveStatus(http.StatusInternalServerError),
-			"ally": serveJSON(hlsPayload),
-		}, nil)
-		defer srv.Close()
-
-		res, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		b := twoProviders(t, map[string]reply{"bonk": down, "ally": hls})
+		res, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,30 +206,19 @@ func TestAutoResolve(t *testing.T) {
 	})
 
 	t.Run("a block aborts without probing further", func(t *testing.T) {
-		var hits atomic.Int64
-		srv := sourcesServer(t, map[string]http.HandlerFunc{
-			"bonk": serveBlocked,
-			"ally": serveJSON(hlsPayload),
-		}, &hits)
-		defer srv.Close()
-
-		_, _, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		b := twoProviders(t, map[string]reply{"bonk": fails(upstream.ErrBlocked), "ally": hls})
+		_, _, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if !errors.Is(err, upstream.ErrBlocked) {
 			t.Fatalf("err = %v, want ErrBlocked", err)
 		}
-		if n := hits.Load(); n != 1 {
+		if n := len(b.probed()); n != 1 {
 			t.Errorf("probed %d providers after the block, want 1", n)
 		}
 	})
 
 	t.Run("an embed-only provider is skipped", func(t *testing.T) {
-		srv := sourcesServer(t, map[string]http.HandlerFunc{
-			"ally": serveJSON(embedPayload),
-			"bonk": serveJSON(hlsPayload),
-		}, nil)
-		defer srv.Close()
-
-		_, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{}, nil)
+		b := twoProviders(t, map[string]reply{"ally": embedOnly, "bonk": hls})
+		_, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,15 +228,12 @@ func TestAutoResolve(t *testing.T) {
 	})
 
 	t.Run("no provider has the episode", func(t *testing.T) {
-		var hits atomic.Int64
-		srv := sourcesServer(t, map[string]http.HandlerFunc{}, &hits)
-		defer srv.Close()
-
-		_, _, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 9, Pin{}, nil)
+		b := twoProviders(t, nil)
+		_, _, err := resolver(upstream.Sub, b).autoResolve(ctx, 9, Pin{}, nil)
 		if err == nil || !strings.Contains(err.Error(), "no provider has episode 9") {
 			t.Fatalf("err = %v, want the no-source error", err)
 		}
-		if n := hits.Load(); n != 0 {
+		if n := len(b.probed()); n != 0 {
 			t.Errorf("probed %d providers for an absent episode, want 0", n)
 		}
 	})
@@ -399,44 +407,15 @@ func TestOutcome(t *testing.T) {
 	}
 }
 
-// fakeBackend answers one provider from memory, or refuses every request
-type fakeBackend struct {
-	name string
-	err  error
-	hits int
-}
-
-func (f *fakeBackend) Name() string { return f.name }
-
-func (f *fakeBackend) Episodes(context.Context, upstream.Media) (*upstream.Catalog, error) {
-	return &upstream.Catalog{}, nil
-}
-
-func (f *fakeBackend) Sources(context.Context, string, string, upstream.Category) (*upstream.Result, error) {
-	f.hits++
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &upstream.Result{Streams: []upstream.Stream{{URL: f.name, Kind: upstream.HLS}}}, nil
-}
-
-func (f *fakeBackend) Capabilities(context.Context) (upstream.Capabilities, error) {
-	return upstream.Capabilities{}, nil
-}
-
 // a backend whose firewall refused the run would answer every one of its
 // providers the same, so the walk skips them and reaches the other backend,
 // and only when nothing else served is the refusal what comes back
 func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
-	blocked := &fakeBackend{name: "miruro", err: upstream.ErrBlocked}
-	open := &fakeBackend{name: "other"}
-	ep := []upstream.Episode{{ID: "e1", Number: 1}}
-	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
-		"ally":  {Code: "ally", Backend: blocked, Sub: ep},
-		"pewe":  {Code: "pewe", Backend: blocked, Sub: ep},
-		"other": {Code: "other", Backend: open, Sub: ep},
-	}}
-	st := resolver(cat, upstream.Sub, nil)
+	blocked := &stub{t: t, name: "miruro", sub: map[string][]float64{"ally": {1}, "pewe": {1}},
+		replies: map[string]reply{"ally": fails(upstream.ErrBlocked), "pewe": fails(upstream.ErrBlocked)}}
+	open := &stub{t: t, name: "other", sub: map[string][]float64{"other": {1}},
+		replies: map[string]reply{"other": streams(upstream.Stream{URL: "other", Kind: upstream.HLS})}}
+	st := resolver(upstream.Sub, blocked, open)
 	res, src, err := st.autoResolve(context.Background(), 1, Pin{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -444,26 +423,59 @@ func TestAutoResolveSkipsABlockedBackend(t *testing.T) {
 	if src.Code != "other" || res.Streams[0].URL != "other" {
 		t.Errorf("served = %q, want other", src.Code)
 	}
-	if blocked.hits != 1 {
-		t.Errorf("blocked backend asked %d times, want once", blocked.hits)
+	if n := len(blocked.probed()); n != 1 {
+		t.Errorf("blocked backend asked %d times, want once", n)
 	}
 
 	// the refusal holds for the run, so the next episode costs it no request
 	if _, src, err := st.autoResolve(context.Background(), 1, Pin{Code: "ally"}, nil); err != nil || src.Code != "other" {
 		t.Errorf("second resolution = %q, %v, want other again", src.Code, err)
 	}
-	if blocked.hits != 1 {
-		t.Errorf("blocked backend asked %d times across two resolutions, want once", blocked.hits)
+	if n := len(blocked.probed()); n != 1 {
+		t.Errorf("blocked backend asked %d times across two resolutions, want once", n)
 	}
 
-	delete(cat.Providers, "other")
+	open.sub = nil
 	if _, _, err := st.autoResolve(context.Background(), 1, Pin{}, nil); !errors.Is(err, upstream.ErrBlocked) {
 		t.Errorf("err = %v, want %v when nothing else served", err, upstream.ErrBlocked)
 	}
 }
 
+// the play request is where the miruro backend meets its firewall, so a refusal
+// there takes the backend out of the run the way a refused resolution does,
+// and one that merely failed costs the episode its providers and says why
+func TestListingFailures(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a refused listing holds for the run", func(t *testing.T) {
+		blocked := &stub{t: t, name: "miruro", listErr: upstream.ErrBlocked}
+		open := &stub{t: t, name: "other", sub: map[string][]float64{"other": {1}}, replies: map[string]reply{"other": hls}}
+		st := resolver(upstream.Sub, blocked, open)
+		for range 2 {
+			if _, src, err := st.autoResolve(ctx, 1, Pin{}, nil); err != nil || src.Code != "other" {
+				t.Fatalf("served = %q, %v, want other", src.Code, err)
+			}
+		}
+		if n := blocked.listed(); n != 1 {
+			t.Errorf("the refusing backend was asked %d times, want once", n)
+		}
+		open.sub = nil
+		if _, _, err := st.autoResolve(ctx, 1, Pin{}, nil); !errors.Is(err, upstream.ErrBlocked) {
+			t.Errorf("err = %v, want %v when nothing else lists the episode", err, upstream.ErrBlocked)
+		}
+	})
+
+	t.Run("a failed listing is what comes back when nothing else lists", func(t *testing.T) {
+		dead := &stub{t: t, name: "miruro", listErr: fmt.Errorf("%w: miruro status 502", upstream.ErrUnreachable)}
+		_, _, err := resolver(upstream.Sub, dead).autoResolve(ctx, 1, Pin{}, nil)
+		if !errors.Is(err, upstream.ErrUnreachable) || !strings.Contains(err.Error(), "miruro: ") {
+			t.Errorf("err = %v, want the failure named after its backend", err)
+		}
+	})
+}
+
 func TestEnabled(t *testing.T) {
-	a, b := &fakeBackend{name: "miruro"}, &fakeBackend{name: "other"}
+	a, b := &stub{name: "miruro"}, &stub{name: "other"}
 	all := upstream.Backends{a, b}
 	names := func(bs upstream.Backends) string {
 		var out []string
@@ -491,13 +503,8 @@ func TestEnabled(t *testing.T) {
 // a retried episode must move past the providers it already burned, or the
 // fallback loop would resolve the same dead source forever
 func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"bonk": serveJSON(hlsPayload),
-	}, nil)
-	defer srv.Close()
-
-	cat := twoProviderCatalog(pipe(srv))
-	_, src, err := resolver(cat, upstream.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true})
+	b := twoProviders(t, map[string]reply{"bonk": hls})
+	_, src, err := resolver(upstream.Sub, b).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +512,7 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 		t.Errorf("served = %q, want bonk", src.Code)
 	}
 
-	_, _, err = resolver(cat, upstream.Sub, nil).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
+	_, _, err = resolver(upstream.Sub, b).autoResolve(context.Background(), 1, Pin{}, map[string]bool{"ally": true, "bonk": true})
 	if err == nil || !strings.Contains(err.Error(), "no provider resolved a stream") {
 		t.Fatalf("err = %v, want the spent-walk error once every provider is tried", err)
 	}
@@ -514,14 +521,11 @@ func TestAutoResolveSkipsProvidersAlreadyTried(t *testing.T) {
 // a provider that resolves and then dies mid-download used to lose the episode
 func TestSaveFallsBackToAnotherProvider(t *testing.T) {
 	cdn := deadCDN(t, "/dead")
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/dead.mp4","type":"mp4"}]}`),
-		"bonk": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.mp4","type":"mp4"}]}`),
-	}, nil)
-	defer srv.Close()
-
-	sv, dir := newSaver(t, srv, twoProviderCatalog(nil))
-	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
+	sv, dir := newSaver(t, twoProviders(t, map[string]reply{
+		"ally": streams(upstream.Stream{URL: cdn.URL + "/dead.mp4", Kind: upstream.MP4}),
+		"bonk": streams(upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4}),
+	}))
+	if _, _, _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the fallback provider did not save the episode: %v", err)
 	}
 	savedEpisode(t, dir)
@@ -533,14 +537,11 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 	cdn := httptest.NewServer(http.NotFoundHandler())
 	defer cdn.Close()
 
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/a.mp4","type":"mp4"}]}`),
-		"bonk": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/b.mp4","type":"mp4"}]}`),
-	}, nil)
-	defer srv.Close()
-
-	sv, _ := newSaver(t, srv, twoProviderCatalog(nil))
-	_, _, err := sv.save(context.Background(), 1, nil)
+	sv, _ := newSaver(t, twoProviders(t, map[string]reply{
+		"ally": streams(upstream.Stream{URL: cdn.URL + "/a.mp4", Kind: upstream.MP4}),
+		"bonk": streams(upstream.Stream{URL: cdn.URL + "/b.mp4", Kind: upstream.MP4}),
+	}))
+	_, _, _, err := sv.save(context.Background(), 1, nil)
 	if err == nil {
 		t.Fatal("every provider was dead, the episode must fail")
 	}
@@ -553,20 +554,12 @@ func TestSaveReportsTheDownloadFailure(t *testing.T) {
 // first of them is, so the download walks its streams before the next provider
 func TestSaveFallsBackToAnotherStream(t *testing.T) {
 	cdn := deadCDN(t, "/hd1")
-
-	// ally leads alphabetically, so the pin is what puts bonk in front
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"bonk": serveJSON(`{"streams":[
-			{"url":"` + cdn.URL + `/hd1.mp4","type":"mp4"},
-			{"url":"` + cdn.URL + `/hd2.mp4","type":"mp4"}]}`),
-	}, nil)
-	defer srv.Close()
-
-	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
-		"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
-	}}
-	sv, dir := newSaver(t, srv, cat)
-	if _, _, err := sv.save(context.Background(), 1, nil); err != nil {
+	sv, dir := newSaver(t, &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1}}, replies: map[string]reply{
+		"bonk": streams(
+			upstream.Stream{URL: cdn.URL + "/hd1.mp4", Kind: upstream.MP4},
+			upstream.Stream{URL: cdn.URL + "/hd2.mp4", Kind: upstream.MP4}),
+	}})
+	if _, _, _, err := sv.save(context.Background(), 1, nil); err != nil {
 		t.Fatalf("the second stream did not save the episode: %v", err)
 	}
 	savedEpisode(t, dir)
@@ -575,21 +568,21 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 // a bulk run that falls to another rendition must say so, and the measure is
 // the source the pinned pick would have resolved
 func TestSaverWanted(t *testing.T) {
-	sv := saver{runState: &runState{
-		cat: &upstream.Catalog{Providers: map[string]upstream.Provider{
+	l := &upstream.Listing{
+		Providers: map[string]upstream.Provider{
 			"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "k1", Number: 1}}},
 			"bee":  {Code: "bee", Sub: []upstream.Episode{{ID: "b1", Number: 1}}},
-		}},
-		caps:     testCaps,
-		category: upstream.Sub,
-	}}
+		},
+		Caps: testCaps,
+	}
+	sv := saver{runState: &runState{category: upstream.Sub}}
 
-	if _, ok := sv.wanted(1); ok {
+	if _, ok := sv.wanted(l, 1); ok {
 		t.Error("no pin still produced an expectation")
 	}
 
 	sv.pin = Pin{"kiwi", Hard}
-	want, ok := sv.wanted(1)
+	want, ok := sv.wanted(l, 1)
 	if !ok || want.Category != upstream.Sub || want.Attach {
 		t.Errorf("wanted = (%+v, %v), want kiwi's burned-in rendition", want, ok)
 	}
@@ -602,7 +595,7 @@ func TestSaverWanted(t *testing.T) {
 
 	// a bare pin measures against what its provider declares
 	sv.pin = Pin{Code: "kiwi"}
-	if want, ok := sv.wanted(1); !ok || want.Category != upstream.Sub || want.Attach {
+	if want, ok := sv.wanted(l, 1); !ok || want.Category != upstream.Sub || want.Attach {
 		t.Errorf("wanted = (%+v, %v), want the declared hardsub for a bare kiwi pin", want, ok)
 	}
 }
@@ -728,36 +721,15 @@ func TestEpisodeLabel(t *testing.T) {
 	}
 }
 
-// pipeQuery decodes the query the client packed into the pipe envelope
-func pipeQuery(t *testing.T, r *http.Request) map[string]string {
-	t.Helper()
-	raw, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("e"))
-	if err != nil {
-		t.Fatalf("undecodable envelope: %v", err)
-	}
-	var env struct {
-		Query map[string]string `json:"query"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		t.Fatalf("envelope is not json: %v", err)
-	}
-	return env.Query
-}
-
-// the two sub renditions are separate category values on the wire, and asking a
-// provider for the one it does not carry answers 444, so the variant has to
-// reach Sources rather than stay a client-side attach decision
+// the two sub renditions are separate tracks on the wire, and a provider lists
+// only the ones it carries, so the variant has to reach Sources rather than
+// stay a client-side attach decision
 func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 	caps := upstream.Capabilities{
 		"kiwi": {Hard: true},
 		"bee":  {Soft: true},
 		"bonk": {Hard: true, Soft: true},
 	}
-	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
-		"kiwi": {Code: "kiwi", Sub: []upstream.Episode{{ID: "kiwi-1", Number: 1}}},
-		"bee":  {Code: "bee", Sub: []upstream.Episode{{ID: "bee-1", Number: 1}}},
-		"bonk": {Code: "bonk", Sub: []upstream.Episode{{ID: "bonk-1", Number: 1}}},
-	}}
 
 	for _, tc := range []struct {
 		name     string
@@ -770,8 +742,8 @@ func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 		{"a softsub provider is asked for ssub", Pin{"bee", Soft}, upstream.Sub, "ssub", true},
 		{"bonk soft is asked for ssub", Pin{"bonk", Soft}, upstream.Sub, "ssub", true},
 		{"bonk hard is asked for sub", Pin{"bonk", Hard}, upstream.Sub, "sub", false},
-		// a pin contradicting the table would ask for a rendition that 444s, so
-		// the declared one wins over what was typed
+		// a pin contradicting the listing would ask for a rendition the provider
+		// does not serve, so the declared one wins over what was typed
 		{"a soft pin on a hardsub provider is corrected", Pin{"kiwi", Soft}, upstream.Sub, "sub", false},
 		{"a hard pin on a softsub provider is corrected", Pin{"bee", Hard}, upstream.Sub, "ssub", true},
 		// the variant names a sub rendition, so a dub run ignores it rather than
@@ -780,25 +752,18 @@ func TestAutoResolveAsksForTheDeclaredRendition(t *testing.T) {
 		{"dub with a soft pin keeps them too", Pin{"bonk", Soft}, upstream.Dub, "dub", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var asked map[string]string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				asked = pipeQuery(t, r)
-				serveJSON(hlsPayload)(w, r)
-			}))
-			defer srv.Close()
-
-			catalog := cat
+			b := &stub{t: t, name: "miruro", caps: caps,
+				sub:     map[string][]float64{"kiwi": {1}, "bee": {1}, "bonk": {1}},
+				replies: map[string]reply{"kiwi": hls, "bee": hls, "bonk": hls}}
 			if tc.category == upstream.Dub {
-				catalog = &upstream.Catalog{Providers: map[string]upstream.Provider{
-					"bonk": {Code: "bonk", Dub: []upstream.Episode{{ID: "bonk-d1", Number: 1}}},
-				}}
+				b.sub, b.dub = nil, map[string][]float64{"bonk": {1}}
 			}
-			_, src, err := resolver(served(catalog, pipe(srv)), tc.category, caps).autoResolve(context.Background(), 1, tc.pin, nil)
+			_, src, err := resolver(tc.category, b).autoResolve(context.Background(), 1, tc.pin, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if asked["category"] != tc.wantCat {
-				t.Errorf("sources category = %q, want %q", asked["category"], tc.wantCat)
+			if got, want := b.probed(), []string{tc.pin.Code + ":" + tc.wantCat}; !slices.Equal(got, want) {
+				t.Errorf("sources asked %v, want %v", got, want)
 			}
 			if string(src.Category) != tc.wantCat {
 				t.Errorf("source category = %q, want %q", src.Category, tc.wantCat)
@@ -834,33 +799,21 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}
 	defer px.Close()
 
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"ally": serveJSON(`{"streams":[
-			{"url":"` + cdn.URL + `/refused-a.mp4","type":"mp4","server":"Yt-mp4"},
-			{"url":"` + cdn.URL + `/refused-b.mp4","type":"mp4","server":"Mp4"}]}`),
-		"pewe": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.m3u8","type":"mp4","server":"AniDBApp"}]}`),
-	}, nil)
-	defer srv.Close()
-
-	cat := &upstream.Catalog{Providers: map[string]upstream.Provider{
-		"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-8", Number: 8}}},
-		"pewe": {Code: "pewe", Sub: []upstream.Episode{{ID: "pewe-8", Number: 8}}},
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"ally": {8}, "pewe": {8}}, replies: map[string]reply{
+		"ally": streams(
+			upstream.Stream{URL: cdn.URL + "/refused-a.mp4", Kind: upstream.MP4, Server: "Yt-mp4"},
+			upstream.Stream{URL: cdn.URL + "/refused-b.mp4", Kind: upstream.MP4, Server: "Mp4"}),
+		"pewe": streams(upstream.Stream{URL: cdn.URL + "/live.m3u8", Kind: upstream.MP4, Server: "AniDBApp"}),
 	}}
+	st := resolver(upstream.Sub, b)
+	st.title, st.cfg = "Grow Up Show", config{Quality: "best"}
 
 	var tried []string
-	client := pipe(srv)
 	stage := playback{
-		runState: &runState{
-			hc:       srv.Client(),
-			cat:      served(cat, client),
-			title:    "Grow Up Show",
-			category: upstream.Sub,
-			cfg:      config{Quality: "best"},
-			fallback: true,
-		},
-		px:  px,
-		pin: Pin{Code: "ally", Variant: Hard},
-		ep:  8,
+		runState: st,
+		px:       px,
+		pin:      Pin{Code: "ally", Variant: Hard},
+		ep:       8,
 		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
 			return fakePlay(t, px, new([]string))(ctx, s)
@@ -868,7 +821,7 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 	}
 
 	// ally is the pin, so it is what resolve would have handed over
-	res, err := client.Sources(ctx, "ally-8", "ally", upstream.Sub)
+	res, err := b.Sources(ctx, "ally-8", "ally", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,30 +881,22 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 	}
 	defer px.Close()
 
-	srv := sourcesServer(t, map[string]http.HandlerFunc{
-		"ally": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/live.mp4","type":"mp4","server":"Yt-mp4"}]}`),
-		"pewe": serveJSON(`{"streams":[{"url":"` + cdn.URL + `/other.mp4","type":"mp4","server":"AniDBApp"}]}`),
-	}, nil)
-	defer srv.Close()
+	// pewe is a second provider the walk could reach, since fallback is on, so
+	// the guard has something to prevent rather than nothing to do
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"ally": {8}, "pewe": {8}}, replies: map[string]reply{
+		"ally": streams(upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "Yt-mp4"}),
+		"pewe": streams(upstream.Stream{URL: cdn.URL + "/other.mp4", Kind: upstream.MP4, Server: "AniDBApp"}),
+	}}
+	st := resolver(upstream.Sub, b)
+	st.cfg = config{Quality: "best"}
 
 	quit := errors.New("player exit 4")
 	var tried []string
-	client := pipe(srv)
 	stage := playback{
-		runState: &runState{
-			hc: srv.Client(),
-			cat: served(&upstream.Catalog{Providers: map[string]upstream.Provider{
-				"ally": {Code: "ally", Sub: []upstream.Episode{{ID: "ally-8", Number: 8}}},
-				// a second provider the walk could reach, so the guard has something
-				// to prevent rather than nothing to do
-				"pewe": {Code: "pewe", Sub: []upstream.Episode{{ID: "pewe-8", Number: 8}}},
-			}}, client),
-			category: upstream.Sub,
-			cfg:      config{Quality: "best"},
-		},
-		px:  px,
-		pin: Pin{Code: "ally", Variant: Hard},
-		ep:  8,
+		runState: st,
+		px:       px,
+		pin:      Pin{Code: "ally", Variant: Hard},
+		ep:       8,
 		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
 			fakePlay(t, px, new([]string))(ctx, s)
@@ -959,7 +904,7 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 		},
 	}
 
-	res, err := client.Sources(ctx, "ally-8", "ally", upstream.Sub)
+	res, err := b.Sources(ctx, "ally-8", "ally", upstream.Sub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1087,14 +1032,8 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no fallback stops at the pin", func(t *testing.T) {
-		var hits atomic.Int64
-		srv := sourcesServer(t, map[string]http.HandlerFunc{
-			"bonk": serveStatus(http.StatusInternalServerError),
-			"ally": serveJSON(hlsPayload),
-		}, &hits)
-		defer srv.Close()
-
-		st := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil)
+		b := twoProviders(t, map[string]reply{"bonk": down, "ally": hls})
+		st := resolver(upstream.Sub, b)
 		st.fallback = false
 		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err == nil {
@@ -1103,33 +1042,34 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		if !strings.Contains(err.Error(), "--fallback") {
 			t.Errorf("err = %v, want it to name the flag that widens the walk", err)
 		}
-		if n := hits.Load(); n != 1 {
+		if n := len(b.probed()); n != 1 {
 			t.Errorf("asked %d providers, want only the pinned one", n)
 		}
 	})
 
 	t.Run("a pin nothing carries names itself", func(t *testing.T) {
-		srv := sourcesServer(t, map[string]http.HandlerFunc{"ally": serveJSON(hlsPayload)}, nil)
-		defer srv.Close()
-
-		st := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil)
+		st := resolver(upstream.Sub, twoProviders(t, map[string]reply{"ally": hls}))
 		st.fallback = false
 		_, _, err := st.autoResolve(ctx, 1, Pin{Code: "gone"}, nil)
-		if err == nil || !strings.Contains(err.Error(), "gone") {
+		if err == nil || !strings.Contains(err.Error(), "gone does not serve episode 1") {
 			t.Fatalf("err = %v, want it to name the pinned provider", err)
 		}
 	})
 
-	t.Run("fallback restores the walk", func(t *testing.T) {
-		srv := sourcesServer(t, map[string]http.HandlerFunc{
-			"bonk": serveStatus(http.StatusInternalServerError),
-			"ally": serveJSON(hlsPayload),
-		}, nil)
-		defer srv.Close()
-
-		_, src, err := resolver(twoProviderCatalog(pipe(srv)), upstream.Sub, nil).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+	t.Run("fallback restores the walk and says why", func(t *testing.T) {
+		b := twoProviders(t, map[string]reply{"bonk": down, "ally": hls})
+		_, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
 		if err != nil || src.Code != "ally" {
 			t.Fatalf("served = %q, %v, want ally", src.Code, err)
+		}
+
+		said := captureLog(t)
+		_, src, err = resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "gone"}, nil)
+		if err != nil || src.Code != "ally" {
+			t.Fatalf("served = %q, %v, want ally", src.Code, err)
+		}
+		if !strings.Contains(said.String(), "pinned provider does not serve the episode") {
+			t.Errorf("the walk passed over the pin without a word:\n%s", said)
 		}
 	})
 }

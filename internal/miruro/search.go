@@ -16,15 +16,22 @@ const searchPage = 15
 
 // title is one record of the catalog's anime resource, the fields read here
 type title struct {
+	// ID is the catalog's own key for the title
+	ID          string              `json:"id"`
 	ExternalIDs map[string][]string `json:"external_ids"`
 	Title       struct {
 		Romaji  string `json:"romaji"`
 		English string `json:"english"`
 	} `json:"title"`
-	Format        string `json:"format"`
-	EpisodeCount  *int   `json:"episode_count"`
+	Format       string `json:"format"`
+	Status       string `json:"status"`
+	EpisodeCount *int   `json:"episode_count"`
+	// EpisodeCounts is how many episodes each track carries, nil where the
+	// catalog has not counted
 	EpisodeCounts struct {
 		Raw *int `json:"raw"`
+		Sub *int `json:"sub"`
+		Dub *int `json:"dub"`
 	} `json:"episode_counts"`
 }
 
