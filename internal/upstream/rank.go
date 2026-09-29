@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -211,13 +210,13 @@ func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, err
 			if height == "" {
 				continue
 			}
-			ref, err := url.Parse(line)
+			abs, err := Resolve(base.String(), line)
 			if err != nil {
 				height = ""
 				continue
 			}
 			v := s
-			v.URL = base.ResolveReference(ref).String()
+			v.URL = abs
 			v.Quality = height
 			variants = append(variants, v)
 			height = ""

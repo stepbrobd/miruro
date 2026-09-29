@@ -96,3 +96,23 @@ func TestPublicRefusesLoopback(t *testing.T) {
 		t.Fatalf("err = %v, want %v through a name", err, ErrPrivate)
 	}
 }
+
+// a child of a playlist keeps the host its parent was served from unless it
+// names its own, and a line's surrounding space is no part of the reference
+func TestResolve(t *testing.T) {
+	for _, tc := range []struct{ base, ref, want string }{
+		{"https://cdn.example/a/master.m3u8", "index-f1.m3u8", "https://cdn.example/a/index-f1.m3u8"},
+		{"https://cdn.example/a/master.m3u8?token=x", "seg-1.ts", "https://cdn.example/a/seg-1.ts"},
+		{"https://cdn.example/a/master.m3u8", "/b/seg-1.ts", "https://cdn.example/b/seg-1.ts"},
+		{"https://cdn.example/a/master.m3u8", "https://other.example/seg-1.ts", "https://other.example/seg-1.ts"},
+		{"https://cdn.example/a/master.m3u8", "  seg-1.ts\r", "https://cdn.example/a/seg-1.ts"},
+	} {
+		got, err := Resolve(tc.base, tc.ref)
+		if err != nil || got != tc.want {
+			t.Errorf("Resolve(%q, %q) = %q, %v, want %q", tc.base, tc.ref, got, err, tc.want)
+		}
+	}
+	if _, err := Resolve("https://cdn.example/a/", "%zz"); err == nil {
+		t.Error("a reference that does not parse resolved")
+	}
+}

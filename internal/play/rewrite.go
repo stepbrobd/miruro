@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"ysun.co/miruro/internal/upstream"
 )
 
 // errPlaylist marks a playlist the rewriter cannot take apart
@@ -176,15 +178,14 @@ func (p *Proxy) tag(line string, base *url.URL, referer string) string {
 }
 
 func (p *Proxy) child(ref string, base *url.URL, referer string, k kind) string {
-	u, err := url.Parse(strings.TrimSpace(ref))
+	abs, err := upstream.Resolve(base.String(), ref)
 	if err != nil {
 		return ref
 	}
-	abs := base.ResolveReference(u)
 	// a non-http URI such as a data key is consumed by the player directly
 	// proxying it would only 502 because the upstream client speaks http
-	if abs.Scheme != "http" && abs.Scheme != "https" {
+	if !strings.HasPrefix(abs, "http://") && !strings.HasPrefix(abs, "https://") {
 		return ref
 	}
-	return p.proxied(abs.String(), referer, k)
+	return p.proxied(abs, referer, k)
 }

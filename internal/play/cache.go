@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +16,8 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+
+	"ysun.co/miruro/internal/upstream"
 )
 
 // errNoCache marks a download this package cannot cache, either a playlist it
@@ -277,19 +278,7 @@ func bestVariant(body []byte, base string) (string, error) {
 	if best == "" {
 		return "", errNoCache
 	}
-	return absolute(best, base)
-}
-
-func absolute(ref, base string) (string, error) {
-	b, err := url.Parse(base)
-	if err != nil {
-		return "", err
-	}
-	r, err := url.Parse(ref)
-	if err != nil {
-		return "", err
-	}
-	return b.ResolveReference(r).String(), nil
+	return upstream.Resolve(base, best)
 }
 
 func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
@@ -325,7 +314,7 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 			}
 			pl.keyAt = len(pl.lines)
 			var err error
-			if pl.keyURI, err = absolute(m[1], base); err != nil {
+			if pl.keyURI, err = upstream.Resolve(base, m[1]); err != nil {
 				return nil, err
 			}
 		case strings.HasPrefix(trimmed, "#EXTINF"):
@@ -334,7 +323,7 @@ func parsePlaylist(body []byte, base string) (*mediaPlaylist, error) {
 			}
 		case strings.HasPrefix(trimmed, "#"):
 		default:
-			abs, err := absolute(trimmed, base)
+			abs, err := upstream.Resolve(base, trimmed)
 			if err != nil {
 				return nil, err
 			}

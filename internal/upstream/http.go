@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -135,6 +136,21 @@ func SetReferer(h http.Header, referer string) {
 		return
 	}
 	h.Set("Origin", u.Scheme+"://"+u.Host)
+}
+
+// Resolve reads ref against base, the url of the playlist that named it, the
+// way a player does, so a relative child keeps the host its parent was served
+// from
+func Resolve(base, ref string) (string, error) {
+	b, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	r, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil {
+		return "", err
+	}
+	return b.ResolveReference(r).String(), nil
 }
 
 func newGet(ctx context.Context, url, referer string) (*http.Request, error) {
