@@ -25,7 +25,7 @@ func TestCheck(t *testing.T) {
 		{"a variant the pin parser would silently take as soft", "provider = \"bonk:medium\"\n",
 			[]string{`variant "medium" is not soft or hard`}},
 		{"a variant with no provider", "provider = \":hard\"\n",
-			[]string{"names a variant with no provider"}},
+			[]string{"names a variant and no provider"}},
 		{"a key that has moved", "download_dir = \"/tmp\"\n",
 			[]string{`unknown key "download_dir"`}},
 		{"a player nothing can launch", "player = \"vlc\"\n",

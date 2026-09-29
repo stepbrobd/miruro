@@ -347,7 +347,7 @@ func TestQualityAndVariantAreCheckedWhereverTheyCameFrom(t *testing.T) {
 		{"bonk:", "bonk", ""},
 		{"bonk", "bonk", ""},
 	} {
-		got := ParsePin(tc.in)
+		got, _ := ParsePin(tc.in)
 		if got.Code != tc.code || got.Variant != tc.variant {
 			t.Errorf("ParsePin(%q) = %+v, want %s/%s", tc.in, got, tc.code, tc.variant)
 		}
@@ -357,10 +357,12 @@ func TestQualityAndVariantAreCheckedWhereverTheyCameFrom(t *testing.T) {
 // config show says it reports the settings a run would use, so a value a run
 // discards must not be shown as one it keeps
 func TestConfigShowReportsWhatARunWouldUse(t *testing.T) {
-	if got := fallbackRow(ParsePin(":hard")); !strings.Contains(got, "nothing is pinned") {
+	bare, _ := ParsePin(":hard")
+	if got := fallbackRow(bare); !strings.Contains(got, "nothing is pinned") {
 		t.Errorf("a variant with no code showed as pinned: %q", got)
 	}
-	if got := fallbackRow(ParsePin("hop:soft")); !strings.Contains(got, "off unless") {
+	pinned, _ := ParsePin("hop:soft")
+	if got := fallbackRow(pinned); !strings.Contains(got, "off unless") {
 		t.Errorf("a pinned provider showed as unpinned: %q", got)
 	}
 	if got := enabledNames([]string{"nothing-implements-this", "miruro"}); len(got) != 1 || got[0] != "miruro" {

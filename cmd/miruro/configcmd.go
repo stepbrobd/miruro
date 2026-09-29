@@ -133,7 +133,7 @@ func runConfigShow(*cobra.Command, []string) error {
 		}
 		fmt.Fprintf(w, "player\t%s\n", player)
 		fmt.Fprintf(w, "quality\t%s\n", qualityRow(c.Quality))
-		pin := ParsePin(c.Provider)
+		pin, _ := ParsePin(c.Provider)
 		fmt.Fprintf(w, "provider\t%s\n", or(pin.String(), "ask"))
 		fmt.Fprintf(w, "fallback\t%s\n", fallbackRow(pin))
 		fmt.Fprintf(w, "lang\t%s\n", or(c.Lang, "any"))
@@ -227,13 +227,8 @@ func check(md toml.MetaData, c config) []string {
 	if !upstream.ValidQuality(c.Quality) {
 		out = append(out, fmt.Sprintf("quality %q is not best, worst, or a height such as 1080p", c.Quality))
 	}
-	if code, variant, found := strings.Cut(c.Provider, ":"); found {
-		switch {
-		case code == "":
-			out = append(out, fmt.Sprintf("provider %q names a variant with no provider", c.Provider))
-		case Variant(variant) != Soft && Variant(variant) != Hard:
-			out = append(out, fmt.Sprintf("provider variant %q is not soft or hard, so it is ignored", variant))
-		}
+	if _, problem := ParsePin(c.Provider); problem != "" {
+		out = append(out, fmt.Sprintf("provider %q %s", c.Provider, problem))
 	}
 	if dir := expand(c.DownloadDir); dir != "" {
 		switch fi, err := os.Stat(dir); {

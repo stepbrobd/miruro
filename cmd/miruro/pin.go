@@ -27,26 +27,39 @@ type Pin struct {
 }
 
 // ParsePin reads a "code" or "code:variant" pin
-// a bare code and an unrecognized variant both leave the variant unstated
-func ParsePin(s string) Pin {
+// a bare code and an unrecognized variant both leave the variant unstated, and
+// problem says what a value that named a colon and got nothing usable from it
+// did wrong, empty when it did nothing wrong
+// it reports nothing itself, since a caller parsing one value twice would
+// report it twice, which a resumed run did for every bad --provider until
+// 2026-09-19
+func ParsePin(s string) (pin Pin, problem string) {
 	code, variant, named := strings.Cut(s, ":")
 	v := Variant(variant)
-	// a value that named a colon and got nothing usable from it is a mistake
-	// wherever it came from, and config validate only ever reads the file
-	// exactly one of these is reported, since two lines for one value is noise
 	switch {
 	case !named:
 	case code == "":
-		log.Warn("provider names a variant and no provider, so nothing is pinned", "provider", s)
+		problem = "names a variant and no provider, so nothing is pinned"
 	case v == "":
-		log.Warn("provider variant is empty, so the rendition is unstated", "provider", s)
+		problem = "names an empty variant, so the rendition is unstated"
 	case v != Soft && v != Hard:
-		log.Warn("provider variant is not soft or hard, so the rendition is unstated", "provider", s, "variant", variant)
+		problem = fmt.Sprintf("variant %q is not soft or hard, so the rendition is unstated", variant)
 	}
 	if v == Soft || v == Hard {
-		return Pin{Code: code, Variant: v}
+		return Pin{Code: code, Variant: v}, problem
 	}
-	return Pin{Code: code}
+	return Pin{Code: code}, problem
+}
+
+// readPin parses a pin a run takes in and reports what is wrong with it
+// a value that named a colon and got nothing usable from it is a mistake
+// wherever it came from, so every value a run takes in passes here once
+func readPin(s string) Pin {
+	pin, problem := ParsePin(s)
+	if problem != "" {
+		log.Warn("provider "+problem, "provider", s)
+	}
+	return pin
 }
 
 // String is the form persisted to history and read back by resume, the bare
@@ -77,16 +90,14 @@ func pinFor(config, flag, history string, widen bool) (Pin, bool) {
 	// stated follows whichever source supplied the pin, and it is the provider
 	// that counts rather than the string: a value naming a variant and no
 	// provider states nothing, since the run prompts for one either way
-	// each value is parsed once, since ParsePin reports an unusable one as it
-	// goes and parsing twice would report it twice
-	cfg, f := ParsePin(config), ParsePin(flag)
+	cfg, f := readPin(config), readPin(flag)
 	pin, stated := cfg, cfg.Code != ""
 	// a flag naming no provider states nothing, so it must not displace the
 	// entry a resume is carrying either
 	if history != "" && f.Code == "" {
 		// an entry resuming the provider the config already names is that same
 		// stated choice, and any other is one the menu picked once
-		h := ParsePin(history)
+		h := readPin(history)
 		pin, stated = h, stated && h.Code == cfg.Code
 	}
 	if f.Code != "" {
