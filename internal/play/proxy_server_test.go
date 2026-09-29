@@ -23,6 +23,12 @@ import (
 	"ysun.co/miruro/internal/upstream"
 )
 
+// counted addresses a url through the proxy the way a stream's playlist does,
+// counted against tl
+func counted(tl *Tally, rawURL, referer string, k kind) string {
+	return tl.px.encode(target{URL: rawURL, Referer: referer, Kind: k, Tally: tl.id})
+}
+
 // mpv is the real consumer of the proxy and a decoy-disguised segment is the
 // case that broke, so drive the actual binary through the whole chain
 // the segment is served with ServeContent, which answers a Range with 206, the
@@ -283,8 +289,9 @@ func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
-	resp, err := http.Get(px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
+	resp, err := http.Get(tl.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,8 +300,8 @@ func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
 	if err == nil {
 		t.Errorf("relayed %d bytes as a whole body", len(got))
 	}
-	if px.Served() != 1 {
-		t.Errorf("served = %d, want the body counted as it started", px.Served())
+	if tl.Served() != 1 {
+		t.Errorf("served = %d, want the body counted as it started", tl.Served())
 	}
 }
 
@@ -514,10 +521,11 @@ func TestProxyRefusesAPrivateTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
 	for _, u := range []string{
-		px.proxied(local.URL+"/seg.ts", "", segment),
-		px.URL(upstream.Stream{URL: local.URL + "/master.m3u8", Kind: upstream.HLS}),
+		counted(tl, local.URL+"/seg.ts", "", segment),
+		tl.URL(upstream.Stream{URL: local.URL + "/master.m3u8", Kind: upstream.HLS}),
 		px.Opaque(local.URL+"/en.vtt", ""),
 	} {
 		resp, err := http.Get(u)
@@ -529,8 +537,8 @@ func TestProxyRefusesAPrivateTarget(t *testing.T) {
 			t.Errorf("%s answered %d, want %d", u, resp.StatusCode, http.StatusForbidden)
 		}
 	}
-	if px.Refused() != 1 {
-		t.Errorf("refused = %d, want the one picture body counted", px.Refused())
+	if tl.Refused() != 1 {
+		t.Errorf("refused = %d, want the one picture body counted", tl.Refused())
 	}
 }
 
@@ -555,26 +563,27 @@ func TestProxyServedCountsPictureOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
-	body := httpGetString(t, px.URL(upstream.Stream{URL: origin.URL + "/media.m3u8", Kind: upstream.HLS}))
-	if px.Served() != 0 {
-		t.Errorf("a playlist raised Served to %d", px.Served())
+	body := httpGetString(t, tl.URL(upstream.Stream{URL: origin.URL + "/media.m3u8", Kind: upstream.HLS}))
+	if tl.Served() != 0 {
+		t.Errorf("a playlist raised Served to %d", tl.Served())
 	}
 
 	httpGetBytes(t, px.Opaque(origin.URL+"/key.bin", ""))
 	httpGetString(t, px.Subtitles([]upstream.Subtitle{{File: origin.URL + "/en.vtt", Lang: "en"}}, "")[0].File)
-	if px.Served() != 0 {
-		t.Errorf("a key or a sidecar raised Served to %d", px.Served())
+	if tl.Served() != 0 {
+		t.Errorf("a key or a sidecar raised Served to %d", tl.Served())
 	}
 
 	httpGetBytes(t, firstProxiedLine(t, body, px.base))
-	if px.Served() != 1 {
-		t.Errorf("a segment left Served at %d, want 1", px.Served())
+	if tl.Served() != 1 {
+		t.Errorf("a segment left Served at %d, want 1", tl.Served())
 	}
 
-	httpGetBytes(t, px.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
-	if px.Served() != 2 {
-		t.Errorf("an mp4 body left Served at %d, want 2", px.Served())
+	httpGetBytes(t, tl.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
+	if tl.Served() != 2 {
+		t.Errorf("an mp4 body left Served at %d, want 2", tl.Served())
 	}
 }
 
@@ -589,10 +598,11 @@ func TestProxyServedIgnoresAnEmptyBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
-	httpGetBytes(t, px.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
-	if px.Served() != 0 {
-		t.Errorf("an empty body left Served at %d, want 0", px.Served())
+	httpGetBytes(t, tl.URL(upstream.Stream{URL: origin.URL + "/video.mp4", Kind: upstream.MP4}))
+	if tl.Served() != 0 {
+		t.Errorf("an empty body left Served at %d, want 0", tl.Served())
 	}
 }
 
@@ -616,11 +626,12 @@ func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
 	body := make(chan struct{})
 	go func() {
 		defer close(body)
-		resp, err := http.Get(px.Stream(upstream.Stream{URL: cdn.URL + "/v.mp4", Kind: upstream.MP4}).URL)
+		resp, err := http.Get(tl.Stream(upstream.Stream{URL: cdn.URL + "/v.mp4", Kind: upstream.MP4}).URL)
 		if err != nil {
 			return
 		}
@@ -629,7 +640,7 @@ func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
 	}()
 
 	deadline := time.After(10 * time.Second)
-	for px.Served() == 0 {
+	for tl.Served() == 0 {
 		select {
 		case <-deadline:
 			close(release)
@@ -638,7 +649,7 @@ func TestProxyCountsARelayedBodyAsItStarts(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if got := px.Refused(); got != 0 {
+	if got := tl.Refused(); got != 0 {
 		t.Errorf("Refused = %d, want 0 for a body that is arriving", got)
 	}
 	close(release)
@@ -663,6 +674,7 @@ func TestProxyRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
 	get := func(u string) { //nolint
 		resp, err := http.Get(u)
@@ -673,22 +685,22 @@ func TestProxyRefused(t *testing.T) {
 	}
 
 	// a playlist the upstream refuses is not picture, so it counts as neither
-	get(px.Stream(upstream.Stream{URL: cdn.URL + "/gone.m3u8", Kind: upstream.HLS}).URL)
-	if px.Refused() != 0 || px.Served() != 0 {
+	get(tl.Stream(upstream.Stream{URL: cdn.URL + "/gone.m3u8", Kind: upstream.HLS}).URL)
+	if tl.Refused() != 0 || tl.Served() != 0 {
 		t.Errorf("a refused playlist counted as %d served and %d refused, want neither",
-			px.Served(), px.Refused())
+			tl.Served(), tl.Refused())
 	}
 
-	get(px.Stream(upstream.Stream{URL: cdn.URL + "/gone.mp4", Kind: upstream.MP4}).URL)
-	if px.Refused() != 1 {
-		t.Errorf("Refused = %d after one refused media body, want 1", px.Refused())
+	get(tl.Stream(upstream.Stream{URL: cdn.URL + "/gone.mp4", Kind: upstream.MP4}).URL)
+	if tl.Refused() != 1 {
+		t.Errorf("Refused = %d after one refused media body, want 1", tl.Refused())
 	}
 
 	// an upstream that answers 200 with nothing gave the player no picture
-	get(px.Stream(upstream.Stream{URL: cdn.URL + "/empty.mp4", Kind: upstream.MP4}).URL)
-	if px.Refused() != 2 || px.Served() != 0 {
+	get(tl.Stream(upstream.Stream{URL: cdn.URL + "/empty.mp4", Kind: upstream.MP4}).URL)
+	if tl.Refused() != 2 || tl.Served() != 0 {
 		t.Errorf("an empty body counted as %d served and %d refused, want 0 and 2",
-			px.Served(), px.Refused())
+			tl.Served(), tl.Refused())
 	}
 }
 
@@ -712,8 +724,9 @@ func TestProxySendsTheOriginWithTheReferer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
-	resp, err := http.Get(px.proxied(cdn.URL+"/000.ts", "https://provider.example/player", segment))
+	resp, err := http.Get(counted(tl, cdn.URL+"/000.ts", "https://provider.example/player", segment))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,8 +737,8 @@ func TestProxySendsTheOriginWithTheReferer(t *testing.T) {
 	if got, _ := io.ReadAll(resp.Body); len(got) != len(seg) {
 		t.Errorf("relayed %d bytes, want %d", len(got), len(seg))
 	}
-	if px.Served() != 1 {
-		t.Errorf("served = %d, want the segment counted", px.Served())
+	if tl.Served() != 1 {
+		t.Errorf("served = %d, want the segment counted", tl.Served())
 	}
 }
 
@@ -858,8 +871,9 @@ func TestProxyCountsARelayedBodyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
+	tl := px.Tally()
 
-	resp, err := http.Get(px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
+	resp, err := http.Get(tl.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -868,7 +882,52 @@ func TestProxyCountsARelayedBodyOnce(t *testing.T) {
 	if len(got) != len(body) {
 		t.Fatalf("relayed %d bytes, want %d", len(got), len(body))
 	}
-	if n := px.Served(); n != 1 {
+	if n := tl.Served(); n != 1 {
 		t.Errorf("served = %d for one body written in %d chunks, want 1", n, len(body)/(32<<10))
+	}
+}
+
+// a handler still running for a stream the player just left must not move the
+// baseline of the stream that replaced it, which the process-wide counters did
+// in both directions, and a payload naming a tally this proxy never issued
+// counts nowhere
+func TestTallyCountsItsOwnStreamOnly(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/gone") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Write(tsBlob(8))
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	fetch := func(u string) {
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	left, next := px.Tally(), px.Tally()
+	fetch(counted(left, cdn.URL+"/gone.ts", "", segment))
+	fetch(counted(left, cdn.URL+"/late.ts", "", segment))
+	if left.Refused() != 1 || left.Served() != 1 {
+		t.Errorf("the left stream counted %d served and %d refused, want 1 and 1", left.Served(), left.Refused())
+	}
+	if next.Served() != 0 || next.Refused() != 0 {
+		t.Errorf("the next stream counted %d served and %d refused for bodies it never asked for", next.Served(), next.Refused())
+	}
+
+	forged := px.encode(target{URL: cdn.URL + "/x.ts", Kind: segment, Tally: 999})
+	fetch(forged)
+	if left.Served() != 1 || next.Served() != 0 {
+		t.Error("a payload naming an unknown tally moved a real one")
 	}
 }

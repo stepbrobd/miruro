@@ -16,7 +16,7 @@ func rewritten(p *Proxy, body, base string) string {
 	if err != nil {
 		panic(err)
 	}
-	out, err := p.rewrite([]byte(body), "https://ref/", u, 0)
+	out, err := p.rewrite([]byte(body), target{Referer: "https://ref/"}, u)
 	if err != nil {
 		panic(err)
 	}
@@ -64,7 +64,7 @@ func filtered(t *testing.T, body string, height int) []byte {
 func TestRewriteRefusesAnUnscannablePlaylist(t *testing.T) {
 	body := "#EXTM3U\n#EXTINF:4.0,\n" + strings.Repeat("a", 9<<20) + "\n"
 	u, _ := url.Parse("https://cdn.example/x.m3u8")
-	if _, err := fakeProxy().rewrite([]byte(body), "", u, 0); !errors.Is(err, errPlaylist) {
+	if _, err := fakeProxy().rewrite([]byte(body), target{}, u); !errors.Is(err, errPlaylist) {
 		t.Errorf("err = %v, want %v", err, errPlaylist)
 	}
 	master := "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\n" + strings.Repeat("a", 9<<20) + "\n"
@@ -193,7 +193,7 @@ func TestRewriteRestrictsToStreamHeight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewrote, err := fakeProxy().rewrite([]byte(master), "https://ref/", u, 1080)
+	rewrote, err := fakeProxy().rewrite([]byte(master), target{Referer: "https://ref/", Height: 1080}, u)
 	if err != nil {
 		t.Fatal(err)
 	}

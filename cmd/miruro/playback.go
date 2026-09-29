@@ -23,9 +23,10 @@ type playback struct {
 	kind play.Kind
 	// watch decides when a stream that shows nothing is stopped
 	watch watchdog
-	// launch runs the player on one stream with the subtitles chosen for the
-	// provider that served it, a field so a test needs no player binary
-	launch func(ctx context.Context, s upstream.Stream, subs []upstream.Subtitle) error
+	// launch runs the player on one stream, addressed through the proxy under
+	// tl, with the subtitles chosen for the provider that served it, a field so
+	// a test needs no player binary
+	launch func(ctx context.Context, s upstream.Stream, tl *play.Tally, subs []upstream.Subtitle) error
 }
 
 // run plays the episode, walking the streams of a provider and then the
@@ -46,11 +47,11 @@ func (p playback) run(pctx context.Context, res *upstream.Result, src source) er
 				"server", server(ranked[0]), "rendition", src.Category,
 				"player", p.kind, "subs", len(subs))
 
-			before := p.px.Served()
-			last = p.watch.playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream) error {
-				return p.launch(ctx, s, subs)
+			var played bool
+			played, last = p.watch.playStreams(pctx, p.px, ranked, func(ctx context.Context, s upstream.Stream, tl *play.Tally) error {
+				return p.launch(ctx, s, tl, subs)
 			})
-			if last == nil || pctx.Err() != nil || p.px.Served() != before {
+			if last == nil || pctx.Err() != nil || played {
 				return last
 			}
 		} else {
@@ -75,28 +76,33 @@ func (p playback) run(pctx context.Context, res *upstream.Result, src source) er
 	}
 }
 
-// playStreams hands each stream in turn to play until one of them plays
+// playStreams hands each stream in turn to play until one of them plays, and
+// reports whether any relayed picture
 // a provider serving an episode from several hosts is not dead when the first
 // of them is, and the action menu stays raised throughout because this runs
 // inside the playback goroutine
-func (w watchdog) playStreams(ctx context.Context, px *play.Proxy, ranked []upstream.Stream, play func(context.Context, upstream.Stream) error) error {
+// each stream is counted under a tally of its own, so a request the player
+// left running for one cannot count toward the next
+func (w watchdog) playStreams(ctx context.Context, px *play.Proxy, ranked []upstream.Stream, play func(context.Context, upstream.Stream, *play.Tally) error) (bool, error) {
 	var err error
+	played := false
 	for i, s := range ranked {
-		before := px.Served()
+		tl := px.Tally()
 		pctx, stop := context.WithCancel(ctx)
-		settled := w.abandonStalled(pctx, px, server(s), stop)
-		err = play(pctx, s)
+		settled := w.abandonStalled(pctx, tl, server(s), stop)
+		err = play(pctx, s, tl)
 		stop()
 		abandoned := <-settled
-		if !deadStream(err, before, px.Served()) || ctx.Err() != nil {
-			return err
+		played = played || tl.Served() > 0
+		if !deadStream(err, tl.Served()) || ctx.Err() != nil {
+			return played, err
 		}
 		// the watcher already said why it stopped this one
 		if !abandoned && i+1 < len(ranked) {
 			log.Warn("stream did not play, trying the next", "server", server(s), "err", err)
 		}
 	}
-	return err
+	return played, err
 }
 
 // server names a stream for the log, since a provider does not always name its
@@ -151,8 +157,7 @@ func patience() watchdog {
 // the returned channel yields whether the player was stopped and closes when the
 // watcher is done, and a caller must receive from it before it returns, since
 // nothing else joins the goroutine that reports through note
-func (w watchdog) abandonStalled(ctx context.Context, px *play.Proxy, name string, stop context.CancelFunc) <-chan bool {
-	served, refused := px.Served(), px.Refused()
+func (w watchdog) abandonStalled(ctx context.Context, tl *play.Tally, name string, stop context.CancelFunc) <-chan bool {
 	settled := make(chan bool, 1)
 	go func() {
 		abandoned := false
@@ -166,17 +171,17 @@ func (w watchdog) abandonStalled(ctx context.Context, px *play.Proxy, name strin
 			case <-ctx.Done():
 				return
 			case <-grace.C:
-				if px.Served() == served {
+				if tl.Served() == 0 {
 					log.Warn("stream showed nothing in time, abandoning it", "server", name, "after", w.grace)
 					abandoned = true
 					stop()
 				}
 				return
 			case <-tick.C:
-				if px.Served() > served {
+				if tl.Served() > 0 {
 					return
 				}
-				if n := px.Refused() - refused; n >= w.budget {
+				if n := tl.Refused(); n >= w.budget {
 					log.Warn("stream refused before it played, abandoning it", "server", name, "refused", n)
 					abandoned = true
 					stop()
@@ -191,8 +196,8 @@ func (w watchdog) abandonStalled(ctx context.Context, px *play.Proxy, name strin
 // deadStream reports whether a finished playback is worth retrying on another
 // stream
 // a player that exits with an error before the proxy relayed a single media
-// body never started, which is what tells a dead stream from one the user quit
-// a few seconds in
-func deadStream(err error, before, after int) bool {
-	return err != nil && after == before
+// body of its stream never started, which is what tells a dead stream from one
+// the user quit a few seconds in
+func deadStream(err error, served int) bool {
+	return err != nil && served == 0
 }

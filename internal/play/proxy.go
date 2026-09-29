@@ -86,6 +86,9 @@ type target struct {
 	Kind    kind   `json:"k"`
 	// Height restricts a master playlist to the variants of one picture height
 	Height int `json:"h,omitempty"`
+	// Tally names the stream a body counts against, zero for one nothing counts
+	// every child a playlist names carries its parent's
+	Tally uint64 `json:"t,omitempty"`
 }
 
 // Proxy relays provider streams over localhost, so a player sees plain HTTP/1.1
@@ -95,16 +98,51 @@ type Proxy struct {
 	hc    *http.Client
 	token string
 	base  string
-	// served counts the media bodies relayed, so a caller can tell a player that
-	// never got picture from one the user quit
-	served atomic.Int64
-	// refused counts the media bodies the upstream would not give up, so a
-	// caller can tell a stream that cannot play from one that is merely slow
-	refused atomic.Int64
+	// tallies holds every Tally this proxy handed out, by id
+	tallies sync.Map
+	ids     atomic.Uint64
 	// timeout bounds one buffered fetch, zero disables the bound
 	timeout time.Duration
 	done    chan struct{}
 	once    sync.Once
+}
+
+// Tally counts what one stream relayed and was refused
+// a player that exits with an error without a body served never started, which
+// is what tells a dead stream from one the user quit, and ffmpeg's hls demuxer
+// skips a segment it cannot fetch and asks for the next, so a stream whose CDN
+// refuses every segment never ends and never shows a frame, and the refusals
+// are the only sign of it
+// each stream gets its own, so a handler still running for a stream the player
+// just left counts against that stream and moves no other one's baseline
+type Tally struct {
+	px      *Proxy
+	id      uint64
+	served  atomic.Int64
+	refused atomic.Int64
+}
+
+// Tally starts counting a stream
+// it lives as long as the proxy, which a run holds for a handful of streams
+func (p *Proxy) Tally() *Tally {
+	t := &Tally{px: p, id: p.ids.Add(1)}
+	p.tallies.Store(t.id, t)
+	return t
+}
+
+// Served counts the media bodies relayed for the stream
+func (t *Tally) Served() int { return int(t.served.Load()) }
+
+// Refused counts the media bodies the upstream would not give up
+func (t *Tally) Refused() int { return int(t.refused.Load()) }
+
+// URL is the localhost address a player should open for s, counted here
+func (t *Tally) URL(s upstream.Stream) string { return t.px.url(s, t.id) }
+
+// Stream addresses s through the proxy, counted here
+func (t *Tally) Stream(s upstream.Stream) upstream.Stream {
+	s.URL, s.Referer = t.URL(s), ""
+	return s
 }
 
 // StartProxy binds a relay on an ephemeral localhost port
@@ -145,28 +183,20 @@ func StartProxy(ctx context.Context, hc *http.Client) (*Proxy, error) {
 	return p, nil
 }
 
-// Refused counts the media bodies the proxy asked for and did not get
-// ffmpeg's hls demuxer skips a segment it cannot fetch and asks for the next
-// one, so a stream whose CDN refuses every segment never ends and never shows a
-// frame, and this is the only sign of it a caller can see
-func (p *Proxy) Refused() int { return int(p.refused.Load()) }
-
-// Served counts the media bodies the proxy has relayed
-// a player that exits with an error without raising this never started, which
-// is what tells a dead stream from one the user quit
-func (p *Proxy) Served() int { return int(p.served.Load()) }
-
 func (p *Proxy) Close() error {
 	p.once.Do(func() { close(p.done) })
 	return p.srv.Close()
 }
 
-// URL returns the localhost address a player or ffmpeg should open for s
-func (p *Proxy) URL(s upstream.Stream) string {
+// URL returns the localhost address a player or ffmpeg should open for s,
+// counted nowhere
+func (p *Proxy) URL(s upstream.Stream) string { return p.url(s, 0) }
+
+func (p *Proxy) url(s upstream.Stream, tally uint64) string {
 	if s.Kind == upstream.HLS {
-		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height})
+		return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: playlist, Height: s.Height, Tally: tally})
 	}
-	return p.proxied(s.URL, s.Referer, media)
+	return p.encode(target{URL: s.URL, Referer: s.Referer, Kind: media, Tally: tally})
 }
 
 // Opaque returns a localhost address relaying rawURL byte for byte
@@ -268,7 +298,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
-		p.tally(t.Kind, false)
+		p.count(t, false)
 		refuse(w, t, mirrored(err), err)
 		return
 	}
@@ -283,7 +313,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 			refuse(w, t, http.StatusBadGateway, err)
 			return
 		}
-		out, err := p.rewrite(body, t.Referer, resp.Request.URL, t.Height)
+		out, err := p.rewrite(body, t, resp.Request.URL)
 		if err != nil {
 			refuse(w, t, http.StatusBadGateway, err)
 			return
@@ -296,7 +326,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
 		body, err := buffered(resp, maxSegmentBody)
 		if err != nil {
-			p.tally(t.Kind, false)
+			p.count(t, false)
 			refuse(w, t, http.StatusBadGateway, err)
 			return
 		}
@@ -306,16 +336,16 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		n, _ := w.Write(body)
-		p.tally(t.Kind, n > 0)
+		p.count(t, n > 0)
 	default:
 		// a relayed body runs for as long as the player reads it, which for an
 		// mp4 is the whole episode, so it counts as its first bytes arrive
 		// waiting for the copy to finish would report that nothing had played
 		// while the picture was on screen
-		opened := &opening{ResponseWriter: w, on: func() { p.tally(t.Kind, true) }}
+		opened := &opening{ResponseWriter: w, on: func() { p.count(t, true) }}
 		err := relay(opened, resp)
 		if !opened.opened {
-			p.tally(t.Kind, false)
+			p.count(t, false)
 		}
 		// the headers are gone, so the connection is dropped the way the
 		// upstream dropped it rather than answered
@@ -344,15 +374,22 @@ func (o *opening) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// tally records whether a media body reached the player
-// a body that carried nothing is not picture the player can start on
-func (p *Proxy) tally(k kind, delivered bool) {
-	switch {
-	case !k.picture():
-	case delivered:
-		p.served.Add(1)
-	default:
-		p.refused.Add(1)
+// count records against its stream whether a media body reached the player
+// a body that carried nothing is not picture the player can start on, and a
+// payload naming a tally this proxy never handed out counts nowhere
+func (p *Proxy) count(t target, delivered bool) {
+	if !t.Kind.picture() || t.Tally == 0 {
+		return
+	}
+	v, ok := p.tallies.Load(t.Tally)
+	if !ok {
+		return
+	}
+	c := v.(*Tally)
+	if delivered {
+		c.served.Add(1)
+	} else {
+		c.refused.Add(1)
 	}
 }
 

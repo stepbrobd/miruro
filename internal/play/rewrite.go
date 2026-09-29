@@ -32,8 +32,8 @@ var (
 // through whole
 // a playlist that cannot be scanned is refused rather than passed on with its
 // upstream urls intact
-func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) ([]byte, error) {
-	body, err := filterMaster(body, height)
+func (p *Proxy) rewrite(body []byte, from target, base *url.URL) ([]byte, error) {
+	body, err := filterMaster(body, from.Height)
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +47,9 @@ func (p *Proxy) rewrite(body []byte, referer string, base *url.URL, height int) 
 		case trimmed == "":
 			out.WriteString(line)
 		case strings.HasPrefix(trimmed, "#"):
-			out.WriteString(p.tag(line, base, referer))
+			out.WriteString(p.tag(line, base, from))
 		default:
-			out.WriteString(p.child(trimmed, base, referer, child))
+			out.WriteString(p.child(trimmed, base, from, child))
 		}
 		out.WriteByte('\n')
 	}
@@ -165,7 +165,7 @@ func encrypted(body []byte) bool {
 // tag rewrites a URI attribute
 // EXT-X-MEDIA and EXT-X-I-FRAME-STREAM-INF both name a media playlist whatever
 // the URI looks like, every other tag URI is data the player consumes directly
-func (p *Proxy) tag(line string, base *url.URL, referer string) string {
+func (p *Proxy) tag(line string, base *url.URL, from target) string {
 	loc := uriAttr.FindStringSubmatchIndex(line)
 	if loc == nil {
 		return line
@@ -174,10 +174,12 @@ func (p *Proxy) tag(line string, base *url.URL, referer string) string {
 	if strings.HasPrefix(line, "#EXT-X-MEDIA") || strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF") {
 		k = playlist
 	}
-	return line[:loc[2]] + p.child(line[loc[2]:loc[3]], base, referer, k) + line[loc[3]:]
+	return line[:loc[2]] + p.child(line[loc[2]:loc[3]], base, from, k) + line[loc[3]:]
 }
 
-func (p *Proxy) child(ref string, base *url.URL, referer string, k kind) string {
+// child is the payload of one url a playlist names, relayed with the referer
+// and counted against the stream of the playlist that named it
+func (p *Proxy) child(ref string, base *url.URL, from target, k kind) string {
 	abs, err := upstream.Resolve(base.String(), ref)
 	if err != nil {
 		return ref
@@ -187,5 +189,5 @@ func (p *Proxy) child(ref string, base *url.URL, referer string, k kind) string 
 	if !strings.HasPrefix(abs, "http://") && !strings.HasPrefix(abs, "https://") {
 		return ref
 	}
-	return p.proxied(abs, referer, k)
+	return p.encode(target{URL: abs, Referer: from.Referer, Kind: k, Tally: from.Tally})
 }

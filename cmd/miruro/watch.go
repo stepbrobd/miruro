@@ -45,8 +45,8 @@ func (s *runState) watch(ctx context.Context, st *store, numbers, queue []float6
 
 		stage := playback{
 			runState: s, px: px, pin: pin, ep: ep, kind: player.Kind, watch: patience(),
-			launch: func(pctx context.Context, stream upstream.Stream, subs []upstream.Subtitle) error {
-				return player.Play(pctx, px.Stream(stream), px.Subtitles(subs, stream.Referer), skips, mediaTitle)
+			launch: func(pctx context.Context, stream upstream.Stream, tl *play.Tally, subs []upstream.Subtitle) error {
+				return player.Play(pctx, tl.Stream(stream), px.Subtitles(subs, stream.Referer), skips, mediaTitle)
 			},
 		}
 

@@ -663,10 +663,10 @@ func TestSaverWanted(t *testing.T) {
 
 // fakePlay stands in for the player, fetching what it was handed the way a real
 // one does, so the proxy sees exactly what playback would have made it see
-func fakePlay(t *testing.T, px *play.Proxy, tried *[]string) func(context.Context, upstream.Stream) error {
-	return func(ctx context.Context, s upstream.Stream) error {
+func fakePlay(t *testing.T, tried *[]string) func(context.Context, upstream.Stream, *play.Tally) error {
+	return func(ctx context.Context, s upstream.Stream, tl *play.Tally) error {
 		*tried = append(*tried, s.Server)
-		resp, err := http.Get(px.Stream(s).URL)
+		resp, err := http.Get(tl.Stream(s).URL)
 		if err != nil {
 			return err
 		}
@@ -701,7 +701,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("a stream that never started falls through", func(t *testing.T) {
 		var tried []string
-		if err := patience().playStreams(ctx, px, []upstream.Stream{dead, live}, fakePlay(t, px, &tried)); err != nil {
+		if _, err := patience().playStreams(ctx, px, []upstream.Stream{dead, live}, fakePlay(t, &tried)); err != nil {
 			t.Fatalf("the live stream did not play: %v", err)
 		}
 		if !slices.Equal(tried, []string{"HD-1", "HD-2"}) {
@@ -714,8 +714,8 @@ func TestPlayStreams(t *testing.T) {
 	t.Run("a stream that played is not retried", func(t *testing.T) {
 		var tried []string
 		quit := errors.New("player exit 4")
-		err := patience().playStreams(ctx, px, []upstream.Stream{live, dead}, func(ctx context.Context, s upstream.Stream) error {
-			fakePlay(t, px, &tried)(ctx, s)
+		_, err := patience().playStreams(ctx, px, []upstream.Stream{live, dead}, func(ctx context.Context, s upstream.Stream, tl *play.Tally) error {
+			fakePlay(t, &tried)(ctx, s, tl)
 			return quit
 		})
 		if !errors.Is(err, quit) {
@@ -728,7 +728,7 @@ func TestPlayStreams(t *testing.T) {
 
 	t.Run("every stream dead reports the last failure", func(t *testing.T) {
 		var tried []string
-		err := patience().playStreams(ctx, px, []upstream.Stream{dead, dead}, fakePlay(t, px, &tried))
+		_, err := patience().playStreams(ctx, px, []upstream.Stream{dead, dead}, fakePlay(t, &tried))
 		if err == nil {
 			t.Fatal("nothing played, playback must fail")
 		}
@@ -741,19 +741,18 @@ func TestPlayStreams(t *testing.T) {
 func TestDeadStream(t *testing.T) {
 	fail := errors.New("player exit 2")
 	cases := []struct {
-		err           error
-		before, after int
-		want          bool
+		err    error
+		served int
+		want   bool
 	}{
-		{fail, 0, 0, true},  // exited with an error having got no picture
-		{fail, 3, 7, false}, // played, then failed, so the user or the CDN quit
-		{nil, 0, 0, false},  // a clean exit is never retried
-		{nil, 0, 9, false},  //
-		{fail, 2, 2, true},  // a later episode starts the count above zero
+		{fail, 0, true},  // exited with an error having got no picture
+		{fail, 4, false}, // played, then failed, so the user or the CDN quit
+		{nil, 0, false},  // a clean exit is never retried
+		{nil, 9, false},
 	}
 	for _, c := range cases {
-		if got := deadStream(c.err, c.before, c.after); got != c.want {
-			t.Errorf("deadStream(%v, %d, %d) = %v, want %v", c.err, c.before, c.after, got, c.want)
+		if got := deadStream(c.err, c.served); got != c.want {
+			t.Errorf("deadStream(%v, %d) = %v, want %v", c.err, c.served, got, c.want)
 		}
 	}
 }
@@ -876,9 +875,9 @@ func TestPlaybackFallsBackToTheNextProvider(t *testing.T) {
 		watch:    patience(),
 		pin:      Pin{Code: "ally", Variant: Hard},
 		ep:       8,
-		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
+		launch: func(ctx context.Context, s upstream.Stream, tl *play.Tally, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
-			return fakePlay(t, px, new([]string))(ctx, s)
+			return fakePlay(t, new([]string))(ctx, s, tl)
 		},
 	}
 
@@ -960,9 +959,9 @@ func TestPlaybackKeepsAProviderThatPlayed(t *testing.T) {
 		watch:    patience(),
 		pin:      Pin{Code: "ally", Variant: Hard},
 		ep:       8,
-		launch: func(ctx context.Context, s upstream.Stream, _ []upstream.Subtitle) error {
+		launch: func(ctx context.Context, s upstream.Stream, tl *play.Tally, _ []upstream.Subtitle) error {
 			tried = append(tried, s.Server)
-			fakePlay(t, px, new([]string))(ctx, s)
+			fakePlay(t, new([]string))(ctx, s, tl)
 			return quit
 		},
 	}
@@ -994,12 +993,12 @@ func TestAbandonStalled(t *testing.T) {
 	defer px.Close()
 
 	// skipping mimics the demuxer, fetching forever and never giving up
-	skipping := func(ctx context.Context, s upstream.Stream) error {
+	skipping := func(ctx context.Context, s upstream.Stream, tl *play.Tally) error {
 		for {
 			if ctx.Err() != nil {
 				return errors.New("signal: killed")
 			}
-			resp, err := http.Get(px.Stream(s).URL)
+			resp, err := http.Get(tl.Stream(s).URL)
 			if err == nil {
 				io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
@@ -1015,8 +1014,9 @@ func TestAbandonStalled(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			done <- wd.playStreams(context.Background(), px,
+			_, err := wd.playStreams(context.Background(), px,
 				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}}, skipping)
+			done <- err
 		}()
 		select {
 		case err := <-done:
@@ -1045,9 +1045,9 @@ func TestAbandonStalled(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		played := make(chan error, 1)
 		go func() {
-			played <- wd.playStreams(ctx, px,
+			_, err := wd.playStreams(ctx, px,
 				[]upstream.Stream{{URL: cdn.URL + "/seg.mp4", Kind: upstream.MP4, Server: "HD-1"}},
-				func(pctx context.Context, s upstream.Stream) error {
+				func(pctx context.Context, s upstream.Stream, tl *play.Tally) error {
 					// fetch until picture lands, then sit there the way a player
 					// does
 					// a refused fetch answers with the upstream status as its
@@ -1066,6 +1066,7 @@ func TestAbandonStalled(t *testing.T) {
 					<-pctx.Done()
 					return errors.New("signal: killed")
 				})
+			played <- err
 		}()
 
 		select {
