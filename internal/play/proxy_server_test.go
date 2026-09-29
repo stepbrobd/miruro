@@ -931,3 +931,20 @@ func TestTallyCountsItsOwnStreamOnly(t *testing.T) {
 		t.Error("a payload naming an unknown tally moved a real one")
 	}
 }
+
+// a proxied address decodes back to the upstream one it relays, so a caller can
+// name the host behind an answer, and one this proxy never minted does not
+func TestProxyUpstreamReadsTheRelayedAddress(t *testing.T) {
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+	s := upstream.Stream{URL: "https://cdn.example/a/master.m3u8", Kind: upstream.HLS, Referer: "https://ref.example/"}
+	if got, err := px.Upstream(px.URL(s)); err != nil || got != s.URL {
+		t.Errorf("Upstream = %q, %v, want %q", got, err, s.URL)
+	}
+	if _, err := px.Upstream("http://127.0.0.1:1/forged/eyJ1IjoiaHR0cHM6Ly94In0.m3u8"); err == nil {
+		t.Error("an address under another token decoded")
+	}
+}

@@ -458,6 +458,20 @@ func buffered(resp *http.Response, limit int64) ([]byte, error) {
 	return body, nil
 }
 
+// Upstream is the address a proxied url relays, so a caller can say which host
+// answered behind the proxy
+func (p *Proxy) Upstream(proxied string) (string, error) {
+	u, err := url.Parse(proxied)
+	if err != nil {
+		return "", err
+	}
+	t, err := p.decode(u.Path)
+	if err != nil {
+		return "", err
+	}
+	return t.URL, nil
+}
+
 // decode reads the target out of a request path
 // anything past the payload is the readable name a player shows and carries no
 // meaning here

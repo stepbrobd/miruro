@@ -41,6 +41,13 @@ type provider struct {
 // id changed under them
 // only a success is kept, since no provider can be named without the table and
 // one failed fetch must not cost the rest of the run
+// Ping asks for the site's configuration, the cheapest answer the api gives,
+// and reports why no mirror gave it
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.get(ctx, "/api/config")
+	return err
+}
+
 func (c *Client) providerCodes(ctx context.Context) (map[string]string, error) {
 	c.codesMu.Lock()
 	defer c.codesMu.Unlock()
