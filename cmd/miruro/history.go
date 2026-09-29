@@ -26,12 +26,12 @@ type store struct {
 	path string
 }
 
-func openStore() (*store, error) {
-	path, err := xdg.StateFile("miruro/history.json")
-	if err != nil {
-		return nil, err
-	}
-	return &store{path: path}, nil
+// openStore names the history file without touching the disk
+// the state directory is made by the first save, so a run that only searches
+// and watches works where it cannot be made, a read-only home or none, and
+// loses nothing but the record of what it played, which the save reports
+func openStore() *store {
+	return &store{path: filepath.Join(xdg.StateHome, "miruro", "history.json")}
 }
 
 func (s *store) load() ([]entry, error) {
@@ -85,6 +85,9 @@ func (s *store) save(e entry) error {
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
 	tmp := s.path + ".tmp"

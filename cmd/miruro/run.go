@@ -91,13 +91,11 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("quality %q is not best, worst, or a height such as 1080p", cfg.Quality)
 	}
 
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
+	st := openStore()
 
 	// watching needs a player, so a missing one fails before any prompt
 	var player play.Player
+	var err error
 	if !flagDownload {
 		if player, err = play.Detect(play.Kind(cfg.Player)); err != nil {
 			return err

@@ -56,14 +56,36 @@ func printed(t *testing.T, f func() error) string {
 	return out
 }
 
+// opening the store touches nothing, so a run that cannot make the state
+// directory still searches and watches, and the first save makes it
 func TestOpenStore(t *testing.T) {
 	root := stateRoot(t)
-	st, err := openStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore()
 	if want := filepath.Join(root, "miruro", "history.json"); st.path != want {
 		t.Errorf("store path = %q, want %q", st.path, want)
+	}
+	if _, err := os.Stat(filepath.Dir(st.path)); !os.IsNotExist(err) {
+		t.Fatalf("opening the store made its directory: %v", err)
+	}
+	if entries, err := st.load(); err != nil || len(entries) != 0 {
+		t.Fatalf("a store never saved loaded %v, %v", entries, err)
+	}
+	if err := st.save(entry{AnilistID: 1, Title: "Show", Episode: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := st.load(); err != nil || len(entries) != 1 {
+		t.Errorf("after the first save the store holds %v, %v", entries, err)
+	}
+
+	// a save that cannot make the directory fails where it is reported rather
+	// than before the run began
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st = &store{path: filepath.Join(blocked, "miruro", "history.json")}
+	if err := st.save(entry{AnilistID: 1}); err == nil {
+		t.Error("a save under a file succeeded")
 	}
 }
 
@@ -156,10 +178,7 @@ func TestHistoryCommands(t *testing.T) {
 		t.Errorf("an empty history listed %q", out)
 	}
 
-	st, err := openStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore()
 	if err := st.save(entry{
 		AnilistID: 16498, Title: "Shingeki no Kyojin", Provider: "hop:soft",
 		Category: upstream.Sub, Episode: 8, Updated: time.Now(),
@@ -226,10 +245,7 @@ func TestHistoryTitles(t *testing.T) {
 		t.Errorf("titles from an absent history = %v", got)
 	}
 
-	st, err := openStore()
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := openStore()
 	if err := st.save(entry{AnilistID: 16498, Title: "Shingeki no Kyojin"}); err != nil {
 		t.Fatal(err)
 	}

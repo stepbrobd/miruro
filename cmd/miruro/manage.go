@@ -64,10 +64,7 @@ func init() {
 }
 
 func runHistoryList(*cobra.Command, []string) error {
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
+	st := openStore()
 	entries, err := st.load()
 	if err != nil {
 		return err
@@ -95,10 +92,7 @@ func stamp(t time.Time) string {
 }
 
 func runHistoryClear(*cobra.Command, []string) error {
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
+	st := openStore()
 	n, err := clearHistory(st)
 	if err != nil {
 		return err
@@ -227,11 +221,7 @@ func segments(c play.Cache) string {
 // historyTitles maps an anilist id to the title history knows it by
 // an unreadable history only costs the listing its names, so it is not an error
 func historyTitles() map[string]string {
-	st, err := openStore()
-	if err != nil {
-		return nil
-	}
-	entries, err := st.load()
+	entries, err := openStore().load()
 	if err != nil {
 		return nil
 	}
