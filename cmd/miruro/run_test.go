@@ -1021,6 +1021,55 @@ func TestAbandonStalled(t *testing.T) {
 	})
 }
 
+// a pinned provider whose backend hiccups is asked once more before the walk
+// leaves it, and only that one and only once
+func TestAutoResolveRetriesThePinOnce(t *testing.T) {
+	ctx := context.Background()
+	flaky := func(fails int) reply {
+		calls := 0
+		return func(upstream.Category) (*upstream.Result, error) {
+			calls++
+			if calls <= fails {
+				return nil, fmt.Errorf("%w: miruro status 502", upstream.ErrUnreachable)
+			}
+			return &upstream.Result{Streams: []upstream.Stream{{URL: "http://cdn/master.m3u8", Kind: upstream.HLS}}}, nil
+		}
+	}
+
+	t.Run("one hiccup keeps the pin", func(t *testing.T) {
+		b := twoProviders(t, map[string]reply{"bonk": flaky(1), "ally": hls})
+		_, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		if err != nil || src.Code != "bonk" {
+			t.Fatalf("served = %q, %v, want bonk on its second try", src.Code, err)
+		}
+		if got := b.probed(); !slices.Equal(got, []string{"bonk:sub", "bonk:sub"}) {
+			t.Errorf("asked %v, want bonk twice and nothing else", got)
+		}
+	})
+
+	t.Run("a second failure moves on", func(t *testing.T) {
+		b := twoProviders(t, map[string]reply{"bonk": flaky(2), "ally": hls})
+		_, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "bonk"}, nil)
+		if err != nil || src.Code != "ally" {
+			t.Fatalf("served = %q, %v, want ally", src.Code, err)
+		}
+		if got := b.probed(); !slices.Equal(got, []string{"bonk:sub", "bonk:sub", "ally:sub"}) {
+			t.Errorf("asked %v, want bonk twice then ally", got)
+		}
+	})
+
+	t.Run("an unpinned provider and another failure are not retried", func(t *testing.T) {
+		b := twoProviders(t, map[string]reply{"bonk": flaky(1), "ally": fails(errors.New("no such episode"))})
+		_, src, err := resolver(upstream.Sub, b).autoResolve(ctx, 1, Pin{Code: "ally"}, nil)
+		if err == nil || src.Code != "" {
+			t.Fatalf("served = %q, %v, want nothing, bonk failed once and ally refused", src.Code, err)
+		}
+		if got := b.probed(); !slices.Equal(got, []string{"ally:sub", "bonk:sub"}) {
+			t.Errorf("asked %v, want each once", got)
+		}
+	})
+}
+
 // a provider named in the config or on the command line is a stated choice, so
 // the walk stops at it and says how to widen it, rather than quietly serving
 // the episode from somewhere the run was never told to use
@@ -1038,8 +1087,9 @@ func TestAutoResolveHoldsToAPinnedProvider(t *testing.T) {
 		if !strings.Contains(err.Error(), "--fallback") {
 			t.Errorf("err = %v, want it to name the flag that widens the walk", err)
 		}
-		if n := len(b.probed()); n != 1 {
-			t.Errorf("asked %d providers, want only the pinned one", n)
+		// the pin is asked once more on a backend failure, and nothing else is
+		if got := b.probed(); !slices.Equal(got, []string{"bonk:sub", "bonk:sub"}) {
+			t.Errorf("asked %v, want only the pinned provider", got)
 		}
 	})
 

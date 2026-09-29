@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -90,6 +91,22 @@ func (s *runState) listing(ctx context.Context, ep float64) (*upstream.Listing, 
 	return l, nil
 }
 
+// retryPause is how long the pinned provider's one retry waits, about what the
+// site's own client waits before its first retry of a 502
+const retryPause = 250 * time.Millisecond
+
+// pause waits d or until ctx ends, whichever is first
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // autoResolve lists the episode and walks its providers, never prompting
 func (s *runState) autoResolve(ctx context.Context, ep float64, pin Pin, skip map[string]bool) (*upstream.Result, source, error) {
 	l, err := s.listing(ctx, ep)
@@ -127,6 +144,7 @@ func (s *runState) walk(ctx context.Context, l *upstream.Listing, ep float64, pi
 	}
 
 	var last, blocked error
+	retried := false
 	for _, o := range rows {
 		p := l.Providers[o.Code]
 		if skip[o.Code] {
@@ -142,6 +160,16 @@ func (s *runState) walk(ctx context.Context, l *upstream.Listing, ep float64, pi
 			continue
 		}
 		res, err := l.Sources(ctx, e.ID, o.Code, src.Category)
+		// the pinned provider is the one the user chose, so a backend hiccup costs
+		// it one more request before the walk leaves it, once per walk however
+		// many renditions it is pinned in
+		if errors.Is(err, upstream.ErrUnreachable) && o.Code == pin.Code && !retried && ctx.Err() == nil {
+			retried = true
+			log.Debug("pinned provider did not resolve, asking once more", "provider", o.Code, "err", err)
+			if err = pause(ctx, retryPause); err == nil {
+				res, err = l.Sources(ctx, e.ID, o.Code, src.Category)
+			}
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, source{}, ctx.Err()
