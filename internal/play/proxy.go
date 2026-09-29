@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/log"
+
 	"ysun.co/miruro/internal/upstream"
 )
 
@@ -246,10 +248,10 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	t, err := p.decode(r.URL.Path)
 	switch {
 	case errors.Is(err, errToken):
-		http.Error(w, "forbidden", http.StatusForbidden)
+		refuse(w, t, http.StatusForbidden, err)
 		return
 	case err != nil:
-		http.Error(w, "bad target", http.StatusBadRequest)
+		refuse(w, t, http.StatusBadRequest, fmt.Errorf("%w: %v", errTarget, err))
 		return
 	}
 
@@ -266,7 +268,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	resp, err := p.fetch(ctx, r, t)
 	if err != nil {
 		p.tally(t.Kind, false)
-		http.Error(w, err.Error(), mirrored(err))
+		refuse(w, t, mirrored(err), err)
 		return
 	}
 	defer resp.Body.Close()
@@ -275,13 +277,14 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	// what it got against what was announced can do so through the proxy
 	switch t.Kind {
 	case playlist:
-		body, ok := buffered(w, resp, maxPlaylistBody)
-		if !ok {
+		body, err := buffered(resp, maxPlaylistBody)
+		if err != nil {
+			refuse(w, t, http.StatusBadGateway, err)
 			return
 		}
 		out, err := p.rewrite(body, t.Referer, resp.Request.URL, t.Height)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			refuse(w, t, http.StatusBadGateway, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -290,9 +293,10 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	case segment, cipher:
 		// a segment is fetched whole and de-obfuscated
 		// a cipher segment relays whole because CBC cannot decrypt from an offset
-		body, ok := buffered(w, resp, maxSegmentBody)
-		if !ok {
+		body, err := buffered(resp, maxSegmentBody)
+		if err != nil {
 			p.tally(t.Kind, false)
+			refuse(w, t, http.StatusBadGateway, err)
 			return
 		}
 		if t.Kind == segment {
@@ -308,9 +312,15 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		// waiting for the copy to finish would report that nothing had played
 		// while the picture was on screen
 		opened := &opening{ResponseWriter: w, on: func() { p.tally(t.Kind, true) }}
-		relay(opened, resp)
+		err := relay(opened, resp)
 		if !opened.opened {
 			p.tally(t.Kind, false)
+		}
+		// the headers are gone, so the connection is dropped the way the
+		// upstream dropped it rather than answered
+		if err != nil {
+			log.Debug("relay cut short", "kind", t.Kind, "host", host(t.URL), "err", err)
+			panic(http.ErrAbortHandler)
 		}
 	}
 }
@@ -345,19 +355,35 @@ func (p *Proxy) tally(k kind, delivered bool) {
 	}
 }
 
+// refuse answers a request the relay could not serve, and says why under
+// --verbose, since the body it answers with reaches mpv, IINA or ffmpeg, which
+// show nobody the cause
+// hop's hostless subtitle urls read as a bare upstream 502 on 2026-09-23 while
+// this body said http: no Host in request URL
+func refuse(w http.ResponseWriter, t target, code int, err error) {
+	log.Debug("relay refused", "kind", t.Kind, "status", code, "host", host(t.URL), "err", err)
+	http.Error(w, err.Error(), code)
+}
+
+// host names the upstream a target reaches, empty for one naming none
+func host(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		return u.Host
+	}
+	return ""
+}
+
 // buffered reads a whole body of at most limit bytes
 // an endless chunked body would otherwise buffer until memory runs out
-func buffered(w http.ResponseWriter, resp *http.Response, limit int64) ([]byte, bool) {
+func buffered(resp *http.Response, limit int64) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return nil, false
+		return nil, err
 	}
 	if int64(len(body)) > limit {
-		http.Error(w, "upstream body too large", http.StatusBadGateway)
-		return nil, false
+		return nil, errors.New("upstream body too large")
 	}
-	return body, true
+	return body, nil
 }
 
 // decode reads the target out of a request path
@@ -434,13 +460,12 @@ func mirrored(err error) int {
 	return http.StatusBadGateway
 }
 
-// relay forwards a body untouched
+// relay forwards a body untouched, and reports the upstream cutting it short
 // a body the upstream cuts short must not end cleanly for the player, since a
 // clean end hands it a truncated episode as a whole one and a download would
-// rename it into place, so the connection is dropped the way the upstream
-// dropped it
-// a write failure is the player going away, which is its choice
-func relay(w http.ResponseWriter, resp *http.Response) {
+// rename it into place, so the caller drops the connection on that report
+// a write failure is the player going away, which is its choice and no error
+func relay(w http.ResponseWriter, resp *http.Response) error {
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -452,14 +477,14 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
+				return nil
 			}
 		}
 		switch {
 		case err == io.EOF:
-			return
+			return nil
 		case err != nil:
-			panic(http.ErrAbortHandler)
+			return err
 		}
 	}
 }

@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/log"
+
 	"ysun.co/miruro/internal/upstream"
 )
 
@@ -434,6 +436,43 @@ func TestProxyMirrorsUpstreamStatus(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != want {
 			t.Errorf("%s answered %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+}
+
+// the body a refusal answers with reaches mpv or ffmpeg, which show it to
+// nobody, so --verbose is where the cause has to surface
+func TestProxyLogsARefusalUnderVerbose(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer origin.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	var buf bytes.Buffer
+	level := log.GetLevel()
+	log.SetOutput(&buf)
+	log.SetLevel(log.DebugLevel)
+	defer func() {
+		log.SetOutput(os.Stderr)
+		log.SetLevel(level)
+	}()
+
+	resp, err := http.Get(px.proxied(origin.URL+"/gone.ts", "", segment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	said := buf.String()
+	for _, want := range []string{"relay refused", "status=404", "host=" + strings.TrimPrefix(origin.URL, "http://")} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the log does not carry %q:\n%s", want, said)
 		}
 	}
 }
