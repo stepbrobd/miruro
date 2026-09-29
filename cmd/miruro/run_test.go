@@ -342,10 +342,15 @@ func TestParseEpisodes(t *testing.T) {
 		{"range clamps to available", "2-20", []float64{2, 2.5, 3, 10}, false},
 		{"empty range", "4-9", nil, true},
 		{"absent single", "7", nil, true},
-		{"negative", "-5", nil, true},
+		{"open start", "-2.5", []float64{1, 2, 2.5}, false},
+		{"open end", "3-", []float64{3, 10}, false},
+		{"open end clamps nothing", "2.5 -", []float64{2.5, 3, 10}, false},
+		{"latest", "latest", []float64{10}, false},
+		{"latest in any case", "Latest", []float64{10}, false},
+		{"no bound at all", "-", nil, true},
 		{"garbage", "abc", nil, true},
 		{"bad range bound", "a-3", nil, true},
-		{"trailing dash", "3-", nil, true},
+		{"bad open bound", "x-", nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseEpisodes(tc.spec, numbers)
@@ -356,6 +361,43 @@ func TestParseEpisodes(t *testing.T) {
 				t.Errorf("parseEpisodes(%q) = %v, want %v", tc.spec, got, tc.want)
 			}
 		})
+	}
+}
+
+// a range wider than the catalog is clamped and says so, while a bound left off
+// asked for nothing, so it clamps nothing and says nothing
+func TestParseEpisodesSaysWhenItClamps(t *testing.T) {
+	numbers := []float64{1, 2, 2.5, 3, 10}
+	for _, tc := range []struct {
+		spec   string
+		warned bool
+	}{
+		{"2-3", false},
+		{"2-20", true},
+		{"0-3", true},
+		{"0-20", true},
+		{"3-", false},
+		{"-2.5", false},
+	} {
+		said := captureLog(t)
+		if _, err := parseEpisodes(tc.spec, numbers); err != nil {
+			t.Fatalf("parseEpisodes(%q): %v", tc.spec, err)
+		}
+		if got := strings.Contains(said.String(), "range clamped"); got != tc.warned {
+			t.Errorf("parseEpisodes(%q) warned = %v, want %v:\n%s", tc.spec, got, tc.warned, said)
+		}
+	}
+}
+
+// -8 reads like a flag, so it has to reach -e as its value, which pflag does
+// for a flag that takes one
+func TestEpisodeFlagTakesAnOpenStart(t *testing.T) {
+	t.Cleanup(func() { flagEpisode = "" })
+	for _, args := range [][]string{{"-e", "-8"}, {"--episode", "-8"}, {"-e=-8"}} {
+		flagEpisode = ""
+		if err := root.ParseFlags(args); err != nil || flagEpisode != "-8" {
+			t.Errorf("parsing %v gave %q, %v, want -8", args, flagEpisode, err)
+		}
 	}
 }
 

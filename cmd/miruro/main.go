@@ -41,7 +41,7 @@ var root = &cobra.Command{
 
 func init() {
 	f := root.Flags()
-	f.StringVarP(&flagEpisode, "episode", "e", "", "Episode number or range, e.g. 5 or 5-8")
+	f.StringVarP(&flagEpisode, "episode", "e", "", "Episode, range or latest, e.g. 5, 5-8, 5- or -8")
 	f.BoolVarP(&flagDownload, "download", "d", false, "Download instead of playing")
 	f.StringVarP(&flagQuality, "quality", "q", "", "Video quality, best, worst, or a height such as 1080p")
 	f.BoolVar(&flagDub, "dub", false, "Use dub instead of sub")

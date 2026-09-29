@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -90,12 +91,22 @@ func neighbor(numbers []float64, ep float64, dir int) (float64, bool) {
 	return 0, false
 }
 
+// parseEpisodes reads an episode spec against the numbers the catalog lists
+// a spec is one episode, latest for the newest listed, or a range lo-hi where
+// a bound left off is the first or the last episode, so 5- runs to the end and
+// -8 runs from the start
 func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
 	spec = strings.TrimSpace(spec)
-	if i := strings.IndexByte(spec, '-'); i > 0 {
-		lo, err1 := strconv.ParseFloat(strings.TrimSpace(spec[:i]), 64)
-		hi, err2 := strconv.ParseFloat(strings.TrimSpace(spec[i+1:]), 64)
-		if err1 != nil || err2 != nil {
+	if strings.EqualFold(spec, "latest") {
+		if len(numbers) == 0 {
+			return nil, errors.New("no episode listed to be the latest")
+		}
+		return numbers[len(numbers)-1:], nil
+	}
+	if from, to, isRange := strings.Cut(spec, "-"); isRange {
+		lo, loSet, err1 := bound(from, numbers, 0)
+		hi, hiSet, err2 := bound(to, numbers, len(numbers)-1)
+		if err1 != nil || err2 != nil || !loSet && !hiSet {
 			return nil, fmt.Errorf("invalid range %q", spec)
 		}
 		var out []float64
@@ -109,7 +120,8 @@ func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
 		}
 		// a range wider than the catalog is clamped, and saying so is what tells
 		// a short season from a provider that carries less than the rest
-		if out[0] != lo || out[len(out)-1] != hi {
+		// a bound left off asked for nothing, so it clamps nothing
+		if loSet && out[0] != lo || hiSet && out[len(out)-1] != hi {
 			log.Warn("range clamped to what the catalog carries", "asked", spec,
 				"played", num(out[0])+"-"+num(out[len(out)-1]))
 		}
@@ -123,6 +135,20 @@ func parseEpisodes(spec string, numbers []float64) ([]float64, error) {
 		return nil, fmt.Errorf("episode %s not available", num(n))
 	}
 	return []float64{n}, nil
+}
+
+// bound reads one end of a range, the listed episode at edge when it is left
+// off, and reports whether it was given
+func bound(s string, numbers []float64, edge int) (float64, bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		if len(numbers) == 0 {
+			return 0, false, errors.New("no episode listed")
+		}
+		return numbers[edge], false, nil
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	return n, true, err
 }
 
 func num(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
