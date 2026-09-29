@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
 
@@ -157,8 +158,20 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	return nil
 }
 
+// titleBytes bounds the title in a file name, leaving room under the 255 bytes a
+// name takes on most filesystems for the episode, a sidecar's tag and a .part,
+// which a long title in a multi-byte script outgrows on its own
+const titleBytes = 200
+
 // episodeName is what an episode is saved as, before the extension
 func episodeName(title string, ep float64) string {
+	if len(title) > titleBytes {
+		cut := titleBytes
+		for cut > 0 && !utf8.RuneStart(title[cut]) {
+			cut--
+		}
+		title = strings.TrimRight(title[:cut], " .")
+	}
 	return fmt.Sprintf("%s - E%s", title, num(ep))
 }
 

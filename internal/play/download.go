@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
 
@@ -367,13 +368,30 @@ func sidecar(s upstream.Subtitle, seen map[string]int) string {
 	if tag == "" {
 		tag = "sub"
 	}
-	tag = safeName(tag)
+	tag = clip(safeName(tag), tagBytes)
 	n := seen[tag]
 	seen[tag]++
 	if n > 0 {
 		tag = fmt.Sprintf("%s.%d", tag, n)
 	}
 	return "." + tag + subExt(s.File)
+}
+
+// tagBytes bounds the tag a sidecar takes from a label when the track names no
+// language, since a label is free text and the file name has 255 bytes on most
+// filesystems for the episode's name as well
+const tagBytes = 32
+
+// clip cuts s to at most n bytes without splitting a character
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.TrimRight(s[:cut], " .")
 }
 
 // safeName reduces an API-supplied title or subtitle label to a single path

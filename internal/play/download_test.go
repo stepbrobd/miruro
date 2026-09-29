@@ -375,6 +375,11 @@ func TestSidecarNames(t *testing.T) {
 		{upstream.Subtitle{File: "http://x/c.ass?token=1", Label: "Signs"}, ".Signs.ass"},
 		{upstream.Subtitle{File: "http://x/d"}, ".sub.vtt"},
 		{upstream.Subtitle{File: "http://x/e.exe", Lang: "../../etc"}, ".-..-etc.vtt"},
+		// a label is free text, so one standing in for a language is cut at a
+		// character boundary
+		{upstream.Subtitle{File: "http://x/f.vtt", Label: "English (Full Subtitles, Signs and Songs)"}, ".English (Full Subtitles, Signs a.vtt"},
+		{upstream.Subtitle{File: "http://x/g.vtt", Label: "日本語の字幕、看板と歌を含むもの"}, ".日本語の字幕、看板と.vtt"},
+		{upstream.Subtitle{File: "http://x/h.vtt", Label: "Signs and Songs, thirty two bytes"[:32]}, ".Signs and Songs, thirty two byte.vtt"},
 	}
 	for _, c := range cases {
 		if got := sidecar(c.sub, seen); got != c.want {

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
 
@@ -705,6 +706,30 @@ func TestDownloadLeavesEpisodesOnDiskAlone(t *testing.T) {
 	}
 	if n := b.listed(); n != 1 {
 		t.Errorf("a finished range was listed again, %d listings in all", n)
+	}
+}
+
+// a long title in a multi-byte script outgrows the 255 bytes a file name takes
+// on most filesystems, so the title is cut at a character boundary and the
+// episode number kept, and the longest tail a download adds still fits
+func TestEpisodeNameClipsALongTitle(t *testing.T) {
+	long := strings.Repeat("転生したらスライムだった件", 20)
+	name := episodeName(long, 12)
+	if !utf8.ValidString(name) || !strings.HasSuffix(name, " - E12") || len(name) > titleBytes+len(" - E12") {
+		t.Errorf("name is %d bytes, valid %v: %q", len(name), utf8.ValidString(name), name)
+	}
+	if kept := strings.TrimSuffix(name, " - E12"); len(kept) < titleBytes-3 || !strings.HasPrefix(long, kept) {
+		t.Errorf("the title kept %q, want as much of its opening as fits", kept)
+	}
+	if exact := strings.Repeat("x", titleBytes); episodeName(exact, 1) != exact+" - E1" {
+		t.Error("a title exactly at the bound was cut")
+	}
+	longest := filepath.Join(t.TempDir(), name+"."+strings.Repeat("x", 32)+".9.vtt.part")
+	if err := os.WriteFile(longest, nil, 0o644); err != nil {
+		t.Errorf("the longest sidecar name does not fit: %v", err)
+	}
+	if got := episodeName("Frieren", 1); got != "Frieren - E1" {
+		t.Errorf("a short title changed: %q", got)
 	}
 }
 
