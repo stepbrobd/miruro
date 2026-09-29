@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,16 @@ var historyListCmd = &cobra.Command{
 	Short: "List watch history, most recent first",
 	Args:  cobra.NoArgs,
 	RunE:  runHistoryList,
+}
+
+var historyDeleteCmd = &cobra.Command{
+	Use:   "delete [title]",
+	Short: "Delete one title from watch history",
+	Long: "Delete one title from watch history.\n\n" +
+		"With no title a picker lists the whole history. A title matching one\n" +
+		"entry deletes it, and one matching several narrows the picker to them.",
+	Args: cobra.ArbitraryArgs,
+	RunE: runHistoryDelete,
 }
 
 var historyClearCmd = &cobra.Command{
@@ -58,7 +69,7 @@ var cacheClearCmd = &cobra.Command{
 }
 
 func init() {
-	historyCmd.AddCommand(historyListCmd, historyClearCmd)
+	historyCmd.AddCommand(historyListCmd, historyDeleteCmd, historyClearCmd)
 	cacheCmd.AddCommand(cacheListCmd, cacheClearCmd)
 	root.AddCommand(historyCmd, cacheCmd)
 }
@@ -103,6 +114,46 @@ func runHistoryClear(*cobra.Command, []string) error {
 	}
 	fmt.Printf("cleared %s\n", plural(n, "history entry", "history entries"))
 	return nil
+}
+
+func runHistoryDelete(_ *cobra.Command, args []string) error {
+	st := openStore()
+	e, err := pickEntry(st, strings.Join(args, " "))
+	if err != nil {
+		return err
+	}
+	if _, err := st.remove(e.AnilistID); err != nil {
+		return err
+	}
+	fmt.Printf("deleted %s\n", e.Title)
+	return nil
+}
+
+// pickEntry finds the entry a delete means
+// a query naming one title picks it outright, since asking to confirm the one
+// candidate costs a keypress and saves nothing, and several open the picker
+func pickEntry(st *store, query string) (entry, error) {
+	entries, err := st.load()
+	if err != nil {
+		return entry{}, err
+	}
+	if len(entries) == 0 {
+		return entry{}, errors.New("history is empty")
+	}
+	matched := slices.DeleteFunc(entries, func(e entry) bool {
+		return !strings.Contains(strings.ToLower(e.Title), strings.ToLower(query))
+	})
+	switch len(matched) {
+	case 0:
+		return entry{}, fmt.Errorf("no history entry matches %q", query)
+	case 1:
+		if query != "" {
+			return matched[0], nil
+		}
+	}
+	return ui.Select("Delete", matched, func(x entry) string {
+		return fmt.Sprintf("%s  ep %s  [%s %s]", x.Title, num(x.Episode), x.Provider, x.Category)
+	})
 }
 
 // clearHistory clears the store and reports how many entries it held

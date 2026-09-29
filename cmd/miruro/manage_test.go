@@ -161,3 +161,66 @@ func TestLoadNarrowsTheStoredCategory(t *testing.T) {
 		}
 	}
 }
+
+// deleting one title keeps the rest in order, and a query naming one title
+// needs no picker
+func TestHistoryDelete(t *testing.T) {
+	st := &store{path: filepath.Join(t.TempDir(), "history.json")}
+	if _, err := pickEntry(st, "anything"); err == nil {
+		t.Error("an empty history picked something")
+	}
+	for i, title := range []string{"Sousou no Frieren", "ONE PIECE", "Sousou no Frieren 2nd Season"} {
+		if err := st.save(entry{AnilistID: i + 1, Title: title, Episode: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e, err := pickEntry(st, "one piece")
+	if err != nil || e.AnilistID != 2 {
+		t.Fatalf("picked %+v, %v, want the one title matching", e, err)
+	}
+	if _, err := pickEntry(st, "gundam"); err == nil || !strings.Contains(err.Error(), "gundam") {
+		t.Errorf("err = %v, want the query named", err)
+	}
+
+	removed, err := st.remove(2)
+	if err != nil || !removed {
+		t.Fatalf("remove = %v, %v", removed, err)
+	}
+	if removed, err := st.remove(2); err != nil || removed {
+		t.Errorf("removing it again = %v, %v, want nothing removed", removed, err)
+	}
+	entries, err := st.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, e := range entries {
+		titles = append(titles, e.Title)
+	}
+	if want := []string{"Sousou no Frieren 2nd Season", "Sousou no Frieren"}; !slices.Equal(titles, want) {
+		t.Errorf("history = %v, want %v", titles, want)
+	}
+}
+
+// the command deletes the one title a query names and says which, and a query
+// naming none fails with the rest of history untouched
+func TestHistoryDeleteCommand(t *testing.T) {
+	stateRoot(t)
+	st := openStore()
+	for i, title := range []string{"Sousou no Frieren", "ONE PIECE"} {
+		if err := st.save(entry{AnilistID: i + 1, Title: title, Episode: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := printed(t, func() error { return runHistoryDelete(nil, []string{"one", "piece"}) }); out != "deleted ONE PIECE\n" {
+		t.Errorf("printed %q, want the deleted title named", out)
+	}
+	if err := runHistoryDelete(nil, []string{"gundam"}); err == nil {
+		t.Error("a query naming no title deleted something")
+	}
+	entries, err := st.load()
+	if err != nil || len(entries) != 1 || entries[0].Title != "Sousou no Frieren" {
+		t.Errorf("history = %+v, %v, want Frieren alone", entries, err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,8 +82,25 @@ func (s *store) save(e entry) error {
 			kept = append(kept, x)
 		}
 	}
-	entries = append([]entry{e}, kept...)
+	return s.write(append([]entry{e}, kept...))
+}
 
+// remove drops the entry of one title and reports whether there was one
+func (s *store) remove(anilistID int) (bool, error) {
+	entries, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	kept := slices.DeleteFunc(slices.Clone(entries), func(e entry) bool { return e.AnilistID == anilistID })
+	if len(kept) == len(entries) {
+		return false, nil
+	}
+	return true, s.write(kept)
+}
+
+// write replaces the history with entries, through a rename so a crash leaves
+// the old file or the new one and never half of either
+func (s *store) write(entries []entry) error {
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return err
