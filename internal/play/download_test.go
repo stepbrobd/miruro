@@ -289,6 +289,30 @@ func TestDownloadSkipsExistingEpisode(t *testing.T) {
 	}
 }
 
+// Saved is the test Download skips an episode by, so the two have to agree on
+// the file an episode lands in and on an empty one not being an episode
+func TestSaved(t *testing.T) {
+	dir, name := t.TempDir(), "Show: One - E1"
+	if Saved(dir, name) {
+		t.Error("an episode never written reads as saved")
+	}
+	// the colon is one safeName replaces, so the check has to look for the file
+	// the download wrote rather than the name it was asked for
+	dest := filepath.Join(dir, "Show- One - E1.mp4")
+	if err := os.WriteFile(dest, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if Saved(dir, name) {
+		t.Error("an empty file reads as a saved episode")
+	}
+	if err := os.WriteFile(dest, []byte("finished episode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !Saved(dir, name) {
+		t.Error("the episode on disk does not read as saved")
+	}
+}
+
 // a sidecar named for its language is what a player auto-loads next to the
 // video, and two tracks naming one language must not overwrite each other
 func TestSidecarNames(t *testing.T) {

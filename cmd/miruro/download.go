@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,18 @@ import (
 )
 
 func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
+	// an episode already on disk is left out before anything is resolved for it,
+	// so a rerun over a finished range asks the api nothing and draws no bars
+	all := len(eps)
+	eps = slices.DeleteFunc(slices.Clone(eps), func(ep float64) bool {
+		return play.Saved(s.cfg.DownloadDir, episodeName(s.title, ep))
+	})
+	there := all - len(eps)
+	if len(eps) == 0 {
+		fmt.Printf("%s already in %s\n", plural(there, "episode", "episodes"), s.cfg.DownloadDir)
+		return nil
+	}
+
 	px, err := play.StartProxy(ctx, s.hc)
 	if err != nil {
 		return err
@@ -95,8 +108,17 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	}
 	// the default level is warn, so a result logged as info never reached the
 	// user and a long run ended without saying where anything landed
-	fmt.Printf("saved %s to %s\n", plural(len(eps), "episode", "episodes"), s.cfg.DownloadDir)
+	said := fmt.Sprintf("saved %s to %s", plural(len(eps), "episode", "episodes"), s.cfg.DownloadDir)
+	if there > 0 {
+		said += fmt.Sprintf(", %d already there", there)
+	}
+	fmt.Println(said)
 	return nil
+}
+
+// episodeName is what an episode is saved as, before the extension
+func episodeName(title string, ep float64) string {
+	return fmt.Sprintf("%s - E%s", title, num(ep))
 }
 
 // saver holds what every episode of one download run shares
@@ -177,7 +199,7 @@ func (s saver) from(ctx context.Context, res *upstream.Result, src source, strea
 	if !src.Attach {
 		subs = nil
 	}
-	name := fmt.Sprintf("%s - E%s", s.title, num(ep))
+	name := episodeName(s.title, ep)
 	cache := cacheDir(s.anilistID, ep, src.Category, src.Code, s.cfg.Quality)
 	return play.Download(ctx, s.media, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
 }

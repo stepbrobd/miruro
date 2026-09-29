@@ -677,6 +677,36 @@ func TestSaveFallsBackToAnotherStream(t *testing.T) {
 	savedEpisode(t, dir)
 }
 
+// an episode already on disk is left out before anything is resolved for it,
+// and a rerun over a finished range says so rather than drawing finished bars
+func TestDownloadLeavesEpisodesOnDiskAlone(t *testing.T) {
+	cdn := deadCDN(t, "/dead")
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1, 2}}, replies: map[string]reply{
+		"bonk": streams(upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4}),
+	}}
+	sv, dir := newSaver(t, b)
+	if err := os.WriteFile(filepath.Join(dir, "Show - E1.mp4"), []byte(episodeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	out := printed(t, func() error { return sv.download(ctx, []float64{1, 2}, Pin{}) })
+	if want := fmt.Sprintf("saved 1 episode to %s, 1 already there\n", dir); out != want {
+		t.Errorf("printed %q, want %q", out, want)
+	}
+	if n := b.listed(); n != 1 {
+		t.Errorf("listed %d episodes, want only the one missing", n)
+	}
+
+	out = printed(t, func() error { return sv.download(ctx, []float64{1, 2}, Pin{}) })
+	if want := fmt.Sprintf("2 episodes already in %s\n", dir); out != want {
+		t.Errorf("printed %q, want %q", out, want)
+	}
+	if n := b.listed(); n != 1 {
+		t.Errorf("a finished range was listed again, %d listings in all", n)
+	}
+}
+
 // a bulk run that falls to another rendition must say so, and the measure is
 // the source the pinned pick would have resolved
 func TestSaverWanted(t *testing.T) {

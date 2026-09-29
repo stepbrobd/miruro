@@ -39,7 +39,7 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 		return 0, err
 	}
 	name = safeName(name)
-	dest := filepath.Join(dir, name+".mp4")
+	dest := episodePath(dir, name)
 	// dest only ever appears via a .part rename, so it is always complete
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		if prog != nil {
@@ -85,6 +85,18 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 		log.Warn("subtitle not saved", "episode", name, "label", subLabel(sub), "err", err)
 	}
 	return missed, nil
+}
+
+// Saved reports whether the named episode is already on disk under dir, the
+// test Download skips an episode by
+func Saved(dir, name string) bool {
+	fi, err := os.Stat(episodePath(dir, safeName(name)))
+	return err == nil && fi.Size() > 0
+}
+
+// episodePath is where the episode a safe name names lands under dir
+func episodePath(dir, name string) string {
+	return filepath.Join(dir, name+".mp4")
 }
 
 // grab streams url to dest atomically
