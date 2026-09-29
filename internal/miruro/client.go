@@ -48,6 +48,12 @@ type Client struct {
 	// Bases are the mirror origins tried in order
 	Bases []string
 	HTTP  *http.Client
+	// Timeout bounds one request against one mirror, headers and body together,
+	// zero leaving it unbounded
+	// the transport's header timeout stops counting once the headers arrive, so
+	// without this an upstream that answers and then stalls mid-body hangs the
+	// run with no output
+	Timeout time.Duration
 
 	mu sync.Mutex
 	// base indexes the mirror that answered last, so one failure does not cost
@@ -65,15 +71,14 @@ func (c *Client) Name() string { return "miruro" }
 
 func New() *Client {
 	// the cloned default transport keeps HTTP/2 via ALPN, which passes the WAF
-	// ResponseHeaderTimeout excludes the body read, so Timeout backstops an
-	// upstream that answers and then stalls mid-body
 	// the largest payload, One Piece's episode list, reads in about 0.25s, so
-	// this bound cannot cut a real response short
+	// the two minute bound cannot cut a real response short
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 30 * time.Second
 	return &Client{
-		Bases: slices.Clone(mirrors),
-		HTTP:  &http.Client{Transport: tr, Timeout: 2 * time.Minute},
+		Bases:   slices.Clone(mirrors),
+		HTTP:    &http.Client{Transport: tr},
+		Timeout: 2 * time.Minute,
 	}
 }
 
@@ -139,7 +144,16 @@ const (
 // every mirror fronts the same backend, so walking them all on a backend status
 // would multiply the requests a provider outage already costs
 func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+ref, nil)
+	// the request runs under its own deadline, and every check below asks the
+	// caller's context, so a run the user stopped aborts while a request that
+	// ran out of time is the backend's failure
+	rctx := ctx
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, base+ref, nil)
 	if err != nil {
 		return nil, aborted, err
 	}
