@@ -4,7 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/charmbracelet/log"
 )
+
+// notice is one of the banners the site shows its users, an outage or a
+// slowdown the operators announce
+type notice struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+	Title   string `json:"title"`
+	Text    string `json:"text"`
+}
+
+// say is what a notice tells a user, the title the site leads with or the text
+// when it has none
+func (n notice) say() string {
+	if n.Title != "" {
+		return n.Title
+	}
+	return n.Text
+}
 
 // provider is one row of the config resource's provider table
 type provider struct {
@@ -34,9 +54,17 @@ func (c *Client) providerCodes(ctx context.Context) (map[string]string, error) {
 	}
 	var raw struct {
 		Streaming map[string]provider `json:"streaming"`
+		Messages  []notice            `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
+	}
+	// the table is read once per run, so each notice is said once, and at info
+	// so it reaches --verbose without crowding every run
+	for _, n := range raw.Messages {
+		if n.Enabled {
+			log.Info("miruro notice", "id", n.ID, "text", n.say())
+		}
 	}
 
 	codes := make(map[string]string, len(raw.Streaming))

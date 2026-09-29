@@ -1,13 +1,17 @@
 package miruro
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/log"
 
 	"ysun.co/miruro/internal/upstream"
 )
@@ -208,6 +212,36 @@ func TestProviderCodes(t *testing.T) {
 		}
 		if got := asked(); len(got) != 1 {
 			t.Errorf("the table was fetched %d times, want once", len(got))
+		}
+	})
+
+	// the site's banners announce outages and slowdowns, which is what a run
+	// that turns slow should be able to show under --verbose
+	t.Run("an enabled notice is said once", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/config": `{"streaming":{},"messages":[
+			{"id":"server-overload","enabled":true,"title":"servers may be slower than usual","text":"x"},
+			{"id":"discord","enabled":false,"title":"Join the Discord community"},
+			{"id":"untitled","enabled":true,"title":"","text":"only a text"}]}`})
+		var buf bytes.Buffer
+		level := log.GetLevel()
+		log.SetOutput(&buf)
+		log.SetLevel(log.InfoLevel)
+		defer func() {
+			log.SetOutput(os.Stderr)
+			log.SetLevel(level)
+		}()
+		c := client(srv)
+		for range 2 {
+			if _, err := c.providerCodes(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		said := buf.String()
+		if strings.Count(said, "servers may be slower than usual") != 1 || !strings.Contains(said, "only a text") {
+			t.Errorf("notices said:\n%s\nwant each enabled one once", said)
+		}
+		if strings.Contains(said, "Discord") {
+			t.Errorf("a disabled notice was said:\n%s", said)
 		}
 	})
 
