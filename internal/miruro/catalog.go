@@ -20,6 +20,9 @@ const (
 	// episodePage is the page size of an episode list, the one the site asks
 	// for, which holds every episode of the longest series in one page
 	episodePage = 10000
+	// specialRange is where the catalog numbers a title's specials, after any
+	// regular run, and the site keeps a special in that range off its list
+	specialRange = 20000
 )
 
 // episode is one row of the catalog's episode list
@@ -27,6 +30,7 @@ type episode struct {
 	// Number is a float so a fractional row parses, even though the play
 	// resource addresses whole episodes only
 	Number    float64    `json:"episode_number"`
+	Kind      string     `json:"kind"`
 	Title     string     `json:"title"`
 	CanonType string     `json:"canon_type"`
 	AiredOn   string     `json:"aired_on"`
@@ -68,13 +72,9 @@ func (c *Client) Episodes(ctx context.Context, m upstream.Media) (*upstream.Cata
 		return &upstream.Catalog{}, nil
 	}
 
-	// the site lists a film's one episode under its own kind and everything
-	// else as regular
-	kind := "regular"
-	if t.Format == "MOVIE" {
-		kind = "film"
-	}
-	q := url.Values{"kind": {kind}, "limit": {strconv.Itoa(episodePage)}}
+	// the catalog refuses a kind filter, so every kind arrives and listed drops
+	// what the site does not show
+	q := url.Values{"limit": {strconv.Itoa(episodePage)}}
 	body, err := c.get(ctx, "/api/v1/anime/"+url.PathEscape(t.ID)+"/episodes?"+q.Encode())
 	if err != nil {
 		return nil, err
@@ -121,6 +121,7 @@ func (t title) catalog(backend string, eps []episode, now time.Time) *upstream.C
 }
 
 // listed keeps the episodes the site's episode list shows
+// a special numbered in the special range is never listed
 // the list runs ahead of what has aired, so it is cut at the raw count or the
 // title's own total, and a title that counts no raw episodes keeps what the
 // sub and dub counts cover and what has aired
@@ -137,6 +138,7 @@ func (t title) listed(eps []episode, now time.Time) []episode {
 	var out []episode
 	for _, e := range eps {
 		switch {
+		case e.Kind == "special" && e.Number >= specialRange:
 		case limit != nil && e.Number > float64(*limit):
 		case counts.Raw != nil, e.Number <= float64(covered):
 			out = append(out, e)

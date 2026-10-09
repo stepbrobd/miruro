@@ -69,7 +69,8 @@ func TestEpisodes(t *testing.T) {
 				{"episode_number":2,"title":"","canon_type":"filler","duration_seconds":1500,
 				 "skip_times":[{"kind":"ed","start_seconds":0.8,"end_seconds":90},{"kind":"recap","start_seconds":0,"end_seconds":60}]},
 				{"episode_number":3,"title":"Killing Magic","canon_type":null,"duration_seconds":1500,"skip_times":[]},
-				{"episode_number":4,"title":"Not Out Yet","canon_type":null,"duration_seconds":null,"skip_times":[]}],
+				{"episode_number":4,"title":"Not Out Yet","canon_type":null,"duration_seconds":null,"skip_times":[]},
+				{"episode_number":20001,"kind":"special","title":"Magic Episode 1","canon_type":null,"duration_seconds":null,"skip_times":[]}],
 				"next_cursor":null,"has_more":false}`,
 		})
 
@@ -80,7 +81,8 @@ func TestEpisodes(t *testing.T) {
 		if cat.Title != "Frieren: Beyond Journey's End" {
 			t.Errorf("title = %q", cat.Title)
 		}
-		// the fourth runs past the raw count, so the site does not list it
+		// the fourth runs past the raw count and the special sits in the range
+		// the site keeps off its list, so neither is listed
 		sub := []upstream.Episode{
 			{Number: 1, Title: "The Journey's End"},
 			{Number: 2, Filler: true},
@@ -105,18 +107,18 @@ func TestEpisodes(t *testing.T) {
 		}
 		want := []string{
 			"/api/v1/anime?anilist_id_in=154587&limit=100",
-			"/api/v1/anime/o2Eqmv4w0JYgQJWQFi9CDDdH-PgffNpm/episodes?kind=regular&limit=10000",
+			"/api/v1/anime/o2Eqmv4w0JYgQJWQFi9CDDdH-PgffNpm/episodes?limit=10000",
 		}
 		if got := asked(); !slices.Equal(got, want) {
 			t.Errorf("asked %v, want %v", got, want)
 		}
 	})
 
-	t.Run("a film is listed under its own kind", func(t *testing.T) {
+	t.Run("a film lists its one episode", func(t *testing.T) {
 		srv, asked := api(t, map[string]string{
 			"/api/v1/anime": `{"data":[{"id":"f","external_ids":{"anilist":["199"]},"title":{"romaji":"Sen to Chihiro no Kamikakushi"},
 				"format":"MOVIE","status":"FINISHED","episode_count":1,"episode_counts":{"raw":1,"sub":1,"dub":1}}]}`,
-			"/api/v1/anime/f/episodes": `{"data":[{"episode_number":1,"title":"","canon_type":null,"skip_times":[]}],"has_more":false}`,
+			"/api/v1/anime/f/episodes": `{"data":[{"episode_number":1,"kind":"film","title":"","canon_type":null,"skip_times":[]}],"has_more":false}`,
 		})
 		cat, err := client(srv).Episodes(ctx, upstream.Media{ID: 199})
 		if err != nil {
@@ -125,8 +127,8 @@ func TestEpisodes(t *testing.T) {
 		if len(cat.Sub) != 1 || len(cat.Dub) != 1 {
 			t.Errorf("catalog = %+v, want the one episode in both tracks", cat)
 		}
-		if got := asked()[1]; got != "/api/v1/anime/f/episodes?kind=film&limit=10000" {
-			t.Errorf("asked %q, want the film kind", got)
+		if got := asked()[1]; got != "/api/v1/anime/f/episodes?limit=10000" {
+			t.Errorf("asked %q, want the limit alone", got)
 		}
 	})
 
@@ -225,5 +227,20 @@ func TestListed(t *testing.T) {
 	capped.EpisodeCount, capped.EpisodeCounts.Raw = &two, &one
 	if got := numbers(capped); !slices.Equal(got, []float64{1}) {
 		t.Errorf("capped = %v, want the lower of the total and the raw count", got)
+	}
+
+	// the catalog numbers specials from 20001 beside the regular run, and the
+	// site lists a special only below that range
+	specials := []episode{
+		{Number: 1, Kind: "regular", AiredOn: "2026-09-01"},
+		{Number: 2, Kind: "special", AiredOn: "2026-09-01"},
+		{Number: 20001, Kind: "special", AiredOn: "2026-09-01"},
+	}
+	var got []float64
+	for _, e := range airing.listed(specials, now) {
+		got = append(got, e.Number)
+	}
+	if !slices.Equal(got, []float64{1, 2}) {
+		t.Errorf("specials = %v, want the ones below the special range", got)
 	}
 }
