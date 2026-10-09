@@ -18,10 +18,10 @@ var realPause = pause
 
 // the suite drives the retry and segment paths on purpose, so it must not sleep
 // through the real backoff or the pacing between segment requests
-// TestRetrySchedule and TestPacerSpacesRequests cover what is skipped here
+// TestRetrySchedule and the pacer tests in upstream cover what is skipped here
 func TestMain(m *testing.M) {
 	pause = func(int, error) time.Duration { return 0 }
-	paced.gap = 0
+	paced.Every = 0
 	os.Exit(m.Run())
 }
 

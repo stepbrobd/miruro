@@ -1011,39 +1011,6 @@ func TestFetchSegmentsReportsTheShareBothHaveReached(t *testing.T) {
 	}
 }
 
-// requests are spaced from when each asks, so a caller that waited elsewhere
-// does not bank its turns into a burst, and a canceled caller stops waiting
-func TestPacerSpacesRequests(t *testing.T) {
-	p := &pacer{gap: 20 * time.Millisecond}
-	ctx := context.Background()
-	start := time.Now()
-	for range 5 {
-		if err := p.wait(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if took := time.Since(start); took < 80*time.Millisecond {
-		t.Errorf("five turns took %v, want at least four gaps", took)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-	start = time.Now()
-	for range 3 {
-		p.wait(ctx)
-	}
-	if took := time.Since(start); took < 40*time.Millisecond {
-		t.Errorf("three turns after an idle spell took %v, want at least two gaps", took)
-	}
-
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	p.gap = time.Hour
-	p.wait(ctx)
-	if err := p.wait(canceled); !errors.Is(err, context.Canceled) {
-		t.Errorf("a canceled wait returned %v", err)
-	}
-}
-
 // an audio segment that fails is named as one, since the video's index alone
 // would send the reader to the wrong playlist
 func TestFetchSegmentsNamesAFailedAudioSegment(t *testing.T) {

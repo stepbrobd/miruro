@@ -35,40 +35,9 @@ const segWorkers = 4
 // hop's CDN refuses past about 250 requests in ten seconds, which four workers
 // on its small audio segments reached in eight, and 20 a second is slower than
 // the bandwidth on anything but segments that small
-var paced = &pacer{gap: 50 * time.Millisecond}
-
-// pacer spaces requests at least gap apart across the goroutines sharing it
-// a turn is counted from when it is asked for, so time spent waiting on
-// anything else is never banked into a burst
-type pacer struct {
-	gap  time.Duration
-	mu   sync.Mutex
-	next time.Time
-}
-
-// wait holds the caller until its turn, or until ctx ends
-func (p *pacer) wait(ctx context.Context) error {
-	p.mu.Lock()
-	at := time.Now()
-	if p.next.After(at) {
-		at = p.next
-	}
-	p.next = at.Add(p.gap)
-	p.mu.Unlock()
-
-	d := time.Until(at)
-	if d <= 0 {
-		return ctx.Err()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
+// a burst of one banks nothing, so time spent waiting on anything else never
+// turns into a burst
+var paced = &upstream.Pacer{Burst: 1, Every: 50 * time.Millisecond}
 
 // aesKeyLen is the one key size AES-128 media streams use, per RFC 8216
 const aesKeyLen = 16
@@ -749,7 +718,7 @@ spawn:
 			// a segment already on disk asks nothing of the CDN, so only the
 			// ones still to fetch take a turn
 			if !cached[i][n] {
-				if err := paced.wait(ctx); err != nil {
+				if err := paced.Wait(ctx); err != nil {
 					<-sem
 					break spawn
 				}
