@@ -68,6 +68,11 @@ type Client struct {
 	// codesMu is only ever taken before mu
 	codesMu sync.Mutex
 	codes   map[string]string
+
+	// preloaded is what Preload kept, the records carrying each AniList id it
+	// was asked about
+	preloadMu sync.Mutex
+	preloaded map[int][]title
 }
 
 // Name is the backend name, what a config entry and a log line call it

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/adrg/xdg"
@@ -161,5 +165,57 @@ func TestRunNew(t *testing.T) {
 	t.Cleanup(func() { newCmd.SetContext(prev) })
 	if err := runNew(newCmd, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want the interruption", err)
+	}
+}
+
+// cloudflare in front of the catalog refuses a burst of requests, so new looks
+// the whole history up in one request and lists each title from what it
+// answered
+func TestRunNewLooksHistoryUpAtOnce(t *testing.T) {
+	stateRoot(t)
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	xdg.Reload()
+
+	var lookups atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/anime":
+			lookups.Add(1)
+			io.WriteString(w, `{"data":[
+				{"id":"f","external_ids":{"anilist":["154587"]},"title":{"romaji":"Sousou no Frieren"},"format":"TV","episode_counts":{"raw":3,"sub":3}},
+				{"id":"o","external_ids":{"anilist":["21"]},"title":{"romaji":"ONE PIECE"},"format":"TV","episode_counts":{"raw":2}}],
+				"has_more":false}`)
+		case "/api/v1/anime/f/episodes", "/api/v1/anime/o/episodes":
+			io.WriteString(w, `{"data":[{"episode_number":1,"kind":"regular"},{"episode_number":2,"kind":"regular"},
+				{"episode_number":3,"kind":"regular"}],"has_more":false}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MIRURO_MIRRORS", srv.URL)
+
+	for _, e := range []entry{
+		{AnilistID: 154587, Title: "Frieren", Episode: 1, Category: upstream.Sub},
+		{AnilistID: 21, Title: "ONE PIECE", Episode: 1, Category: upstream.Sub},
+	} {
+		if err := openStore().save(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := newCmd.Context()
+	newCmd.SetContext(context.Background())
+	t.Cleanup(func() { newCmd.SetContext(prev) })
+
+	out := printed(t, func() error { return runNew(newCmd, nil) })
+	for _, want := range []string{"2 newer, up to 3", "1 newer, up to 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("printed %q, want a title with %q", out, want)
+		}
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Errorf("history took %d lookup requests, want 1", got)
 	}
 }

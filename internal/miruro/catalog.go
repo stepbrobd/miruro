@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"ysun.co/miruro/internal/upstream"
@@ -178,27 +180,20 @@ func (e episode) skips() []upstream.SkipRange {
 	return out
 }
 
-// lookup finds the catalog record carrying an AniList id
+// lookup finds the catalog record carrying an AniList id, from what Preload
+// kept when it covered the id
 // two records carrying one id cannot be told apart, so that is an error rather
 // than a guess
 func (c *Client) lookup(ctx context.Context, anilist int) (title, bool, error) {
-	id := strconv.Itoa(anilist)
-	q := url.Values{"anilist_id_in": {id}, "limit": {strconv.Itoa(lookupPage)}}
-	body, err := c.get(ctx, "/api/v1/anime?"+q.Encode())
-	if err != nil {
-		return title{}, false, err
-	}
-	var hits struct {
-		Data []title `json:"data"`
-	}
-	if err := json.Unmarshal(body, &hits); err != nil {
-		return title{}, false, err
-	}
-	var found []title
-	for _, t := range hits.Data {
-		if slices.Contains(t.ExternalIDs["anilist"], id) {
-			found = append(found, t)
+	c.preloadMu.Lock()
+	found, ok := c.preloaded[anilist]
+	c.preloadMu.Unlock()
+	if !ok {
+		carried, err := c.titles(ctx, []int{anilist})
+		if err != nil {
+			return title{}, false, err
 		}
+		found = carried[anilist]
 	}
 	switch len(found) {
 	case 0:
@@ -208,4 +203,76 @@ func (c *Client) lookup(ctx context.Context, anilist int) (title, bool, error) {
 	default:
 		return title{}, false, fmt.Errorf("miruro carries AniList %d as %d titles", anilist, len(found))
 	}
+}
+
+// Preload looks many AniList ids up at once and keeps what the catalog
+// answered for the life of the client, so Episodes on any of them sends no
+// lookup of its own
+// a failure still keeps what the requests before it answered
+// nothing it keeps is refreshed, which suits a command listing many titles once
+func (c *Client) Preload(ctx context.Context, ids []int) error {
+	carried, err := c.titles(ctx, ids)
+	c.preloadMu.Lock()
+	defer c.preloadMu.Unlock()
+	if c.preloaded == nil {
+		c.preloaded = map[int][]title{}
+	}
+	maps.Copy(c.preloaded, carried)
+	return err
+}
+
+// titles asks the catalog for the records carrying each AniList id, at most
+// lookupPage ids to a request in ascending order, the way the site matches a
+// list against the catalog
+// every id of a request that succeeded is in the answer, with no records where
+// the catalog carries none, and a failure returns what the requests before it
+// answered
+func (c *Client) titles(ctx context.Context, ids []int) (map[int][]title, error) {
+	carried := map[int][]title{}
+	for chunk := range slices.Chunk(slices.Compact(slices.Sorted(slices.Values(ids))), lookupPage) {
+		found, err := c.carrying(ctx, chunk)
+		if err != nil {
+			return carried, err
+		}
+		maps.Copy(carried, found)
+	}
+	return carried, nil
+}
+
+// carrying asks one lookup request for the records carrying each of ids
+func (c *Client) carrying(ctx context.Context, ids []int) (map[int][]title, error) {
+	asked := make(map[string]int, len(ids))
+	in := make([]string, len(ids))
+	found := make(map[int][]title, len(ids))
+	for i, id := range ids {
+		in[i] = strconv.Itoa(id)
+		asked[in[i]] = id
+		found[id] = nil
+	}
+	q := url.Values{"anilist_id_in": {strings.Join(in, ",")}, "limit": {strconv.Itoa(lookupPage)}}
+	body, err := c.get(ctx, "/api/v1/anime?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var hits struct {
+		Data    []title `json:"data"`
+		HasMore bool    `json:"has_more"`
+	}
+	if err := json.Unmarshal(body, &hits); err != nil {
+		return nil, err
+	}
+	// a record on the next page would leave the id carrying it looking
+	// uncarried
+	if hits.HasMore {
+		return nil, fmt.Errorf("miruro carries more than %d records for %d AniList ids", lookupPage, len(ids))
+	}
+	for _, t := range hits.Data {
+		// a record naming one id twice is still one record
+		for _, a := range slices.Compact(slices.Sorted(slices.Values(t.ExternalIDs["anilist"]))) {
+			if id, ok := asked[a]; ok {
+				found[id] = append(found[id], t)
+			}
+		}
+	}
+	return found, nil
 }

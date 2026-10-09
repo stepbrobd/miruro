@@ -47,11 +47,26 @@ func runNew(cmd *cobra.Command, _ []string) error {
 		client.Bases = cfg.Mirrors
 	}
 
+	preload(cmd.Context(), client, entries)
 	found := newer(cmd.Context(), enabled(all(client), cfg.Backends), entries)
 	if err := cmd.Context().Err(); err != nil {
 		return err
 	}
 	return showNew(os.Stdout, found)
+}
+
+// preload looks every title in history up in as few requests as the catalog
+// takes, where listing each title would otherwise spend one finding it
+// a failure leaves each title to a lookup of its own, which says per title
+// what went wrong
+func preload(ctx context.Context, client *miruro.Client, entries []entry) {
+	ids := make([]int, len(entries))
+	for i, e := range entries {
+		ids[i] = e.AnilistID
+	}
+	if err := client.Preload(ctx, ids); err != nil && ctx.Err() == nil {
+		log.Warn("history not looked up at once", "err", err)
+	}
 }
 
 // showNew lists the titles with episodes past the one watched, and warns for

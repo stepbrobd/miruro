@@ -2,12 +2,14 @@ package miruro
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,4 +254,123 @@ func TestListed(t *testing.T) {
 	if got := numbers(uncounted, specials); !slices.Equal(got, []float64{1, 2}) {
 		t.Errorf("specials = %v, want the ones below the special range", got)
 	}
+}
+
+// one lookup request answers for many titles, in the shape the site sends when
+// it matches a list against the catalog, and a title it covered is listed
+// without one of its own
+func TestPreload(t *testing.T) {
+	ctx := context.Background()
+	records := `{"data":[
+		{"id":"f","external_ids":{"anilist":["154587","154587"]},"title":{"romaji":"Sousou no Frieren"},"format":"TV","episode_counts":{"sub":1}},
+		{"id":"a","external_ids":{"anilist":["21"]},"title":{"romaji":"ONE PIECE"},"format":"TV"},
+		{"id":"b","external_ids":{"anilist":["21"]},"title":{"romaji":"ONE PIECE again"},"format":"TV"}],
+		"next_cursor":null,"has_more":false}`
+
+	t.Run("looks up every id at once and lists from what it kept", func(t *testing.T) {
+		srv, asked := api(t, map[string]string{
+			"/api/v1/anime":            records,
+			"/api/v1/anime/f/episodes": `{"data":[{"episode_number":1,"kind":"regular","title":"","skip_times":[]}],"has_more":false}`,
+		})
+		c := client(srv)
+		if err := c.Preload(ctx, []int{154587, 5114, 21, 154587}); err != nil {
+			t.Fatal(err)
+		}
+		cat, err := c.Episodes(ctx, upstream.Media{ID: 154587})
+		if err != nil || len(cat.Sub) != 1 {
+			t.Fatalf("catalog = %+v, %v, want the one episode", cat, err)
+		}
+		if cat, err := c.Episodes(ctx, upstream.Media{ID: 5114}); err != nil || len(cat.Refs) != 0 {
+			t.Errorf("catalog = %+v, %v, want an id the catalog does not carry to be empty", cat, err)
+		}
+		if _, err := c.Episodes(ctx, upstream.Media{ID: 21}); err == nil || !strings.Contains(err.Error(), "2 titles") {
+			t.Errorf("err = %v, want the ambiguity named as a single lookup names it", err)
+		}
+		want := []string{
+			"/api/v1/anime?anilist_id_in=21%2C5114%2C154587&limit=100",
+			"/api/v1/anime/f/episodes?limit=10000",
+		}
+		if got := asked(); !slices.Equal(got, want) {
+			t.Errorf("asked %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a hundred ids to a request", func(t *testing.T) {
+		srv, asked := api(t, map[string]string{"/api/v1/anime": `{"data":[],"has_more":false}`})
+		ids := make([]int, 150)
+		for i := range ids {
+			ids[i] = i + 1
+		}
+		if err := client(srv).Preload(ctx, ids); err != nil {
+			t.Fatal(err)
+		}
+		got := asked()
+		if len(got) != 2 || !strings.Contains(got[0], "%2C100&") || !strings.Contains(got[1], "=101%2C") {
+			t.Errorf("asked %v, want 1 through 100 and then 101 through 150", got)
+		}
+	})
+
+	// two records naming one id are two titles whatever keys they carry, the
+	// way a single lookup reads them
+	t.Run("two records without a key are still two", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/v1/anime": `{"data":[
+			{"external_ids":{"anilist":["21"]}},{"external_ids":{"anilist":["21"]}}],"has_more":false}`})
+		c := client(srv)
+		if err := c.Preload(ctx, []int{21}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Episodes(ctx, upstream.Media{ID: 21}); err == nil || !strings.Contains(err.Error(), "2 titles") {
+			t.Errorf("err = %v, want the ambiguity named", err)
+		}
+	})
+
+	// a history past a hundred titles takes several requests, and one failing
+	// leaves the titles the others answered for looked up
+	t.Run("a failed request keeps what the ones before it answered", func(t *testing.T) {
+		var lookups atomic.Int64
+		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/anime":
+				if lookups.Add(1) > 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"data":[{"id":"x","external_ids":{"anilist":["1"]},"title":{"romaji":"One"},"format":"TV"}],"has_more":false}`)
+			case "/api/v1/anime/x/episodes":
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"data":[{"episode_number":1,"kind":"regular"}],"has_more":false}`)
+			}
+		})
+		ids := make([]int, 150)
+		for i := range ids {
+			ids[i] = i + 1
+		}
+		c := client(srv)
+		if err := c.Preload(ctx, ids); !errors.Is(err, upstream.ErrUnreachable) {
+			t.Fatalf("err = %v, want the second request's failure", err)
+		}
+		if cat, err := c.Episodes(ctx, upstream.Media{ID: 1}); err != nil || len(cat.Sub) != 1 {
+			t.Errorf("catalog = %+v, %v, want the title the first request found", cat, err)
+		}
+		if cat, err := c.Episodes(ctx, upstream.Media{ID: 2}); err != nil || len(cat.Refs) != 0 {
+			t.Errorf("catalog = %+v, %v, want a title the first request did not find to be empty", cat, err)
+		}
+		if got := lookups.Load(); got != 2 {
+			t.Errorf("lookups = %d, want the two requests Preload sent and none after", got)
+		}
+	})
+
+	// a lookup answers one page, so a second would leave the ids whose records
+	// it holds looking uncarried
+	t.Run("a lookup running past one page is an error", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/v1/anime": `{"data":[],"next_cursor":"x","has_more":true}`})
+		c := client(srv)
+		if err := c.Preload(ctx, []int{1, 2}); err == nil {
+			t.Error("a truncated lookup was kept as whole")
+		}
+		if _, err := c.Episodes(ctx, upstream.Media{ID: 1}); err == nil {
+			t.Error("a truncated lookup listed a title")
+		}
+	})
 }
