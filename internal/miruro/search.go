@@ -14,6 +14,10 @@ import (
 // refuses any other limit, so this is the size of the site's search page
 const searchPage = 15
 
+// searchSort is the order the site's search asks for when its page names none,
+// sent because the catalog refuses query shapes the site does not send
+const searchSort = "-popularity"
+
 // title is one record of the catalog's anime resource, the fields read here
 type title struct {
 	// ID is the catalog's own key for the title
@@ -72,7 +76,7 @@ func (t title) media(id int) upstream.Media {
 // empty once there is no next page
 // the resource is anime only, where the pipe's search mixed in manga
 func (c *Client) Search(ctx context.Context, query, cursor string) ([]upstream.Media, string, error) {
-	q := url.Values{"q": {query}, "limit": {strconv.Itoa(searchPage)}}
+	q := url.Values{"q": {query}, "limit": {strconv.Itoa(searchPage)}, "sort": {searchSort}}
 	if cursor != "" {
 		q.Set("cursor", cursor)
 	}

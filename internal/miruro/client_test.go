@@ -275,8 +275,8 @@ func TestSearch(t *testing.T) {
 		if asked.URL.Path != "/api/v1/anime" {
 			t.Errorf("path = %q, want the anime resource", asked.URL.Path)
 		}
-		if q := asked.URL.Query(); q.Get("q") != "attack on titan" || q.Get("limit") != "15" || len(q) != 2 {
-			t.Errorf("query = %v, want the term and the site's page size and nothing else", q)
+		if q := asked.URL.Query(); q.Get("q") != "attack on titan" || q.Get("limit") != "15" || q.Get("sort") != "-popularity" || len(q) != 3 {
+			t.Errorf("query = %v, want the term, the site's page size and its default sort and nothing else", q)
 		}
 	})
 
@@ -295,8 +295,8 @@ func TestSearch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if q := asked.URL.Query(); q.Get("cursor") != "c1_abc" || q.Get("q") != "titan" || q.Get("limit") != "15" || len(q) != 3 {
-			t.Errorf("query = %v, want the term, the page size and the cursor", q)
+		if q := asked.URL.Query(); q.Get("cursor") != "c1_abc" || q.Get("q") != "titan" || q.Get("limit") != "15" || q.Get("sort") != "-popularity" || len(q) != 4 {
+			t.Errorf("query = %v, want the term, the page size, the sort and the cursor", q)
 		}
 		if len(media) != 1 || next != "" {
 			t.Errorf("media = %v, next = %q, want the last page and no cursor past it", media, next)
