@@ -198,35 +198,47 @@ func TestListed(t *testing.T) {
 		{Number: 3, AiredOn: "2026-10-06"},
 		{Number: 4},
 	}
-	numbers := func(t title) []float64 {
+	numbers := func(t title, eps []episode) []float64 {
 		var out []float64
 		for _, e := range t.listed(eps, now) {
 			out = append(out, e.Number)
 		}
 		return out
 	}
-	one, two := 1, 2
+	one, two, four := 1, 2, 4
 
 	var airing title
-	if got := numbers(airing); !slices.Equal(got, []float64{1, 2, 4}) {
+	if got := numbers(airing, eps); !slices.Equal(got, []float64{1, 2, 4}) {
 		t.Errorf("uncounted = %v, want what has aired plus the undated one", got)
 	}
 	airing.Status = "NOT_YET_RELEASED"
-	if got := numbers(airing); !slices.Equal(got, []float64{1, 2}) {
+	if got := numbers(airing, eps); !slices.Equal(got, []float64{1, 2}) {
 		t.Errorf("unreleased = %v, want only what has aired", got)
 	}
 
 	var counted title
 	counted.EpisodeCounts.Dub = &two
 	counted.Status = "NOT_YET_RELEASED"
-	if got := numbers(counted); !slices.Equal(got, []float64{1, 2}) {
+	if got := numbers(counted, eps); !slices.Equal(got, []float64{1, 2}) {
 		t.Errorf("counted = %v, want what the dub count covers", got)
 	}
 
-	var capped title
-	capped.EpisodeCount, capped.EpisodeCounts.Raw = &two, &one
-	if got := numbers(capped); !slices.Equal(got, []float64{1}) {
-		t.Errorf("capped = %v, want the lower of the total and the raw count", got)
+	var raw title
+	raw.EpisodeCounts.Raw = &one
+	if got := numbers(raw, eps); !slices.Equal(got, []float64{1}) {
+		t.Errorf("raw = %v, want the raw count to cut a title with no total", got)
+	}
+
+	// past what the counts cover, a counted raw track leaves the undated fourth
+	// unlisted while the second, aired, stays
+	var total title
+	total.EpisodeCount, total.EpisodeCounts.Raw = &four, &one
+	if got := numbers(total, eps); !slices.Equal(got, []float64{1, 2}) {
+		t.Errorf("total = %v, want the total to cut and the aired past the raw count", got)
+	}
+	total.EpisodeCount = &two
+	if got := numbers(total, eps); !slices.Equal(got, []float64{1, 2}) {
+		t.Errorf("total = %v, want nothing past the total", got)
 	}
 
 	// the catalog numbers specials from 20001 beside the regular run, and the
@@ -236,11 +248,8 @@ func TestListed(t *testing.T) {
 		{Number: 2, Kind: "special", AiredOn: "2026-09-01"},
 		{Number: 20001, Kind: "special", AiredOn: "2026-09-01"},
 	}
-	var got []float64
-	for _, e := range airing.listed(specials, now) {
-		got = append(got, e.Number)
-	}
-	if !slices.Equal(got, []float64{1, 2}) {
+	var uncounted title
+	if got := numbers(uncounted, specials); !slices.Equal(got, []float64{1, 2}) {
 		t.Errorf("specials = %v, want the ones below the special range", got)
 	}
 }

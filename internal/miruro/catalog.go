@@ -120,34 +120,32 @@ func (t title) catalog(backend string, eps []episode, now time.Time) *upstream.C
 	return cat
 }
 
-// listed keeps the episodes the site's episode list shows
+// listed keeps the episodes the site's episode list shows, the way at() in its
+// Seasons chunk filters them
 // a special numbered in the special range is never listed
-// the list runs ahead of what has aired, so it is cut at the raw count or the
-// title's own total, and a title that counts no raw episodes keeps what the
-// sub and dub counts cover and what has aired
+// the list runs ahead of what has aired, so it is cut at the title's own total,
+// or at the raw count where the total is unknown
+// past what the counts cover, an episode is listed once its air date has
+// passed, and one with no air date only while the raw track is uncounted and
+// the title has started
 func (t title) listed(eps []episode, now time.Time) []episode {
 	counts := t.EpisodeCounts
-	var limit *int
-	for _, n := range []*int{t.EpisodeCount, counts.Raw} {
-		if n != nil && (limit == nil || *n < *limit) {
-			limit = n
-		}
-	}
-	covered := max(deref(counts.Sub), deref(counts.Dub))
+	limit := cmp.Or(t.EpisodeCount, counts.Raw)
+	covered := max(deref(counts.Raw), deref(counts.Sub), deref(counts.Dub))
 
 	var out []episode
 	for _, e := range eps {
 		switch {
 		case e.Kind == "special" && e.Number >= specialRange:
 		case limit != nil && e.Number > float64(*limit):
-		case counts.Raw != nil, e.Number <= float64(covered):
+		case e.Number <= float64(covered):
 			out = append(out, e)
 		default:
 			if aired, err := time.Parse(time.DateOnly, e.AiredOn); err == nil {
 				if !aired.After(now) {
 					out = append(out, e)
 				}
-			} else if t.Status != "NOT_YET_RELEASED" {
+			} else if counts.Raw == nil && t.Status != "NOT_YET_RELEASED" {
 				out = append(out, e)
 			}
 		}
