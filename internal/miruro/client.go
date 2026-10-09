@@ -55,6 +55,10 @@ type Client struct {
 	// run with no output
 	Timeout time.Duration
 
+	// pace spaces the requests this client sends and holds them through a 429,
+	// the zero pacer spacing none of them
+	pace upstream.Pacer
+
 	mu sync.Mutex
 	// base indexes the mirror that answered last, so one failure does not cost
 	// every later request the same walk
@@ -79,6 +83,7 @@ func New() *Client {
 		Bases:   slices.Clone(mirrors),
 		HTTP:    &http.Client{Transport: tr},
 		Timeout: 2 * time.Minute,
+		pace:    upstream.Pacer{Burst: paceBurst, Every: paceEvery},
 	}
 }
 
@@ -96,7 +101,7 @@ func (c *Client) get(ctx context.Context, ref string) ([]byte, error) {
 	var last error
 	for i := range c.Bases {
 		idx := (start + i) % len(c.Bases)
-		body, v, err := c.attempt(ctx, c.Bases[idx], ref)
+		body, v, err := c.sitOut(ctx, c.Bases[idx], ref)
 		switch v {
 		case served:
 			c.prefer(idx)
@@ -138,12 +143,38 @@ const (
 	aborted
 )
 
+// sitOut runs attempt against one mirror, and sits out a 429 whose wait is no
+// longer than maxHold, holding every other request of this client with it
+// cloudflare counts each mirror apart, so moving on would only shift the load
+// the 429 asked to shed onto the next one
+// a 429 therefore ends the walk like any other answer from the backend
+func (c *Client) sitOut(ctx context.Context, base, ref string) ([]byte, verdict, error) {
+	for n := 0; ; n++ {
+		body, v, err := c.attempt(ctx, base, ref)
+		var l limited
+		if !errors.As(err, &l) || time.Duration(l) > maxHold {
+			return body, v, err
+		}
+		// the hold stands even when this request gives up, so the requests
+		// behind it do not walk into the same limit
+		c.pace.Hold(time.Duration(l))
+		if n == holds {
+			return body, v, err
+		}
+	}
+}
+
 // attempt runs the request against one mirror and reports what get should do
 // next
 // a transport failure and a WAF rejection are what another mirror could answer
 // every mirror fronts the same backend, so walking them all on a backend status
 // would multiply the requests a provider outage already costs
 func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict, error) {
+	// the turn is waited for before the deadline starts, so time spent queued
+	// behind other requests is never taken from this one
+	if err := c.pace.Wait(ctx); err != nil {
+		return nil, aborted, err
+	}
 	// the request runs under its own deadline, and every check below asks the
 	// caller's context, so a run the user stopped aborts while a request that
 	// ran out of time is the backend's failure
@@ -199,7 +230,11 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 	case resp.StatusCode == http.StatusForbidden && isHTML:
 		return nil, unreachable, upstream.ErrBlocked
 	case resp.StatusCode >= 400:
-		return nil, refused, fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, refusal(resp.StatusCode, kind, body))
+		err := fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, refusal(resp.StatusCode, kind, body))
+		if d, ok := retryAfter(resp.Header, time.Now()); ok && resp.StatusCode == http.StatusTooManyRequests {
+			err = fmt.Errorf("%w: %w", err, limited(d))
+		}
+		return nil, refused, err
 	case isHTML:
 		return nil, refused, fmt.Errorf("%w: miruro %s answered html", upstream.ErrUnreachable, req.URL.Path)
 	}
