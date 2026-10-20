@@ -937,6 +937,35 @@ func TestSaverWanted(t *testing.T) {
 	}
 }
 
+// a pinned provider that does not list an episode leaves the walk to the
+// preference order, and whichever provider leads it is no measure of the
+// rendition the pin states, so a hard pin served softsub must still be named
+// once the run ends, while a bare pin states no rendition to swap from
+func TestDownloadNamesASwapPastAnAbsentPin(t *testing.T) {
+	cdn := deadCDN(t, "/dead")
+	for _, tc := range []struct {
+		pin  Pin
+		said bool
+	}{
+		{Pin{"kiwi", Hard}, true},
+		{Pin{Code: "kiwi"}, false},
+	} {
+		t.Run(tc.pin.String(), func(t *testing.T) {
+			// kiwi lacks episode 12 and nothing else carries a hardsub of it
+			b := &stub{t: t, name: "miruro", sub: map[string][]float64{"kiwi": {11}, "bee": {11, 12}}, caps: testCaps, replies: map[string]reply{
+				"bee": streams(upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "HD-1"}),
+			}}
+			sv, _ := newSaver(t, b)
+			said := captureLog(t)
+			printed(t, func() error { return sv.download(context.Background(), []float64{12}, tc.pin) })
+			told := said.String()
+			if got := strings.Contains(told, "different rendition than pinned episodes=E12"); got != tc.said {
+				t.Errorf("named the swap %v, want %v:\n%s", got, tc.said, told)
+			}
+		})
+	}
+}
+
 // fakePlay stands in for the player, fetching what it was handed the way a real
 // one does, so the proxy sees exactly what playback would have made it see
 func fakePlay(t *testing.T, tried *[]string) func(context.Context, upstream.Stream, *play.Tally) error {

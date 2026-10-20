@@ -236,6 +236,9 @@ func (s saver) save(ctx context.Context, ep float64, report play.Progress) (sour
 // elsewhere is measured against when the run reports a rendition swap
 // without a pin there is no expectation to diverge from, and the zero source
 // is what save reports for it
+// where the pinned provider does not list the episode the measure is the
+// rendition its pin states, since whichever provider leads the rest says
+// nothing of it, and a bare pin states none, so there is nothing to diverge from
 func (s saver) wanted(l *upstream.Listing, ep float64) (source, bool) {
 	if s.pin.Code == "" {
 		return source{}, false
@@ -245,7 +248,14 @@ func (s saver) wanted(l *upstream.Listing, ep float64) (source, bool) {
 		return source{}, false
 	}
 	rows := orderPinned(offers(avail, l.Caps, s.category, s.pin), s.pin)
-	return rows[0].source(s.category), true
+	switch {
+	case rows[0].Code == s.pin.Code:
+		return rows[0].source(s.category), true
+	case s.pin.Variant == "":
+		return source{}, false
+	default:
+		return offer{Pin: s.pin, declared: true}.source(s.category), true
+	}
 }
 
 // from downloads one episode from one stream of the source that served it
