@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,13 +40,15 @@ func TestPickQuality(t *testing.T) {
 			t.Errorf("pickQuality(%q) = (%q, %v), want (%q, %v)", q, s.URL, ok, wantURL, wantOK)
 		}
 	}
-	check("", "1440", true)     // default is best
-	check("best", "1440", true) // tallest
-	check("worst", "360", true) // shortest
-	check("720p", "720", true)  // exact
-	check("720", "720", true)   // exact, no suffix
-	check("144p", "", false)    // 144 must not match 1440
-	check("2160p", "", false)   // absent height
+	check("", "1440", true)      // default is best
+	check("best", "1440", true)  // tallest
+	check("worst", "360", true)  // shortest
+	check("720p", "720", true)   // exact
+	check("720", "720", true)    // exact, no suffix
+	check("144p", "", false)     // 144 must not match 1440
+	check("240p", "", false)     // nothing at or below
+	check("2160p", "1440", true) // absent height falls to the nearest lower
+	check("1000p", "720", true)  // nearest lower between labels
 
 	if _, ok := pickQuality([]Stream{{Quality: ""}, {Quality: "auto"}}, "720p"); ok {
 		t.Error("pickQuality matched on streams with no usable height label")
@@ -159,6 +162,10 @@ func TestRankHead(t *testing.T) {
 			t.Errorf("selected %q, want m720", s.URL)
 		}
 		s = top(t, hc, r, "2160p")
+		if s.URL != "m720" {
+			t.Errorf("selected %q, want the nearest lower m720", s.URL)
+		}
+		s = top(t, hc, r, "360p")
 		if s.URL != "m480" {
 			t.Errorf("selected %q, want the first mp4 m480", s.URL)
 		}
@@ -295,6 +302,201 @@ func TestRank(t *testing.T) {
 	}}
 	if got := Rank(ctx, hc, flagged, "best"); len(got) != 2 || got[0].URL != "first" || got[1].URL != "second" {
 		t.Errorf("Rank ignored the provider's default flag: %+v", got)
+	}
+}
+
+// cdn answers the master it holds for a url and 404 for any other, the way a
+// labeled stream that is no master fails its expansion
+type cdn map[string]string
+
+func (c cdn) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, ok := c[r.URL.String()]
+	status := http.StatusOK
+	if !ok {
+		status = http.StatusNotFound
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    r,
+	}, nil
+}
+
+// masterOf is a master playlist with one variant per height, in the order given
+func masterOf(heights ...int) string {
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+	for _, h := range heights {
+		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d\nindex-%d.m3u8\n", h, h*16/9, h, h)
+	}
+	return b.String()
+}
+
+// the head is what a caller plays and the rest is the order it retries in, so
+// each case asserts the whole list, a restricted master written url@height
+func TestRankQuality(t *testing.T) {
+	const master = "https://cdn.test/master.m3u8"
+	hls := func(url, quality string) Stream { return Stream{URL: url, Kind: HLS, Quality: quality} }
+	mp4 := func(url, quality string) Stream { return Stream{URL: url, Kind: MP4, Quality: quality} }
+
+	cases := []struct {
+		name    string
+		streams []Stream
+		// hosts serves the masters a case expands, and nil forbids the network
+		hosts   cdn
+		quality string
+		want    []string
+	}{
+		{
+			name:    "best takes the tallest labeled hls when listed lowest first",
+			streams: []Stream{hls("u360", "360p"), hls("u720", "720p"), hls("u1080", "1080p")},
+			quality: "best",
+			want:    []string{"u1080", "u360", "u720"},
+		},
+		{
+			name:    "the empty quality is best",
+			streams: []Stream{hls("u360", "360p"), hls("u720", "720p"), hls("u1080", "1080p")},
+			quality: "",
+			want:    []string{"u1080", "u360", "u720"},
+		},
+		{
+			name:    "best passes over an unlabeled master for the tallest label",
+			streams: []Stream{hls(master, ""), hls("u480", "480p"), hls("u720", "720p")},
+			quality: "best",
+			want:    []string{"u720", master, "u480"},
+		},
+		{
+			name:    "best with no hls label hands over the first hls unexpanded",
+			streams: []Stream{hls(master, ""), hls("u2", "")},
+			quality: "best",
+			want:    []string{master, "u2"},
+		},
+		{
+			name:    "best keeps hls ahead of a taller mp4",
+			streams: []Stream{mp4("m1080", "1080p"), hls("u360", "360p"), hls("u720", "720p")},
+			quality: "best",
+			want:    []string{"u720", "u360", "m1080"},
+		},
+		{
+			name:    "best between equal heights keeps the provider order",
+			streams: []Stream{hls("u720", "720p"), hls("a1080", "1080p"), hls("b1080", "1080p")},
+			quality: "best",
+			want:    []string{"a1080", "u720", "b1080"},
+		},
+		{
+			name:    "worst between equal heights keeps the provider order",
+			streams: []Stream{hls("u720", "720p"), hls("a360", "360p"), hls("b360", "360p")},
+			quality: "worst",
+			want:    []string{"a360", "u720", "b360"},
+		},
+		{
+			name:    "an exact height between equal labels keeps the provider order",
+			streams: []Stream{hls("u1080", "1080p"), hls("a720", "720p"), hls("b720", "720p")},
+			quality: "720p",
+			want:    []string{"a720", "u1080", "b720"},
+		},
+		{
+			name:    "a lower height between equal labels keeps the provider order",
+			streams: []Stream{hls("u1080", "1080p"), hls("a480", "480p"), hls("b480", "480p")},
+			hosts:   cdn{},
+			quality: "720p",
+			want:    []string{"a480", "u1080", "b480"},
+		},
+		{
+			name:    "a missing height falls to the nearest lower label",
+			streams: []Stream{hls("u360", "360p"), hls("u720", "720p")},
+			hosts:   cdn{},
+			quality: "1080p",
+			want:    []string{"u720", "u360"},
+		},
+		{
+			name:    "a missing height restricts an unlabeled master to its nearest lower variant",
+			streams: []Stream{hls(master, "")},
+			hosts:   cdn{master: masterOf(480, 720)},
+			quality: "1080p",
+			want:    []string{master + "@720", master},
+		},
+		{
+			name:    "an exact height in the master beats a lower label",
+			streams: []Stream{hls(master, ""), hls("u480", "480p")},
+			hosts:   cdn{master: masterOf(480, 720)},
+			quality: "720p",
+			want:    []string{master + "@720", master, "u480"},
+		},
+		{
+			name:    "a taller variant beats a shorter label",
+			streams: []Stream{hls(master, ""), hls("u360", "360p")},
+			hosts:   cdn{master: masterOf(480, 720)},
+			quality: "1080p",
+			want:    []string{master + "@720", master, "u360"},
+		},
+		{
+			name:    "a taller label beats a shorter variant",
+			streams: []Stream{hls(master, ""), hls("u720", "720p")},
+			hosts:   cdn{master: masterOf(360, 480)},
+			quality: "1080p",
+			want:    []string{"u720", master},
+		},
+		{
+			name:    "a label wins a tie with a variant",
+			streams: []Stream{hls(master, ""), hls("u720", "720p")},
+			hosts:   cdn{master: masterOf(480, 720)},
+			quality: "1080p",
+			want:    []string{"u720", master},
+		},
+		{
+			name:    "nothing lower keeps the first hls unrestricted",
+			streams: []Stream{hls("u1080", "1080p"), hls("u720", "720p")},
+			hosts:   cdn{},
+			quality: "480p",
+			want:    []string{"u1080", "u720"},
+		},
+		{
+			name:    "nothing lower in the master keeps it unrestricted",
+			streams: []Stream{hls(master, "")},
+			hosts:   cdn{master: masterOf(720, 1080)},
+			quality: "480p",
+			want:    []string{master},
+		},
+		{
+			name:    "a lower hls label stays ahead of an exact mp4",
+			streams: []Stream{mp4("m1080", "1080p"), hls("u480", "480p")},
+			hosts:   cdn{},
+			quality: "1080p",
+			want:    []string{"u480", "m1080"},
+		},
+		{
+			name:    "a missing height falls to the nearest lower mp4",
+			streams: []Stream{mp4("m480", "480p"), mp4("m720", "720p")},
+			quality: "1080p",
+			want:    []string{"m720", "m480"},
+		},
+		{
+			name:    "nothing lower among mp4 keeps the first",
+			streams: []Stream{mp4("m720", "720p"), mp4("m480", "480p")},
+			quality: "360p",
+			want:    []string{"m720", "m480"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hc := &http.Client{Transport: failTransport{t}}
+			if tc.hosts != nil {
+				hc.Transport = tc.hosts
+			}
+			var got []string
+			for _, s := range Rank(context.Background(), hc, &Result{Streams: tc.streams}, tc.quality) {
+				if s.Height > 0 {
+					got = append(got, fmt.Sprintf("%s@%d", s.URL, s.Height))
+				} else {
+					got = append(got, s.URL)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Rank(%q) = %v, want %v", tc.quality, got, tc.want)
+			}
+		})
 	}
 }
 

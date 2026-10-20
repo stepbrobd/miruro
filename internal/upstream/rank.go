@@ -83,9 +83,13 @@ func lead(streams []Stream) {
 }
 
 // preferred applies the quality heuristic, an author-owned decision
-// "best" hands mpv the hls master to negotiate
-// "worst" and an explicit height pick from the API quality labels, or from what
-// an expanded master carries when the streams carry none
+// "best" takes the tallest labeled hls stream, and hands mpv the first hls
+// master to negotiate when no hls stream carries a label
+// "worst" picks from the API quality labels, or from what an expanded master
+// carries when the streams carry none
+// an explicit height takes an exact label, then the tallest height at or below
+// it among the labels and an expanded master together, a label winning a tie
+// the way it wins an exact match, and the first hls when nothing is that short
 // a height found by expansion restricts the master rather than following the
 // variant URL out of it, since a bare variant loses the audio renditions the
 // master associates
@@ -93,19 +97,26 @@ func lead(streams []Stream) {
 // nothing playable at all
 func preferred(ctx context.Context, hc *http.Client, hls, mp4 []Stream, quality string) (Stream, bool) {
 	if len(hls) > 0 {
+		// best and worst settle on any label, an explicit height only on an exact
+		// one, since a label short of the ask yields to a master carrying the
+		// exact height or one between the two
+		label, ok := pickQuality(hls, quality)
+		if want := parseHeight(quality); ok && (want == 0 || parseHeight(label.Quality) == want) {
+			return label, true
+		}
 		if quality == "" || quality == "best" {
 			return hls[0], true
 		}
-		if s, ok := pickQuality(hls, quality); ok {
-			return s, true
-		}
 		if variants, err := expandMaster(ctx, hc, hls[0]); err == nil {
-			if v, ok := pickQuality(variants, quality); ok {
+			if v, vok := pickQuality(variants, quality); vok && (!ok || parseHeight(v.Quality) > parseHeight(label.Quality)) {
 				s := hls[0]
 				s.Quality = v.Quality
 				s.Height = parseHeight(v.Quality)
 				return s, true
 			}
+		}
+		if ok {
+			return label, true
 		}
 		return hls[0], true
 	}
@@ -120,29 +131,23 @@ func preferred(ctx context.Context, hc *http.Client, hls, mp4 []Stream, quality 
 
 // pickQuality selects a stream by request
 // "best" or "" takes the tallest labeled height, "worst" the shortest, and an
-// explicit "NNNp" an exact match
-// it reports false when no stream carries a usable height, so the caller can
-// expand a master or fall back to best
+// explicit "NNNp" the tallest at or below it, so an exact match when there is one
+// it reports false when no stream carries a usable height in that range, so the
+// caller can expand a master or fall back to the first stream
 func pickQuality(streams []Stream, quality string) (Stream, bool) {
-	if quality != "" && quality != "best" && quality != "worst" {
-		want := parseHeight(quality)
-		for _, s := range streams {
-			if h := parseHeight(s.Quality); h != 0 && h == want {
-				return s, true
-			}
-		}
-		return Stream{}, false
-	}
-
+	// an explicit height that does not parse caps at zero and admits nothing
+	explicit := quality != "" && quality != "best" && quality != "worst"
+	limit := parseHeight(quality)
 	tallest := quality != "worst"
 	var pick Stream
 	height := 0
 	for _, s := range streams {
 		h := parseHeight(s.Quality)
-		if h == 0 {
+		if h == 0 || (explicit && h > limit) {
 			continue
 		}
-		// the comparison is strict, so equal heights keep the first
+		// the comparison is strict, so equal heights keep the order the provider
+		// listed them in
 		if height == 0 || (tallest && h > height) || (!tallest && h < height) {
 			pick, height = s, h
 		}
