@@ -2,7 +2,6 @@ package miruro
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/charmbracelet/log"
@@ -63,7 +62,7 @@ func (c *Client) providerCodes(ctx context.Context) (map[string]string, error) {
 		Streaming map[string]provider `json:"streaming"`
 		Messages  []notice            `json:"messages"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decode(body, &raw); err != nil {
 		return nil, err
 	}
 	// the table is read once per run, so each notice is said once, and at info

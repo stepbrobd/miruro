@@ -31,6 +31,14 @@ import (
 // about 1 MB decoded
 const maxBody = 64 << 20
 
+// maxTokens bounds the json tokens a catalog body may hold
+// json.Unmarshal builds a whole row out of {}, so a body inside maxBody can
+// still build tens of millions of rows, gigabytes of them, and bounding the
+// tokens bounds what any body builds whatever its shape
+// a real episode row is a few dozen tokens, so even the ten thousand rows an
+// episode list may answer stay well under it
+const maxTokens = 1 << 21
+
 // mirrors are the domains that front one miruro backend, which answers every
 // one of them with the same bytes, in the order www.miruro.com publishes them
 // www.miruro.com is not itself an api host, and in 2026-09 it marked .ru
@@ -352,6 +360,80 @@ func inflate(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("miruro response exceeds %d bytes", maxBody)
 	}
 	return out, nil
+}
+
+// decode unmarshals a catalog body into v once counting its tokens has shown
+// that building it stays small
+func decode(body []byte, v any) error {
+	if _, err := records(body); err != nil {
+		return err
+	}
+	return json.Unmarshal(body, v)
+}
+
+// decodePage is decode for a page, whose data array holds no more rows than its
+// request asked for, since the catalog answers no more than that and a longer
+// one is rows that never need building
+func decodePage(body []byte, v any, rows int) error {
+	n, err := records(body)
+	if err != nil {
+		return err
+	}
+	if n > rows {
+		return fmt.Errorf("miruro answered %d records to a page of %d", n, rows)
+	}
+	return json.Unmarshal(body, v)
+}
+
+// records counts the rows of body's top-level data array without building any,
+// and refuses a body of more than maxTokens tokens
+// a body that is not json is left to json.Unmarshal to report, which checks all
+// of it before it builds anything
+func records(body []byte) (int, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// a number stays as written, so none fails here that Unmarshal would skip
+	dec.UseNumber()
+	var (
+		n, depth int
+		// object is whether the body is an object, and key whether its next
+		// token is one of its keys
+		object, key bool
+		// name is the key of the top-level value being read, and data whether
+		// that value is the data array
+		name string
+		data bool
+	)
+	for range maxTokens + 1 {
+		t, err := dec.Token()
+		if err != nil {
+			return n, nil
+		}
+		if s, ok := t.(string); ok && depth == 1 && key {
+			name, key = s, false
+			continue
+		}
+		if data && depth == 2 && t != json.Delim(']') {
+			n++
+		}
+		switch t {
+		case json.Delim('{'), json.Delim('['):
+			if depth == 0 {
+				object = t == json.Delim('{')
+			}
+			if depth == 1 && object && name == "data" && t == json.Delim('[') {
+				data = true
+			}
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+			if depth == 1 {
+				data = false
+			}
+		}
+		// back at the top of the object a value has ended, so a key comes next
+		key = depth == 1 && object
+	}
+	return 0, fmt.Errorf("miruro response holds more than %d json tokens", maxTokens)
 }
 
 // setHeaders writes the browser header set the WAF expects

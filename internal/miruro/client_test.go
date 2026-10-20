@@ -188,6 +188,88 @@ func TestRefusesOversizedBody(t *testing.T) {
 	}
 }
 
+// page is a page of the anime or episode resource holding row n times
+func page(row string, n int) string {
+	return `{"data":[` + strings.TrimSuffix(strings.Repeat(row+",", n), ",") + `],"has_more":false}`
+}
+
+// json.Unmarshal builds a whole row out of {}, so a body well inside maxBody
+// built tens of millions of them, gigabytes once built
+// a page is refused past the rows its request asked for, and any body past
+// maxTokens, both before a row is built, and each body here is small enough
+// that building it anyway costs the test little
+func TestRefusesABodyThatWouldBuildTooManyRows(t *testing.T) {
+	ctx := context.Background()
+	refused := func(t *testing.T, err error, why string) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), why) {
+			t.Errorf("err = %v, want the body refused for %q", err, why)
+		}
+	}
+
+	t.Run("a search page past the hits it asked for", func(t *testing.T) {
+		keyed := `{"id":"x","external_ids":{"anilist":["1"]},"title":{"romaji":"One"},"format":"TV"}`
+		srv, _ := api(t, map[string]string{"/api/v1/anime": page(keyed, searchPage)})
+		if media, _, err := client(srv).Search(ctx, "one", ""); err != nil || len(media) != searchPage {
+			t.Fatalf("read %d hits, %v, want the whole page", len(media), err)
+		}
+		srv, _ = api(t, map[string]string{"/api/v1/anime": page(`{}`, searchPage+1)})
+		_, _, err := client(srv).Search(ctx, "one", "")
+		refused(t, err, "16 records to a page of 15")
+	})
+
+	t.Run("a lookup past the records it asked for", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/v1/anime": page(`{}`, lookupPage+1)})
+		refused(t, client(srv).Preload(ctx, []int{1}), "101 records to a page of 100")
+	})
+
+	t.Run("an episode list past the episodes it asked for", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{
+			"/api/v1/anime": frieren,
+			"/api/v1/anime/o2Eqmv4w0JYgQJWQFi9CDDdH-PgffNpm/episodes": page(`{}`, episodePage+1),
+		})
+		_, err := client(srv).Episodes(ctx, upstream.Media{ID: 154587})
+		refused(t, err, "10001 records to a page of 10000")
+	})
+
+	// the play resource and the provider table answer no page, so the token
+	// bound is what holds them
+	t.Run("a play answer past the token bound", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{
+			"/api/config": config,
+			playPath:      `{"tracks":[{"track":"sub","providers":[` + strings.Repeat(`{},`, maxTokens/2) + `{}]}]}`,
+		})
+		_, err := client(srv).Listing(ctx, "o2Eqmv4w0JYgQJWQFi9CDDdH-PgffNpm", 1)
+		refused(t, err, "json tokens")
+	})
+
+	t.Run("a provider table past the token bound", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/config": `{"streaming":{},"messages":[` + strings.Repeat(`{},`, maxTokens/2) + `{}]}`})
+		_, err := client(srv).providerCodes(ctx)
+		refused(t, err, "json tokens")
+	})
+}
+
+// only the rows of the top-level data array count against a page, wherever
+// else a key named data turns up
+func TestRecords(t *testing.T) {
+	for body, want := range map[string]int{
+		`{"data":[{"data":[1,2]},{}],"meta":{"data":[1,2,3]}}`: 2,
+		`{"meta":{"data":[1,2,3]},"data":[{}]}`:                1,
+		`{"kind":"data","data":[[1,2],[3],4,"s",null]}`:        5,
+		`{"data":{"a":[1]}}`:                                   0,
+		`[{"data":[1]}]`:                                       0,
+		`{"data":[]}`:                                          0,
+		`{"data":[1,2],"data":[3]}`:                            3,
+		// a body that is not json is Unmarshal's to report
+		`{"data":[1,`: 1,
+	} {
+		if got, err := records([]byte(body)); got != want || err != nil {
+			t.Errorf("records(%s) = %d, %v, want %d", body, got, err, want)
+		}
+	}
+}
+
 // a body that dies after its headers came from a host that answered, so it is
 // the backend's failure and keeps the typed surface, with the cause beside it
 func TestBodyThatDiesIsRecoverable(t *testing.T) {

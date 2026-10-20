@@ -2,7 +2,6 @@ package miruro
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -179,7 +178,7 @@ func (c *Client) play(ctx context.Context, ref string, n int) (*playback, error)
 		return nil, err
 	}
 	var p playback
-	if err := json.Unmarshal(body, &p); err != nil {
+	if err := decode(body, &p); err != nil {
 		return nil, err
 	}
 	return &p, nil

@@ -3,7 +3,6 @@ package miruro
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"net/url"
@@ -85,7 +84,7 @@ func (c *Client) Episodes(ctx context.Context, m upstream.Media) (*upstream.Cata
 		Data    []episode `json:"data"`
 		HasMore bool      `json:"has_more"`
 	}
-	if err := json.Unmarshal(body, &eps); err != nil {
+	if err := decodePage(body, &eps, episodePage); err != nil {
 		return nil, err
 	}
 	// the site never pages this list, so a request shape for the next page is
@@ -258,7 +257,7 @@ func (c *Client) carrying(ctx context.Context, ids []int) (map[int][]title, erro
 		Data    []title `json:"data"`
 		HasMore bool    `json:"has_more"`
 	}
-	if err := json.Unmarshal(body, &hits); err != nil {
+	if err := decodePage(body, &hits, lookupPage); err != nil {
 		return nil, err
 	}
 	// a record on the next page would leave the id carrying it looking

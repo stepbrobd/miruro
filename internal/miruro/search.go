@@ -2,7 +2,6 @@ package miruro
 
 import (
 	"context"
-	"encoding/json"
 	"net/url"
 	"strconv"
 
@@ -90,7 +89,7 @@ func (c *Client) Search(ctx context.Context, query, cursor string) ([]upstream.M
 		NextCursor string  `json:"next_cursor"`
 		HasMore    bool    `json:"has_more"`
 	}
-	if err := json.Unmarshal(body, &hits); err != nil {
+	if err := decodePage(body, &hits, searchPage); err != nil {
 		return nil, "", err
 	}
 	media := make([]upstream.Media, 0, len(hits.Data))
