@@ -50,8 +50,8 @@ schema = 3
     hash = 'sha256-Veo9gqSs/ZHFNERzXSCtQjovaIwdr8YZkCIJ7xfTEGY='
 
   [mod.'github.com/charmbracelet/x/ansi']
-    version = 'v0.11.8'
-    hash = 'sha256-IyGyFE/grl7aNEZEMXzmUl+X7qb8HaMAfmJXWhoRLQQ='
+    version = 'v0.11.9'
+    hash = 'sha256-7ug55TWTkYcBZYeqMmrwZt8tnZexToF2+8z/oGoKV2A='
 
   [mod.'github.com/charmbracelet/x/cellbuf']
     version = 'v0.0.15'
@@ -102,8 +102,8 @@ schema = 3
     hash = 'sha256-JlWckeGaWG+bXK8l8WEdZqmSiTwCA8b1qbmBKa/Fj3E='
 
   [mod.'github.com/mattn/go-runewidth']
-    version = 'v0.0.30'
-    hash = 'sha256-2idyB8BVjqiwBOmBteKMTM9uBfr96g29k8hqJWjlndE='
+    version = 'v0.0.31'
+    hash = 'sha256-0R1i3gS3Ya0JYUfNdpJ7B1ynWGqRaP0Mxvv6mEz0qSI='
 
   [mod.'github.com/mitchellh/hashstructure/v2']
     version = 'v2.0.2'
@@ -138,13 +138,13 @@ schema = 3
     hash = 'sha256-cLY+3xdncFQA7wPfh21Pex3Q9LA7dhRe+IyH0x6bQfM='
 
   [mod.'golang.org/x/exp']
-    version = 'v0.0.0-20260908205506-85c1c2202aba'
-    hash = 'sha256-g/gNDzulP2hxBtZf3w2cASzcWbUAI6r0Q9zy5Q/wrRQ='
+    version = 'v0.0.0-20261014143641-f0251eb4aa3e'
+    hash = 'sha256-PLzyWDt9Ni7Qdd6uHw7avHSJxdSc+VEzf5JG9gFCywo='
 
   [mod.'golang.org/x/sys']
-    version = 'v0.48.0'
-    hash = 'sha256-u+LwI76YIeg1asQKZItD2mnL4Yvx8veLhBuL8wv60Ls='
+    version = 'v0.49.0'
+    hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
   [mod.'golang.org/x/text']
-    version = 'v0.42.0'
-    hash = 'sha256-bviKbNmkN4Yf2dpgwmP6yNcZEakCcv1R+YyAxCdJGkY='
+    version = 'v0.43.0'
+    hash = 'sha256-gykmMKFe61Tc4tblLPd3IyMKCqL0MSTQpgb6yE5EnDA='
