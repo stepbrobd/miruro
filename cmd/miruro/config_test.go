@@ -195,6 +195,64 @@ func TestLoadConfigReportsUnknownKeys(t *testing.T) {
 	}
 }
 
+// toml stops at the first value of the wrong type with the keys it reached
+// before it already set, and it reaches them in map order, so a file that
+// failed to decode applied a different part of itself from one run to the next
+// and named the valid keys it never reached unknown
+func TestLoadConfigAppliesNothingOfAMalformedFile(t *testing.T) {
+	dir := t.TempDir()
+	withConfigHome(t, dir)
+	for _, v := range []string{"MIRURO_PLAYER", "MIRURO_QUALITY", "MIRURO_PROVIDER", "MIRURO_LANG", "MIRURO_DOWNLOAD", "MIRURO_DUB", "MIRURO_MIRRORS", "MIRURO_BACKENDS"} {
+		t.Setenv(v, "")
+	}
+	path := filepath.Join(dir, "miruro", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "provider = \"pewe\"\nquality = \"720p\"\nlang = \"ja\"\nplayer = \"mpv\"\ndub = \"yes\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var b bytes.Buffer
+	log.SetOutput(&b)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	want := config{Quality: "best", DownloadDir: "."}
+	// one decode can happen to reach the bad key first, so it takes several
+	for range 20 {
+		b.Reset()
+		if c := loadConfig(); !reflect.DeepEqual(c, want) {
+			t.Fatalf("loadConfig() = %+v, want the defaults and nothing of the file", c)
+		}
+		said := b.String()
+		if !strings.Contains(said, "ignoring malformed config") {
+			t.Fatalf("the malformed file was dropped without a word:\n%s", said)
+		}
+		if strings.Contains(said, "unknown config key") {
+			t.Fatalf("a valid key was reported unknown:\n%s", said)
+		}
+	}
+}
+
+// strconv takes true and false and their short forms, and a yes that failed to
+// parse used to leave the dub setting alone without a word
+func TestLoadConfigWarnsAboutABadDub(t *testing.T) {
+	withConfigHome(t, t.TempDir())
+	t.Setenv("MIRURO_DUB", "yes")
+
+	var b bytes.Buffer
+	log.SetOutput(&b)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if c := loadConfig(); c.Dub {
+		t.Error("Dub = true from a value that is not a boolean")
+	}
+	if got := b.String(); !strings.Contains(got, "MIRURO_DUB") || !strings.Contains(got, "yes") {
+		t.Errorf("the bad value was dropped without a word:\n%s", got)
+	}
+}
+
 // withConfigHome points XDG at dir for the length of a test
 func withConfigHome(t *testing.T, dir string) {
 	t.Helper()

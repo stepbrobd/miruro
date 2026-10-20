@@ -34,14 +34,22 @@ func loadConfig() config {
 		if data, err := os.ReadFile(path); err == nil {
 			// a decode error drops the whole file, including a provider pin
 			// warn rather than revert every setting to a default in silence
-			md, err := toml.Decode(string(data), &c)
+			// toml stops at the first bad value with the keys it reached
+			// before already set, in map order, so the file decodes into a
+			// copy that is kept only whole
+			file := c
+			md, err := toml.Decode(string(data), &file)
 			if err != nil {
 				log.Warn("ignoring malformed config", "path", path, "err", err)
-			}
-			// a key nothing reads is a typo or a name that has moved, and
-			// dropping it without a word looks exactly like it took effect
-			for _, key := range md.Undecoded() {
-				log.Warn("ignoring unknown config key", "path", path, "key", key.String())
+			} else {
+				c = file
+				// a key nothing reads is a typo or a name that has moved, and
+				// dropping it without a word looks exactly like it took effect
+				// a failed decode leaves the keys it never reached undecoded,
+				// so only a whole one says which keys are unknown
+				for _, key := range md.Undecoded() {
+					log.Warn("ignoring unknown config key", "path", path, "key", key.String())
+				}
 			}
 		}
 	}
@@ -63,6 +71,8 @@ func loadConfig() config {
 	if v := os.Getenv("MIRURO_DUB"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Dub = b
+		} else {
+			log.Warn("ignoring MIRURO_DUB that is not a boolean", "value", v)
 		}
 	}
 	if v := os.Getenv("MIRURO_MIRRORS"); v != "" {
