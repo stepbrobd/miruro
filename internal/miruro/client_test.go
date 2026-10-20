@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 
 	"ysun.co/miruro/internal/upstream"
 )
@@ -483,4 +484,131 @@ func TestOriginFollowsTheMirror(t *testing.T) {
 	if origin != srv.URL || referer != srv.URL+"/" {
 		t.Errorf("origin = %q referer = %q, want them on %q", origin, referer, srv.URL)
 	}
+}
+
+// a picker label or a failed download row carries the styling huh put in it,
+// so the views keep escapes, and an OSC 52 clipboard write or an OSC 0 title
+// change inside catalog text would reach the terminal whole
+// the sequences here are C0, a C1 CSI and a DEL, and only those characters go
+func TestEscapesInCatalogTextStayOffTheTerminal(t *testing.T) {
+	ctx := context.Background()
+	plain := func(t *testing.T, what, s string) {
+		t.Helper()
+		if i := strings.IndexFunc(s, unicode.IsControl); i >= 0 {
+			t.Errorf("%s = %q, carries a control character at %d", what, s, i)
+		}
+	}
+
+	t.Run("a search hit", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/v1/anime": `{"data":[{"id":"f","external_ids":{"anilist":["154587"]},
+			"title":{"romaji":"Sousou no Frieren\u001b]52;c;cm0gLXJmIH4K\u0007","english":"葬送のフリーレン\u009b2J\u007f"},
+			"format":"TV\u001b]0;pwned\u0007"}],"has_more":false}`})
+		media, _, err := client(srv).Search(ctx, "frieren", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []upstream.Media{{ID: 154587, Romaji: "Sousou no Frieren]52;c;cm0gLXJmIH4K", English: "葬送のフリーレン2J", Format: "TV]0;pwned"}}
+		if !reflect.DeepEqual(media, want) {
+			t.Errorf("media = %#v, want %#v", media, want)
+		}
+	})
+
+	t.Run("an episode title and the title it lists under", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{
+			"/api/v1/anime": `{"data":[{"id":"f","external_ids":{"anilist":["154587"]},
+				"title":{"romaji":"Sousou no Frieren","english":"Frieren\u001b]0;pwned\u0007"},"episode_counts":{"sub":1}}],"has_more":false}`,
+			"/api/v1/anime/f/episodes": `{"data":[{"episode_number":1,"kind":"regular","title":"The Journey's End\u001b]52;c;cm0gLXJmIH4K\u0007\r\n"}],"has_more":false}`,
+		})
+		cat, err := client(srv).Episodes(ctx, upstream.Media{ID: 154587})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cat.Title != "Frieren]0;pwned" {
+			t.Errorf("title = %q, want the escapes dropped", cat.Title)
+		}
+		if len(cat.Sub) != 1 || cat.Sub[0].Title != "The Journey's End]52;c;cm0gLXJmIH4K" {
+			t.Errorf("sub = %#v, want the episode title without its escapes", cat.Sub)
+		}
+	})
+
+	t.Run("an error naming a catalog key", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{
+			"/api/v1/anime": `{"data":[{"id":"f\u001b]0;pwned\u0007","external_ids":{"anilist":["154587"]}}],"has_more":false}`,
+			"/api/v1/anime/f\x1b]0;pwned\x07/episodes": `{"data":[],"has_more":true}`,
+		})
+		_, err := client(srv).Episodes(ctx, upstream.Media{ID: 154587})
+		if err == nil || !strings.Contains(err.Error(), "more than") {
+			t.Fatalf("err = %v, want the truncated list refused", err)
+		}
+		plain(t, "err", err.Error())
+	})
+
+	// the problem document is what a failed download row and the closing error
+	// line both show
+	t.Run("a problem document", func(t *testing.T) {
+		srv := mirror(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"title":"Bad Request\u001b]52;c;cm0gLXJmIH4K\u0007","status":400,"detail":"Unsupported\u009b2J catalog request.\n"}`)
+		})
+		_, _, err := client(srv).Search(ctx, "titan", "")
+		if !errors.Is(err, upstream.ErrUnreachable) {
+			t.Fatalf("err = %v, want %v", err, upstream.ErrUnreachable)
+		}
+		if want := "status 400: Bad Request]52;c;cm0gLXJmIH4K: Unsupported2J catalog request."; !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("err = %q, want it to end in %q", err, want)
+		}
+	})
+
+	t.Run("a provider, its servers and its subtitles", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{
+			"/api/config": `{"streaming":{"kickassanime":{"label":"h\u007fop","visible":true},"new\u001bcomer":{"label":"","visible":true}}}`,
+			"/api/v1/anime/f/episodes/1/play": `{"tracks":[{"track":"ssub","providers":[{"provider":"kickassanime","subtitles":[
+				{"language":"en","label":"English\u001b]52;c;eA==\u0007","file":"https://subst.example/en.vtt","format":"vtt"},
+				{"language":"\u001b]0;pwned\u0007","label":"","file":"https://subst.example/x.vtt","format":"vtt"}],
+			 "servers":[{"server":"Vid\u001b]0;pwned\u0007","headers":{"Referer":"https://krussdomi.com/"},"streams":[
+				{"url":"https://hls.example/master.m3u8","format":"hls","quality":"1080p\u009b"}]}]}]}]}`,
+		})
+		c := client(srv)
+		codes, err := c.providerCodes(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// the api's own ids stay as sent, since they are what a request names
+		if want := map[string]string{"kickassanime": "hop", "new\x1bcomer": "newcomer"}; !reflect.DeepEqual(codes, want) {
+			t.Errorf("codes = %+q, want %+q", codes, want)
+		}
+		l, err := c.Listing(ctx, "f", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hop, ok := l.Providers["hop"]
+		if !ok || len(hop.Sub) != 1 {
+			t.Fatalf("providers = %+v, want hop under its label without the DEL", l.Providers)
+		}
+		res, err := c.Sources(ctx, hop.Sub[0].ID, "hop", upstream.Ssub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Streams) != 1 || res.Streams[0].Server != "Vid]0;pwned" || res.Streams[0].Quality != "1080p" {
+			t.Errorf("streams = %#v, want the server and quality labels without their escapes", res.Streams)
+		}
+		if len(res.Subtitles) != 2 || res.Subtitles[0].Label != "English]52;c;eA==" || res.Subtitles[0].Lang != "en" {
+			t.Errorf("subtitles = %#v, want the label without its escapes and its language read", res.Subtitles)
+		}
+		for _, s := range res.Subtitles {
+			plain(t, "subtitle label", s.Label)
+			plain(t, "subtitle language", s.Lang)
+		}
+	})
+
+	t.Run("an error naming providers", func(t *testing.T) {
+		srv, _ := api(t, map[string]string{"/api/config": `{"streaming":{
+			"a\u001b]0;pwned\u0007":{"label":"bee","visible":true},"b\u001b]0;pwned\u0007":{"label":"bee","visible":true}}}`})
+		_, err := client(srv).providerCodes(ctx)
+		if err == nil || !strings.Contains(err.Error(), "bee") {
+			t.Fatalf("err = %v, want the shared code named", err)
+		}
+		plain(t, "err", err.Error())
+	})
 }

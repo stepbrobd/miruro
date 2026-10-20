@@ -83,13 +83,15 @@ func (c *Client) providerCodes(ctx context.Context) (map[string]string, error) {
 			continue
 		}
 		// a provider the table gives no label is known by its id
-		code := p.Label
+		// the code is shown and the id stays as sent, since a play answer names
+		// the provider by it
+		code := plain(p.Label)
 		if code == "" {
-			code = id
+			code = plain(id)
 		}
 		// a code shared by two providers would pin neither of them reliably
 		if other, dup := owner[code]; dup {
-			return nil, fmt.Errorf("miruro config names both %s and %s %s", other, id, code)
+			return nil, fmt.Errorf("miruro config names both %s and %s %s", plain(other), plain(id), code)
 		}
 		owner[code] = id
 		codes[id] = code

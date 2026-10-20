@@ -91,7 +91,7 @@ func (c *Client) Episodes(ctx context.Context, m upstream.Media) (*upstream.Cata
 	// the site never pages this list, so a request shape for the next page is
 	// not known to be one the catalog accepts
 	if eps.HasMore {
-		return nil, fmt.Errorf("miruro lists more than %d episodes of %s", episodePage, t.ID)
+		return nil, fmt.Errorf("miruro lists more than %d episodes of %s", episodePage, plain(t.ID))
 	}
 	return t.catalog(c.Name(), eps.Data, time.Now()), nil
 }
@@ -110,7 +110,7 @@ func (t title) catalog(backend string, eps []episode, now time.Time) *upstream.C
 		if n != float64(int(n)) || n < 1 {
 			continue
 		}
-		rec := upstream.Episode{Number: n, Title: e.Title, Filler: e.CanonType == "filler"}
+		rec := upstream.Episode{Number: n, Title: plain(e.Title), Filler: e.CanonType == "filler"}
 		if sub := t.EpisodeCounts.Sub; sub == nil || n <= float64(*sub) {
 			cat.Sub = append(cat.Sub, rec)
 		}

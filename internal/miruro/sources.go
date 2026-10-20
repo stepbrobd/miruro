@@ -65,6 +65,8 @@ var tracks = map[string]upstream.Category{
 // a server's embed is the site's iframe player, which nothing here plays, so
 // only its streams are read, and only those of a server whose headers the
 // proxy can send
+// the labels are shown and made plain, while a url or a referer is what a
+// request sends and stays as the api wrote it
 func (s source) result() *upstream.Result {
 	res := &upstream.Result{}
 	for _, sv := range s.Servers {
@@ -83,9 +85,9 @@ func (s source) result() *upstream.Result {
 			res.Streams = append(res.Streams, upstream.Stream{
 				URL:       browserURL(st.URL),
 				Kind:      kind,
-				Quality:   st.Quality,
+				Quality:   plain(st.Quality),
 				Referer:   ref,
-				Server:    sv.Server,
+				Server:    plain(sv.Server),
 				AudioLang: voice,
 			})
 		}
@@ -96,10 +98,11 @@ func (s source) result() *upstream.Result {
 		if sub.Format != "vtt" && sub.Format != "srt" {
 			continue
 		}
+		label := plain(sub.Label)
 		res.Subtitles = append(res.Subtitles, upstream.Subtitle{
 			File:    browserURL(sub.File),
-			Label:   sub.Label,
-			Lang:    upstream.Language(sub.Language, sub.Label),
+			Label:   label,
+			Lang:    upstream.Language(plain(sub.Language), label),
 			Default: sub.Default,
 		})
 	}

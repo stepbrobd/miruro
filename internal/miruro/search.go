@@ -59,7 +59,7 @@ func (t title) anilist() (int, bool) {
 // the episode count falls back to the raw count the way the site's own info
 // page does, since a title still airing names no total
 func (t title) media(id int) upstream.Media {
-	m := upstream.Media{ID: id, Romaji: t.Title.Romaji, English: t.Title.English, Format: t.Format}
+	m := upstream.Media{ID: id, Romaji: plain(t.Title.Romaji), English: plain(t.Title.English), Format: plain(t.Format)}
 	switch {
 	case t.EpisodeCount != nil:
 		m.Episodes = *t.EpisodeCount

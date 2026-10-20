@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"ysun.co/miruro/internal/upstream"
 )
@@ -289,12 +291,26 @@ func refusal(status int, kind string, body []byte) string {
 	if json.Unmarshal(body, &p) != nil {
 		return out
 	}
-	for _, s := range []string{p.Title, p.Detail} {
+	for _, s := range []string{plain(p.Title), plain(p.Detail)} {
 		if s != "" {
 			out += ": " + s
 		}
 	}
 	return out
+}
+
+// plain is catalog text with its control characters dropped, C0, DEL and C1
+// a title or a label ends up in a view, and a view keeps the escape sequences
+// in its rows since huh styles them with some, so one arriving in the text
+// reaches the terminal whole, an OSC 52 clipboard write or an OSC 0 title
+// change, and a newline throws off the row count the views redraw by
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func (c *Client) current() int {
