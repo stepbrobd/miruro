@@ -155,11 +155,13 @@ func playAndControl(ctx context.Context, raise menuFunc, title string, actions [
 // outcome reports whether the menu dismisses itself when playback stops
 // a clean end mid-batch advances, a failure keeps the menu up so a broken
 // provider does not burn the range, and a player that never ran is fatal
+// a walk left with no stream to play is change stream having moved past every
+// one, which replay or change provider undoes, so it keeps the menu up too
 func outcome(err error, batch bool) bool {
 	switch {
 	case err == nil:
 		return batch
-	case errors.As(err, new(*exec.ExitError)):
+	case errors.As(err, new(*exec.ExitError)), errors.Is(err, upstream.ErrNoStream):
 		return false
 	default:
 		return true

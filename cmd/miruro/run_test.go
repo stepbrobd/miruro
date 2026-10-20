@@ -511,6 +511,7 @@ func TestOutcome(t *testing.T) {
 		{"clean end mid-batch advances", nil, true, true},
 		{"clean end alone stays", nil, false, false},
 		{"failure stays", exit, true, false},
+		{"nothing left to play stays", fmt.Errorf("pewe: %w", upstream.ErrNoStream), true, false},
 		{"unrunnable player dismisses", other, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1292,6 +1293,86 @@ func TestPlaybackSkipsTheStreamsMovedPast(t *testing.T) {
 				t.Errorf("shown %+v, want %+v", shown, tc.shown)
 			}
 		})
+	}
+}
+
+// change stream is offered on the servers of the provider resolved first, while
+// the stream it moves past can be a fallback's, so the replay can find nothing
+// left to play anywhere, and that is undone by replay or change provider rather
+// than ending the session the way a player that never ran does
+func TestChangeStreamPastAFallbackKeepsTheSession(t *testing.T) {
+	ctx := context.Background()
+	exitErr := exec.Command("false").Run()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/refused") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "picture")
+	}))
+	defer cdn.Close()
+
+	px, err := play.StartProxy(ctx, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	b := &stub{t: t, name: "miruro", sub: map[string][]float64{"ally": {8}, "pewe": {8}}, replies: map[string]reply{
+		"ally": streams(
+			upstream.Stream{URL: cdn.URL + "/refused-a.mp4", Kind: upstream.MP4, Server: "Yt-mp4"},
+			upstream.Stream{URL: cdn.URL + "/refused-b.mp4", Kind: upstream.MP4, Server: "Mp4"}),
+		"pewe": streams(upstream.Stream{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "AniDBApp"}),
+	}}
+	st := resolver(upstream.Sub, b)
+	st.cfg = config{Quality: "best"}
+	numbers := []float64{7, 8, 9}
+	pin := Pin{Code: "ally"}
+
+	// pass is one round of watch over episode 8, picking pick once the playback
+	// is over and the menu stayed up
+	var skipped map[feed]bool
+	pass := func(pick string) ([]string, feed, string, error) {
+		res, src, carry, err := st.resolve(ctx, 8, pin)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		pin = carry
+		var shown feed
+		stage := playback{
+			runState: st, px: px, pin: pin, ep: 8, watch: patience(), skip: skipped, shown: &shown,
+			// a real player exits with a status on a stream it cannot open
+			launch: func(ctx context.Context, s upstream.Stream, tl *play.Tally, _ []upstream.Subtitle) error {
+				if err := fakePlay(t, new([]string))(ctx, s, tl); err != nil {
+					return exitErr
+				}
+				return nil
+			},
+		}
+		menu := controls(numbers, 8, hosts(res, src.Code, skipped))
+		after := func(_ context.Context, _ string, _ []string, wait func() bool) (string, bool, error) {
+			if wait() {
+				return "", true, nil
+			}
+			return pick, true, nil
+		}
+		action, err := playAndControl(ctx, after, "E8", menu, false,
+			func(pctx context.Context) error { return stage.run(pctx, res, src) }, func() error { return nil })
+		return menu, shown, action, err
+	}
+
+	menu, shown, action, err := pass("change stream")
+	if err != nil || action != "change stream" {
+		t.Fatalf("first pass: action %q, %v", action, err)
+	}
+	if !slices.Contains(menu, "change stream") || shown != (feed{"pewe", "AniDBApp"}) {
+		t.Fatalf("first pass offered %v with %+v on screen, want change stream over pewe", menu, shown)
+	}
+	next, _ := apply(action, numbers, 8)
+	skipped = moveOn(skipped, next, shown)
+
+	if _, _, action, err := pass("replay"); err != nil || action != "replay" {
+		t.Errorf("change stream with nothing left to play gave action %q, %v, want the menu kept up", action, err)
 	}
 }
 
