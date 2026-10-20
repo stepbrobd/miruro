@@ -93,6 +93,10 @@ func transient(err error) bool {
 		return false
 	case errors.Is(err, errTooLarge):
 		return false
+	case errors.Is(err, errNoCache):
+		// a playlist the cache cannot take will not become one, and the caller
+		// falls back on hearing it
+		return false
 	}
 	var s status
 	if errors.As(err, &s) {

@@ -649,7 +649,7 @@ func TestFetchSegmentRejectsBodyThatIsNotMedia(t *testing.T) {
 			defer srv.Close()
 
 			dest := filepath.Join(t.TempDir(), segName(0))
-			if _, err := fetchSegment(context.Background(), http.DefaultClient, srv.URL+"/seg.ts", dest, tc.plain); err == nil {
+			if _, err := fetchSegment(context.Background(), http.DefaultClient, srv.URL+"/seg.ts", dest, tc.plain, false); err == nil {
 				t.Error("a body that is not a whole segment was accepted")
 			}
 			if _, err := os.Stat(dest); !os.IsNotExist(err) {
@@ -662,6 +662,93 @@ func TestFetchSegmentRejectsBodyThatIsNotMedia(t *testing.T) {
 	}
 }
 
+// adtsFrame opens like a packed audio segment, an ADTS frame header and
+// nothing a decoder could play
+var adtsFrame = append([]byte{0xff, 0xf1, 0x50, 0x80, 0x02, 0x1f, 0xfc}, make([]byte, 400)...)
+
+// a playlist whose first segment is packed audio is no transport stream
+// playlist, which ffmpeg downloads whole, while audio past a first segment, or
+// an error page first, is refused as before, since a cached error page remuxes
+// into a silently truncated episode
+func TestFetchSegmentTellsPackedAudioFromAnErrorPage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     []byte
+		lead     bool
+		fallback bool
+	}{
+		{"ADTS first", adtsFrame, true, true},
+		{"ID3 tagged first", append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), adtsFrame...), true, true},
+		{"ADTS past the first", adtsFrame, false, false},
+		{"error page first", []byte("<html>Access Denied</html>"), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.Write(tc.body)
+			}))
+			defer srv.Close()
+
+			dest := filepath.Join(t.TempDir(), segName(0))
+			_, err := fetchSegment(context.Background(), http.DefaultClient, srv.URL+"/a0.aac", dest, true, tc.lead)
+			if err == nil {
+				t.Fatal("a segment that is no transport stream was cached")
+			}
+			if errors.Is(err, errNoCache) != tc.fallback {
+				t.Errorf("err = %v, want a fallback %v", err, tc.fallback)
+			}
+			// the fallback is final, while a refusal is retried as a dropped
+			// connection is
+			want := int64(attempts)
+			if tc.fallback {
+				want = 1
+			}
+			if n := hits.Load(); n != want {
+				t.Errorf("fetched %d times, want %d", n, want)
+			}
+			if _, err := os.Stat(dest); !os.IsNotExist(err) {
+				t.Error("the segment was cached")
+			}
+		})
+	}
+}
+
+// the first segment decides, and a later one refused for good before it
+// arrives must not fail a download the fallback would save
+func TestFetchSegmentsFallsBackWhicheverSegmentFailsFirst(t *testing.T) {
+	var later atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/a0.aac") {
+			later.Add(1)
+			w.Write(adtsFrame)
+			return
+		}
+		deadline := time.After(10 * time.Second)
+		for later.Load() < attempts {
+			select {
+			case <-deadline:
+				t.Error("the later segment was never refused")
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+		// past its last attempt, the later segment's failure lands first
+		time.Sleep(50 * time.Millisecond)
+		w.Write(adtsFrame)
+	}))
+	defer srv.Close()
+
+	body := "#EXTM3U\n#EXTINF:1.0,\na0.aac\n#EXTINF:1.0,\na1.aac\n#EXT-X-ENDLIST\n"
+	pl, err := parsePlaylist([]byte(body), srv.URL+"/audio.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchSegments(context.Background(), http.DefaultClient, pl, t.TempDir(), nil); !errors.Is(err, errNoCache) {
+		t.Errorf("err = %v, want %v", err, errNoCache)
+	}
+}
+
 // ciphertext cannot be inspected, so an encrypted segment of the right length
 // has to be accepted
 func TestFetchSegmentAcceptsCiphertext(t *testing.T) {
@@ -671,7 +758,7 @@ func TestFetchSegmentAcceptsCiphertext(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), segName(0))
-	n, err := fetchSegment(context.Background(), http.DefaultClient, srv.URL+"/seg.ts", dest, false)
+	n, err := fetchSegment(context.Background(), http.DefaultClient, srv.URL+"/seg.ts", dest, false, false)
 	if err != nil {
 		t.Fatalf("encrypted segment rejected: %v", err)
 	}

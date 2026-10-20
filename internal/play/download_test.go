@@ -127,6 +127,60 @@ func TestDownloadFallsBackForFragmentedMP4(t *testing.T) {
 	}
 }
 
+// an audio rendition of packed audio, ADTS frames rather than a transport
+// stream, failed the cache path's check on every segment and with it the
+// download, which ffmpeg takes whole, so the download falls back to it
+func TestDownloadFallsBackForPackedAudio(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	src := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("ffmpeg", append([]string{"-loglevel", "error", "-y"}, args...)...).CombinedOutput(); err != nil {
+			t.Skipf("cannot synthesize a packed audio stream: %v: %s", err, out)
+		}
+	}
+	run("-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*1)",
+		"-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+		"-hls_segment_filename", filepath.Join(src, "v%d.ts"),
+		filepath.Join(src, "video.m3u8"))
+	run("-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:a", "aac",
+		"-f", "segment", "-segment_time", "1", "-segment_format", "adts",
+		"-segment_list", filepath.Join(src, "audio.m3u8"), "-segment_list_type", "m3u8",
+		filepath.Join(src, "a%d.aac"))
+	master := "#EXTM3U\n" +
+		"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"ja\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\"\n" +
+		"#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=64x64,AUDIO=\"aud\"\nvideo.m3u8\n"
+	if err := os.WriteFile(filepath.Join(src, "master.m3u8"), []byte(master), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cdn := httptest.NewServer(http.FileServer(http.Dir(src)))
+	defer cdn.Close()
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	dir, cache := t.TempDir(), filepath.Join(t.TempDir(), "cache")
+	s := px.Stream(upstream.Stream{URL: cdn.URL + "/master.m3u8", Kind: upstream.HLS})
+	if _, err := Download(context.Background(), http.DefaultClient, s, nil, dir, "Show - E1", cache, nil); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	dest := filepath.Join(dir, "Show - E1.mp4")
+	if !streams(t, dest, "v") || !streams(t, dest, "a") {
+		t.Error("the episode lacks picture or sound")
+	}
+	// every later run would fall back the same way, so nothing cached is of use
+	if _, err := os.Stat(cache); !os.IsNotExist(err) {
+		t.Errorf("a stream the cache refuses left a cache directory: %v", err)
+	}
+}
+
 // ffmpeg's hls demuxer skips a segment it cannot open with only a warning and
 // exits zero, so the one-shot path saved the episode without it and every
 // rerun skipped the episode as finished

@@ -167,6 +167,13 @@ func cachedHLS(ctx context.Context, hc *http.Client, srcURL, dest, dir string, p
 		}
 	}
 	if err := fetchSegments(ctx, hc, pl, dir, prog); err != nil {
+		// a playlist only its first segment shows to be uncacheable leaves
+		// nothing a later run could use, since that run falls back the same way
+		if errors.Is(err, errNoCache) {
+			if rerr := os.RemoveAll(dir); rerr != nil {
+				log.Warn("uncacheable segments not removed", "dir", dir, "err", rerr)
+			}
+		}
 		return err
 	}
 
@@ -728,14 +735,20 @@ spawn:
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, p.seg(n)), !p.encrypted)
+				written, err := fetchSegment(ctx, hc, src, filepath.Join(dir, p.seg(n)), !p.encrypted, n == 0)
 				mu.Lock()
 				if err != nil {
 					// one dead segment makes the remux incomplete, so the first to
 					// fail records the reason and stops the rest
+					// a first segment showing the playlist cannot be cached outranks
+					// a later one that failed before it, since the episode is still
+					// downloadable whole, and a later segment is never started
+					// before its playlist's first, so the first is always waited for
 					if first == nil {
-						first = fmt.Errorf("%s %d: %w", p.what(), n, err)
 						close(fatal)
+					}
+					if first == nil || errors.Is(err, errNoCache) {
+						first = fmt.Errorf("%s %d: %w", p.what(), n, err)
 					}
 					mu.Unlock()
 					return
@@ -767,7 +780,10 @@ spawn:
 // a cached error page would otherwise remux into a silently truncated episode
 // a short or implausible body is retried like a dead status, because both are
 // what a provider dropping a connection mid-segment looks like
-func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain bool) (int64, error) {
+// lead marks the first segment of its playlist, which is what tells a playlist
+// of packed audio, which only ffmpeg can take whole, from a transport stream
+// one, so a later segment opening as packed audio is refused like an error page
+func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain, lead bool) (int64, error) {
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		return 0, nil
 	}
@@ -776,6 +792,9 @@ func fetchSegment(ctx context.Context, hc *http.Client, src, dest string, plain 
 	err := retry(ctx, func() error {
 		var err error
 		n, err = fetchPart(ctx, hc, src, part, plain)
+		if lead && errors.Is(err, errPacked) {
+			return fmt.Errorf("%w: %v", errNoCache, err)
+		}
 		return err
 	})
 	if err != nil {
@@ -825,9 +844,32 @@ func plausibleSegment(head []byte, n, announced int64, plain bool) error {
 		return errors.New("empty segment")
 	}
 	if plain && !looksTS(head) {
+		if packed(head) {
+			return errPacked
+		}
 		return errors.New("segment is not a transport stream")
 	}
 	return nil
+}
+
+// errPacked marks an unencrypted segment of packed audio rather than transport
+// stream
+var errPacked = errors.New("segment is packed audio, not a transport stream")
+
+// packed reports whether data opens like a packed audio segment, which RFC 8216
+// opens with an ID3 tag, or like a bare ADTS, MPEG audio or AC-3 frame, as
+// ffmpeg also takes one, where an error page opens like none of them
+func packed(data []byte) bool {
+	switch {
+	case bytes.HasPrefix(data, []byte("ID3")):
+		return true
+	case len(data) < 2:
+		return false
+	case data[0] == 0xff && data[1]&0xe0 == 0xe0:
+		// the frame sync ADTS and MPEG audio share
+		return true
+	}
+	return data[0] == 0x0b && data[1] == 0x77
 }
 
 // looksTS reports whether data carries aligned transport stream sync bytes

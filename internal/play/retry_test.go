@@ -229,7 +229,7 @@ func TestOverCapRefusalThroughTheProxyIsFinal(t *testing.T) {
 			return grab(ctx, px.Client(), px.Opaque(cdn.URL+"/en.vtt", ""), filepath.Join(dir, "en.vtt"), maxOpaqueBody, nil, nil)
 		}},
 		{"segment", func() error {
-			_, err := fetchSegment(ctx, http.DefaultClient, segments.URL+"/seg.ts", filepath.Join(dir, segName(0)), true)
+			_, err := fetchSegment(ctx, http.DefaultClient, segments.URL+"/seg.ts", filepath.Join(dir, segName(0)), true, false)
 			return err
 		}},
 	} {
@@ -262,7 +262,7 @@ func TestFetchSegmentRetriesShortBody(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "00000.ts")
-	n, err := fetchSegment(context.Background(), srv.Client(), srv.URL+"/seg.ts", dest, true)
+	n, err := fetchSegment(context.Background(), srv.Client(), srv.URL+"/seg.ts", dest, true, false)
 	if err != nil {
 		t.Fatalf("a short segment was not retried: %v", err)
 	}
