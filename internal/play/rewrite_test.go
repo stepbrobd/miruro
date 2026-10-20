@@ -93,6 +93,29 @@ func TestRewriteRefusesAnHTTPURLItCannotParse(t *testing.T) {
 	}
 }
 
+// a ref the parser refuses passes through only under a scheme other than http
+// and https, which RFC 3986 and a player both read as a letter followed by
+// letters, digits, '+', '-' or '.' up to the colon
+// a ref opening any other way names no scheme, so the player resolves it
+// against the playlist's own http url and dials it past the proxy
+func TestForeignReadsASchemeTheWayAPlayerDoes(t *testing.T) {
+	for ref, want := range map[string]bool{
+		"az:x":    true,
+		"AZ:x":    true,
+		"a09:x":   true,
+		"a+-.:x":  true,
+		"1a:x":    false,
+		"+a:x":    false,
+		"a_b:x":   false,
+		":x":      false,
+		"HTTPS:x": false,
+	} {
+		if got := foreign(ref); got != want {
+			t.Errorf("foreign(%q) = %v, want %v", ref, got, want)
+		}
+	}
+}
+
 func TestRewriteMasterPlaylist(t *testing.T) {
 	master := "#EXTM3U\n" +
 		"#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n" +

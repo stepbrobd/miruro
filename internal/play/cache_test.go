@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 // zeros streams an endless zero body for over-cap tests
@@ -714,6 +716,29 @@ func TestFetchSegmentTellsPackedAudioFromAnErrorPage(t *testing.T) {
 	}
 }
 
+// a frame sync is read from two bytes, both of them, an AC-3 one as well as the
+// sync ADTS and MPEG audio share, while a lone byte opens no frame
+func TestPackedReadsAFrameSyncFromBothItsBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		head []byte
+		want bool
+	}{
+		{"an ADTS sync and nothing after", []byte{0xff, 0xf1}, true},
+		{"an MPEG audio sync", []byte{0xff, 0xfb, 0x90, 0x64}, true},
+		{"an AC-3 sync", []byte{0x0b, 0x77, 0x00, 0x00}, true},
+		{"a lone 0xff", []byte{0xff}, false},
+		{"a lone 0x0b", []byte{0x0b}, false},
+		{"a JPEG, 0xff without the sync bits after it", []byte{0xff, 0xd8, 0xff, 0xe0}, false},
+		{"0x0b without 0x77 after it", []byte{0x0b, 0x00}, false},
+		{"0x77 without 0x0b before it", []byte{0x00, 0x77}, false},
+	} {
+		if got := packed(tc.head); got != tc.want {
+			t.Errorf("%s: packed(% x) = %v, want %v", tc.name, tc.head, got, tc.want)
+		}
+	}
+}
+
 // the first segment decides, and a later one refused for good before it
 // arrives must not fail a download the fallback would save
 func TestFetchSegmentsFallsBackWhicheverSegmentFailsFirst(t *testing.T) {
@@ -746,6 +771,35 @@ func TestFetchSegmentsFallsBackWhicheverSegmentFailsFirst(t *testing.T) {
 	}
 	if err := fetchSegments(context.Background(), http.DefaultClient, pl, t.TempDir(), nil); !errors.Is(err, errNoCache) {
 		t.Errorf("err = %v, want %v", err, errNoCache)
+	}
+}
+
+// a cache only its first segment shows to be of no use is removed, and only a
+// removal that fails is warned about
+func TestCachedHLSRemovesAnUncacheableCacheQuietly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".m3u8") {
+			io.WriteString(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\na0.aac\n#EXT-X-ENDLIST\n")
+			return
+		}
+		w.Write(adtsFrame)
+	}))
+	defer srv.Close()
+
+	var said bytes.Buffer
+	log.SetOutput(&said)
+	defer log.SetOutput(os.Stderr)
+	out := t.TempDir()
+	cache := filepath.Join(out, "cache")
+	err := cachedHLS(context.Background(), http.DefaultClient, srv.URL+"/audio.m3u8", filepath.Join(out, "show.mp4"), cache, nil)
+	if !errors.Is(err, errNoCache) {
+		t.Fatalf("err = %v, want %v", err, errNoCache)
+	}
+	if _, err := os.Stat(cache); !os.IsNotExist(err) {
+		t.Errorf("the uncacheable cache is still there: %v", err)
+	}
+	if strings.Contains(said.String(), "not removed") {
+		t.Errorf("a cache removed without trouble was warned about:\n%s", said.String())
 	}
 }
 

@@ -261,6 +261,34 @@ func TestProxyBoundsAStalledOpaqueRelay(t *testing.T) {
 	}
 }
 
+// a media relay streams a whole episode for as long as the player reads it, so
+// the bound on every other kind must not cut it short
+func TestProxyLeavesAMediaRelayUnbounded(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		for range 4 {
+			w.Write(bytes.Repeat([]byte("v"), 1000))
+			w.(http.Flusher).Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}))
+	defer cdn.Close()
+
+	px := &Proxy{hc: &http.Client{}, token: "tok", timeout: 100 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(px.handle))
+	defer srv.Close()
+	px.base = srv.URL + "/tok"
+
+	resp, err := http.Get(px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, err := io.ReadAll(resp.Body); err != nil || len(got) != 4000 {
+		t.Errorf("a video relayed past the proxy's bound read %d bytes, %v, want all 4000", len(got), err)
+	}
+}
+
 // the proxy reads a segment whole before it answers, so a reader whose header
 // wait is shorter than the proxy's bound gives up on a slow body the proxy
 // would have delivered, and on a stalled one before the proxy can answer the
@@ -305,6 +333,23 @@ func TestProxyClientWaitsOutTheProxysBound(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("stalled segment answered %d, want 502", resp.StatusCode)
+	}
+}
+
+// the reader's header wait is the proxy's own bound and a minute more, still a
+// bound, so a proxy that never answers does not hold a download for good
+func TestProxyClientWaitsAMinutePastTheProxysBound(t *testing.T) {
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+	tr, ok := px.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Client's transport is %T, want an *http.Transport", px.Client().Transport)
+	}
+	if want := bufferedTimeout + time.Minute; tr.ResponseHeaderTimeout != want {
+		t.Errorf("header wait = %v, want %v", tr.ResponseHeaderTimeout, want)
 	}
 }
 
@@ -455,6 +500,96 @@ func TestProxyDropsARelayTheUpstreamCutShort(t *testing.T) {
 	}
 	if tl.Served() != 1 {
 		t.Errorf("served = %d, want the body counted as it started", tl.Served())
+	}
+}
+
+// a relayed body that ends within its cap ends cleanly for the reader even
+// unannounced, since only one cut short or run past its cap is dropped
+func TestProxyEndsAChunkedRelayCleanly(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("v"), 5000))
+		w.(http.Flusher).Flush()
+		w.Write(bytes.Repeat([]byte("v"), 5000))
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for _, tc := range []struct{ name, url string }{
+		{"media", px.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4})},
+		{"opaque", px.Opaque(cdn.URL+"/en.vtt", "")},
+	} {
+		resp, err := http.Get(tc.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.ContentLength != -1 {
+			t.Errorf("%s: the relay announced %d bytes, want the body unannounced", tc.name, resp.ContentLength)
+		}
+		if err != nil || len(got) != 10000 {
+			t.Errorf("%s: read %d bytes, %v, want all 10000 and a clean end", tc.name, len(got), err)
+		}
+	}
+}
+
+// an opaque body exactly at its cap relays whole and ends cleanly, whether its
+// length was announced or only counted as it passed
+func TestProxyRelaysAnOpaqueBodyAtItsCap(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/announced.vtt" {
+			w.Header().Set("Content-Length", fmt.Sprint(maxOpaqueBody))
+		}
+		io.CopyN(w, zeros{}, maxOpaqueBody)
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	for _, name := range []string{"/announced.vtt", "/counted.vtt"} {
+		resp, err := http.Get(px.Opaque(cdn.URL+name, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || n != maxOpaqueBody || err != nil {
+			t.Errorf("%s answered %d with %d bytes, %v, want 200 with all %d and a clean end", name, resp.StatusCode, n, err, maxOpaqueBody)
+		}
+	}
+}
+
+// an opaque body that runs past its cap unannounced is cut one byte past the
+// cap and dropped, so a reader holding no cap of its own cannot take it for a
+// whole one
+func TestProxyDropsAnOpaqueRelayPastItsCap(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.CopyN(w, zeros{}, maxOpaqueBody+1<<20)
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+
+	resp, err := http.Get(px.Opaque(cdn.URL+"/en.vtt", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if n, err := io.Copy(io.Discard, resp.Body); err == nil || n != maxOpaqueBody+1 {
+		t.Errorf("read %d bytes, %v, want %d and the connection dropped", n, err, maxOpaqueBody+1)
 	}
 }
 

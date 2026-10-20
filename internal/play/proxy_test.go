@@ -1,8 +1,10 @@
 package play
 
 import (
+	"bufio"
 	"bytes"
 	"math/rand"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +88,24 @@ func TestNormalizeSegmentKeepsAPNGWithoutPackets(t *testing.T) {
 	body := append(append([]byte{}, pngMagic...), bytes.Repeat([]byte("IDAT"), 100)...)
 	if got := normalizeSegment(body); !bytes.Equal(got, body) {
 		t.Errorf("normalizeSegment kept %d of %d bytes, want the body whole", len(got), len(body))
+	}
+}
+
+// the head of a body declared as video is judged as soon as it holds the whole
+// of #EXTM3U, even with nothing after it, and the last of its mediaHead bytes
+// still decides, so only blank space past all of them is taken for a playlist
+func TestIsPlaylistJudgesTheHeadToItsLastByte(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"the tag and nothing after", "#EXTM3U", true},
+		{"a video on the last byte of the head", strings.Repeat(" ", mediaHead-1) + "\x00video", false},
+		{"blank space past the head", strings.Repeat(" ", mediaHead) + "\x00video", true},
+	} {
+		body := bufio.NewReaderSize(strings.NewReader(tc.body), mediaHead)
+		if got := isPlaylist("video/mp4", body); got != tc.want {
+			t.Errorf("%s: isPlaylist = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

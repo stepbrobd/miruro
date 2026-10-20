@@ -252,6 +252,84 @@ func TestFFLogKeepsWhatLogLevelErrorPrinted(t *testing.T) {
 	}
 }
 
+// a pipe may hand the log over a byte at a time, so a line is judged whole
+// however it arrives, down to a last line of one byte left unterminated
+func TestFFLogReadsALogHandedOverAByteAtATime(t *testing.T) {
+	var l ffLog
+	const said = "[in#0 @ 0x1] [error] Error opening input\n" +
+		"[in#0/hls @ 0x2] [warning] Failed to open segment 3 of playlist 0\n" +
+		"[error] Conversion failed!\n" +
+		"x"
+	for i := range len(said) {
+		if n, err := l.Write([]byte{said[i]}); n != 1 || err != nil {
+			t.Fatalf("Write = %d, %v, want the byte taken", n, err)
+		}
+	}
+	l.flush()
+	if got, want := l.errs.String(), "[in#0 @ 0x1] Error opening input\nConversion failed!\nx\n"; got != want {
+		t.Errorf("errs = %q, want %q", got, want)
+	}
+	if l.skipped != "Failed to open segment 3 of playlist 0" {
+		t.Errorf("skipped = %q, want the segment ffmpeg could not open", l.skipped)
+	}
+}
+
+// some lines carry no context before their tag, and the tag opening a line is
+// its level even when the message goes on to quote another
+func TestFFLogTakesTheTagOpeningALineAsItsLevel(t *testing.T) {
+	var l ffLog
+	l.Write([]byte("[warning] retrying after [error] connection reset\n[error] Conversion failed!\n"))
+	l.flush()
+	if got, want := l.errs.String(), "Conversion failed!\n"; got != want {
+		t.Errorf("errs = %q, want %q", got, want)
+	}
+}
+
+// a line is kept to maxLogLine however many writes it spans, and the errors to
+// maxLogErrs, the line that reaches the cap kept and none after it
+func TestFFLogBoundsWhatItKeeps(t *testing.T) {
+	var l ffLog
+	l.Write([]byte("[error] " + strings.Repeat("a", 3000)))
+	l.Write([]byte(strings.Repeat("b", 3000) + "\n"))
+	want := strings.Repeat("a", 3000) + strings.Repeat("b", maxLogLine-len("[error] ")-3000) + "\n"
+	if got := l.errs.String(); got != want {
+		t.Errorf("a line split across writes kept %d bytes, want %d", len(got), len(want))
+	}
+
+	var full ffLog
+	// each line keeps 1024 bytes, its message and the newline
+	line := "[error] " + strings.Repeat("e", 1023) + "\n"
+	for range maxLogErrs / 1024 {
+		full.Write([]byte(line))
+	}
+	full.Write([]byte("[error] one too many\n"))
+	if n := full.errs.Len(); n != maxLogErrs || strings.Contains(full.errs.String(), "one too many") {
+		t.Errorf("errs kept %d bytes, want %d with the line past the cap dropped", n, maxLogErrs)
+	}
+}
+
+// a failed remux reports what ffmpeg printed at error level, which names the
+// cause where the exit status alone does not
+func TestRunFFmpegReportsTheErrorsItPrinted(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.m3u8")
+	err := runFFmpeg(context.Background(), filepath.Join(dir, "Show - E1.mp4"), nil, "-i", missing)
+	if err == nil {
+		t.Fatal("a remux of a missing input succeeded")
+	}
+	for _, want := range []string{"Error opening input file " + missing + ".", "Error opening input files: No such file or directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to carry %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "[error]") || strings.Contains(err.Error(), "[fatal]") {
+		t.Errorf("err = %v, want the level tags gone", err)
+	}
+}
+
 // ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
 // and exits zero on a silent episode, so the download has to refuse the result
 // itself rather than keep a file nobody can watch

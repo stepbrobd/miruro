@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +81,46 @@ func TestSidecarsRefusesAnOversizedBody(t *testing.T) {
 	}
 	if n := hits.Load(); n != 1 {
 		t.Errorf("fetched %d times, want once", n)
+	}
+}
+
+// a body exactly at its cap is whole and one byte past it is not, whether its
+// length was announced or only counted as it arrived
+func TestFetchFileKeepsABodyExactlyAtItsCap(t *testing.T) {
+	const limit = 8
+	for _, tc := range []struct {
+		name     string
+		size     int
+		announce bool
+		want     error
+	}{
+		{"announced at the cap", limit, true, nil},
+		{"counted at the cap", limit, false, nil},
+		{"announced past the cap", limit + 1, true, errTooLarge},
+		{"counted past the cap", limit + 1, false, errTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.announce {
+					w.Header().Set("Content-Length", fmt.Sprint(tc.size))
+				} else {
+					w.(http.Flusher).Flush()
+				}
+				w.Write(bytes.Repeat([]byte("s"), tc.size))
+			}))
+			defer srv.Close()
+
+			part := filepath.Join(t.TempDir(), "en.vtt.part")
+			err := fetchFile(context.Background(), srv.Client(), srv.URL+"/en.vtt", part, limit, nil, nil)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if tc.want == nil {
+				if body, err := os.ReadFile(part); err != nil || string(body) != "ssssssss" {
+					t.Errorf("part holds %q (%v), want the whole body", body, err)
+				}
+			}
+		})
 	}
 }
 
