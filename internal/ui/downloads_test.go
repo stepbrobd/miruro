@@ -1,15 +1,19 @@
 package ui
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/log"
 )
 
 // styled stands in for ok(false), whose escapes depend on the detected profile
@@ -193,6 +197,67 @@ func TestDownloadsJoinsWorkers(t *testing.T) {
 		if !flags[i].Load() {
 			t.Errorf("task %d was still running when Downloads returned", i)
 		}
+	}
+}
+
+// gone is input that fails its first read, which ends a view the way a
+// terminal that went away does
+type gone struct{}
+
+func (gone) Read([]byte) (int, error) { return 0, errors.New("input gone") }
+
+// a view that fails without an interrupt leaves the workers running with no
+// bars, so the log has to be back on stderr before they log again, and has to
+// say why the bars went
+func TestDownloadsViewThatFailsHandsBackTheLog(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = stderr
+		log.SetOutput(stderr)
+	})
+
+	var got strings.Builder
+	var once sync.Once
+	said := make(chan struct{})
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			got.WriteString(sc.Text() + "\n")
+			if strings.Contains(sc.Text(), "input gone") {
+				once.Do(func() { close(said) })
+			}
+		}
+	}()
+
+	errs := work(context.Background(), []string{"E1"}, 1, func(ctx context.Context, i int, report func(done, total int64, share float64)) error {
+		// the failure is said once the log is back on stderr, so a record written
+		// after it is one a worker writes with the bars gone
+		select {
+		case <-said:
+		case <-time.After(5 * time.Second):
+		}
+		log.Warn("download failed, trying the next stream", "episode", 1)
+		return ctx.Err()
+	}, true, tea.WithInput(gone{}), tea.WithoutRenderer())
+
+	w.Close()
+	<-read
+	if errs[0] != nil {
+		t.Errorf("task = %v, want it run to completion past the view", errs[0])
+	}
+	out := got.String()
+	if !strings.Contains(out, "input gone") {
+		t.Errorf("stderr does not say why the view went:\n%s", out)
+	}
+	if !strings.Contains(out, "trying the next stream") {
+		t.Errorf("a record logged after the view went was lost:\n%s", out)
 	}
 }
 

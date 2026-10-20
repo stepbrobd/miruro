@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/x/term"
 )
 
@@ -158,6 +159,16 @@ func plural(n int, one, many string) string {
 // by the time Downloads returns no goroutine it spawned is still running and
 // every child process a task started has been reaped
 func Downloads(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64, share float64)) error) []error {
+	// without a terminal there is nothing to draw and no quit key to read, the
+	// workers run to completion under the caller's context
+	// handing tea a non-terminal stdin would have it open /dev/tty itself, which
+	// puts a terminal that is merely nearby into raw mode under a piped run
+	return work(ctx, labels, workers, task, term.IsTerminal(screen.Fd()))
+}
+
+// work is Downloads with the terminal check left to its caller, so a test can
+// raise the live view with no terminal by handing it input of its own
+func work(ctx context.Context, labels []string, workers int, task func(ctx context.Context, i int, report func(done, total int64, share float64)) error, live bool, opts ...tea.ProgramOption) []error {
 	n := len(labels)
 	// a view with no rows would wait for a completion that never arrives
 	if n == 0 {
@@ -176,17 +187,12 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 		close(done)
 	}()
 
-	// without a terminal there is nothing to draw and no quit key to read, the
-	// workers run to completion under the caller's context
-	// handing tea a non-terminal stdin would have it open /dev/tty itself, which
-	// puts a terminal that is merely nearby into raw mode under a piped run
-	if term.IsTerminal(screen.Fd()) {
+	if live {
 		width := 0
 		for _, l := range labels {
 			width = max(width, lipgloss.Width(l))
 		}
 		lines, restore := captureLog()
-		defer restore()
 
 		m := downloads{
 			labels: labels,
@@ -205,12 +211,19 @@ func Downloads(ctx context.Context, labels []string, workers int, task func(ctx 
 			m.bars[i] = progress.New(progress.WithWidth(maxBar), progress.WithoutPercentage(), progress.WithColorProfile(profile()))
 		}
 
-		_, err := tea.NewProgram(m, tea.WithContext(dctx), tea.WithOutput(screen)).Run()
+		opts = append([]tea.ProgramOption{tea.WithContext(dctx), tea.WithOutput(screen)}, opts...)
+		_, err := tea.NewProgram(m, opts...).Run()
+		// nothing reads the sink once the view is gone, and workers still running
+		// would log into it until they join
+		restore()
 
 		// a finish, quit key, or interrupt stops the workers
-		// any other error leaves them running to completion
+		// any other error leaves them running to completion with no bars, so it
+		// is said
 		if err == nil || errors.Is(err, tea.ErrInterrupted) || ctx.Err() != nil {
 			cancel()
+		} else {
+			log.Warn("progress view failed, downloading without it", "err", err)
 		}
 	}
 	// consuming ch keeps senders unblocked until the workers join
