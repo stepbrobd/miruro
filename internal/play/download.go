@@ -224,8 +224,14 @@ func audible(ctx context.Context, dest string) error {
 		log.Debug("ffprobe not installed, audio not verified", "dest", dest)
 		return nil
 	}
+	// a relative name starting with a dash reads as an option, and a probe that
+	// fails skips the check, so it is named absolutely as runFFmpeg names it
+	abs, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
 	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error",
-		"-show_entries", "stream=codec_type,duration", "-of", "json", dest).Output()
+		"-show_entries", "stream=codec_type,duration", "-of", "json", abs).Output()
 	if err != nil {
 		log.Debug("ffprobe failed, audio not verified", "dest", dest, "err", err)
 		return nil

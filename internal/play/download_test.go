@@ -167,6 +167,36 @@ func TestDownloadRefusesASilentEpisode(t *testing.T) {
 	}
 }
 
+// the default download directory is relative, so a title starting with a dash
+// reached ffprobe as an option, and a probe that fails skips the check
+func TestDownloadRefusesASilentEpisodeNamedLikeAnOption(t *testing.T) {
+	seg := sampleSegment(t, false)
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".ts") {
+			http.ServeFile(w, r, seg)
+			return
+		}
+		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\n%s/seg.ts\n#EXT-X-ENDLIST\n", srv.URL)
+	})
+	t.Chdir(t.TempDir())
+
+	name := "-Show - E1"
+	_, err := Download(context.Background(), http.DefaultClient,
+		upstream.Stream{URL: srv.URL + "/media.m3u8", Kind: upstream.HLS}, nil, ".", name, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "no audio") {
+		t.Fatalf("err = %v, want the silent episode refused", err)
+	}
+	if Saved(".", name) {
+		t.Error("the silent file was kept, so a rerun would skip the episode forever")
+	}
+}
+
 func TestSafeNameStaysOneComponent(t *testing.T) {
 	for _, in := range []string{
 		"../../../home/ysun/.bashrc",
