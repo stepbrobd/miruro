@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
@@ -51,7 +52,7 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 
 	switch s.Kind {
 	case upstream.MP4:
-		if err := grab(ctx, hc, s.URL, dest, prog, mp4Head); err != nil {
+		if err := grab(ctx, hc, s.URL, dest, 0, prog, mp4Head); err != nil {
 			return 0, err
 		}
 	case upstream.HLS:
@@ -69,6 +70,11 @@ func Download(ctx context.Context, hc *http.Client, s upstream.Stream, subs []up
 	return Sidecars(ctx, hc, subs, dir, name)
 }
 
+// sidecarTimeout bounds the fetch of one sidecar, its retries included, far
+// past what a subtitle of a few MB takes on a slow link
+// it is a variable so a test can shorten it rather than wait it out
+var sidecarTimeout = 5 * time.Minute
+
 // Sidecars writes one sidecar per subtitle track next to the named episode
 // under dir, replacing any already there, and reports how many failed
 // a failure is warned rather than returned, since the video is the deliverable,
@@ -79,7 +85,10 @@ func Sidecars(ctx context.Context, hc *http.Client, subs []upstream.Subtitle, di
 	seen := map[string]int{}
 	for _, sub := range subs {
 		side := filepath.Join(dir, name+sidecar(sub, seen))
-		err := grab(ctx, hc, sub.File, side, nil, nil)
+		// a sidecar rides the proxy's opaque relay, so it is held to that cap
+		sctx, cancel := context.WithTimeout(ctx, sidecarTimeout)
+		err := grab(sctx, hc, sub.File, side, maxOpaqueBody, nil, nil)
+		cancel()
 		if err == nil {
 			if err := asVTT(side); err != nil {
 				log.Warn("subtitle kept under its upstream name", "episode", name, "label", subLabel(sub), "err", err)
@@ -115,10 +124,11 @@ func EpisodePath(dir, name string) string {
 // answers the next attempt, and a body that fails its plausibility check is
 // one, since a host answering a page where a video should be is what a
 // dropped connection looks like too
+// limit caps the body, zero for none, and a body past it is not retried
 // the proxy injects the referer upstream, so none is set here
-func grab(ctx context.Context, hc *http.Client, url, dest string, prog Progress, plausible func(head []byte) error) error {
+func grab(ctx context.Context, hc *http.Client, url, dest string, limit int64, prog Progress, plausible func(head []byte) error) error {
 	part := dest + ".part"
-	err := retry(ctx, func() error { return fetchFile(ctx, hc, url, part, prog, plausible) })
+	err := retry(ctx, func() error { return fetchFile(ctx, hc, url, part, limit, prog, plausible) })
 	if err != nil {
 		os.Remove(part)
 		return err
@@ -139,7 +149,9 @@ func mp4Head(head []byte) error {
 // fetchFile writes one whole body to part, truncating whatever a failed earlier
 // attempt left behind
 // plausible, when given, judges the head of the body once it is on disk
-func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Progress, plausible func(head []byte) error) error {
+// limit caps the body, zero for none, and one byte past it is read so a body
+// exactly at the cap is told from one over it
+func fetchFile(ctx context.Context, hc *http.Client, url, part string, limit int64, prog Progress, plausible func(head []byte) error) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -155,6 +167,9 @@ func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Prog
 		// the right, hides the status that does
 		return fmt.Errorf("download refused: %w", status(resp.StatusCode))
 	}
+	if limit > 0 && resp.ContentLength > limit {
+		return fmt.Errorf("download %w of %d bytes", errTooLarge, limit)
+	}
 
 	f, err := os.Create(part)
 	if err != nil {
@@ -162,13 +177,19 @@ func fetchFile(ctx context.Context, hc *http.Client, url, part string, prog Prog
 	}
 
 	var src io.Reader = resp.Body
+	if limit > 0 {
+		src = io.LimitReader(src, limit+1)
+	}
 	if prog != nil {
-		src = &reader{r: resp.Body, total: resp.ContentLength, prog: prog}
+		src = &reader{r: src, total: resp.ContentLength, prog: prog}
 	}
 	var head bytes.Buffer
-	_, err = io.Copy(f, io.TeeReader(src, limitWriter(&head, 8)))
+	n, err := io.Copy(f, io.TeeReader(src, limitWriter(&head, 8)))
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil && limit > 0 && n > limit {
+		err = fmt.Errorf("download %w of %d bytes", errTooLarge, limit)
 	}
 	if err == nil && plausible != nil {
 		err = plausible(head.Bytes())

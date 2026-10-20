@@ -215,6 +215,52 @@ func TestProxyBoundsStalledSegment(t *testing.T) {
 	}
 }
 
+// an opaque body is a key, a sidecar or an init segment, never a long video,
+// so one that stalls mid-body is dropped at the proxy's bound rather than held
+// open for whoever is reading it
+func TestProxyBoundsAStalledOpaqueRelay(t *testing.T) {
+	stall := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "WEBVTT\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-stall:
+		case <-r.Context().Done():
+		}
+	}))
+	defer origin.Close()
+
+	px := &Proxy{hc: &http.Client{}, token: "tok", timeout: 100 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(px.handle))
+	defer srv.Close()
+	px.base = srv.URL + "/tok"
+	// both servers' Close waits on a handler the stall holds, so this defer has
+	// to run first
+	defer close(stall)
+
+	// the relay holds a body this small unflushed, so the headers may never
+	// arrive either, and the request is timed whole
+	read := make(chan error, 1)
+	go func() {
+		resp, err := http.Get(px.Opaque(origin.URL+"/en.vtt", ""))
+		if err != nil {
+			read <- err
+			return
+		}
+		defer resp.Body.Close()
+		_, err = io.ReadAll(resp.Body)
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Error("a relay the proxy cut at its bound ended cleanly")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled opaque relay was held open past the proxy's bound")
+	}
+}
+
 // the proxy reads a segment whole before it answers, so a reader whose header
 // wait is shorter than the proxy's bound gives up on a slow body the proxy
 // would have delivered, and on a stalled one before the proxy can answer the

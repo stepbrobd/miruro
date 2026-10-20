@@ -151,7 +151,7 @@ func TestGrabRetriesAHeaderTimeout(t *testing.T) {
 
 	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 50 * time.Millisecond}}
 	dest := filepath.Join(t.TempDir(), "ep.mp4")
-	if err := grab(context.Background(), hc, srv.URL+"/video.mp4", dest, nil, nil); err != nil {
+	if err := grab(context.Background(), hc, srv.URL+"/video.mp4", dest, 0, nil, nil); err != nil {
 		t.Fatalf("a download that answered on its second attempt failed: %v", err)
 	}
 	if n := hits.Load(); n != 2 {
@@ -173,7 +173,7 @@ func TestGrabRetriesTransientStatus(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "ep.mp4")
-	if err := grab(context.Background(), srv.Client(), srv.URL+"/video.mp4", dest, nil, nil); err != nil {
+	if err := grab(context.Background(), srv.Client(), srv.URL+"/video.mp4", dest, 0, nil, nil); err != nil {
 		t.Fatalf("a recoverable download failed: %v", err)
 	}
 	if body, err := os.ReadFile(dest); err != nil || string(body) != "episode bytes" {

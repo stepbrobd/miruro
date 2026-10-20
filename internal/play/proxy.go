@@ -37,6 +37,9 @@ const (
 	// tens of MB, so only a hostile or broken upstream hits these caps
 	maxPlaylistBody = 16 << 20
 	maxSegmentBody  = 256 << 20
+	// an opaque body is a key, a subtitle sidecar or an init segment, which
+	// stay under a few MB
+	maxOpaqueBody = 64 << 20
 	// bufferedTimeout bounds one whole buffered fetch, generous enough for the
 	// largest real segment on a slow link
 	bufferedTimeout = 5 * time.Minute
@@ -60,7 +63,7 @@ const (
 )
 
 // relayed reports whether a body passes through untouched, which is what makes
-// it safe to forward a Range and wrong to bound with a buffered deadline
+// it safe to forward a Range
 func (k kind) relayed() bool { return k == media || k == opaque }
 
 // picture reports whether a body is part of the video the player was handed
@@ -108,7 +111,7 @@ type Proxy struct {
 	// tallies holds every Tally this proxy handed out, by id
 	tallies sync.Map
 	ids     atomic.Uint64
-	// timeout bounds one buffered fetch, zero disables the bound
+	// timeout bounds one fetch of any kind but media, zero disables the bound
 	timeout time.Duration
 	done    chan struct{}
 	once    sync.Once
@@ -319,10 +322,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// buffered kinds read the body whole, so a stalled upstream must trip a
-	// deadline rather than wedge the player or a download worker
-	// an opaque relay may stream a long video legitimately and stays unbounded
+	// deadline rather than wedge the player or a download worker, and an opaque
+	// relay carries a key, a sidecar or an init segment, bounded the same way
+	// a media relay may stream a long video legitimately and stays unbounded
 	ctx := r.Context()
-	if !t.Kind.relayed() && p.timeout > 0 {
+	if t.Kind != media && p.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.timeout)
 		defer cancel()
@@ -389,12 +393,22 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 				io.Closer
 			}{body, resp.Body}
 		}
+		// an opaque body announced past its cap is refused before anything is
+		// relayed, and the relay cuts one that turns out to run past it
+		var limit int64
+		if t.Kind == opaque {
+			if resp.ContentLength > maxOpaqueBody {
+				refuse(w, t, http.StatusBadGateway, fmt.Errorf("upstream %w", errTooLarge))
+				return
+			}
+			limit = maxOpaqueBody
+		}
 		// a relayed body runs for as long as the player reads it, which for an
 		// mp4 is the whole episode, so it counts as its first bytes arrive
 		// waiting for the copy to finish would report that nothing had played
 		// while the picture was on screen
 		opened := &opening{ResponseWriter: w, on: func() { p.count(t, true) }}
-		err := relay(opened, resp)
+		err := relay(opened, resp, limit)
 		if !opened.opened {
 			p.count(t, false)
 		}
@@ -402,6 +416,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		// upstream dropped it rather than answered
 		if err != nil {
 			log.Debug("relay cut short", "kind", t.Kind, "host", host(t.URL), "err", err)
+			// the byte past the cap has to reach the reader before the drop,
+			// and a drop discards what the server still buffers
+			if errors.Is(err, errTooLarge) {
+				http.NewResponseController(w).Flush()
+			}
 			panic(http.ErrAbortHandler)
 		}
 	}
@@ -619,22 +638,33 @@ func isPlaylist(contentType string, body *bufio.Reader) bool {
 // clean end hands it a truncated episode as a whole one and a download would
 // rename it into place, so the caller drops the connection on that report
 // a write failure is the player going away, which is its choice and no error
-func relay(w http.ResponseWriter, resp *http.Response) error {
+// limit caps the body, zero for none, and a body past it is reported once the
+// reader has one byte past the cap, so a reader holding the same cap tells it
+// from a body cut short, which is worth another attempt where it is not
+func relay(w http.ResponseWriter, resp *http.Response, limit int64) error {
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
+	var body io.Reader = resp.Body
+	if limit > 0 {
+		body = io.LimitReader(body, limit+1)
+	}
+	var sent int64
 	buf := make([]byte, 32<<10)
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := body.Read(buf)
 		if n > 0 {
+			sent += int64(n)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return nil
 			}
 		}
 		switch {
+		case err == io.EOF && limit > 0 && sent > limit:
+			return fmt.Errorf("upstream %w", errTooLarge)
 		case err == io.EOF:
 			return nil
 		case err != nil:
