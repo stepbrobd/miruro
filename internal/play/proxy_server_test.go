@@ -215,6 +215,53 @@ func TestProxyBoundsStalledSegment(t *testing.T) {
 	}
 }
 
+// the proxy reads a segment whole before it answers, so a reader whose header
+// wait is shorter than the proxy's bound gives up on a slow body the proxy
+// would have delivered, and on a stalled one before the proxy can answer the
+// 502 the retry knows to repeat
+func TestProxyClientWaitsOutTheProxysBound(t *testing.T) {
+	stall := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "376")
+		w.WriteHeader(http.StatusOK)
+		w.Write(tsBlob(1))
+		w.(http.Flusher).Flush()
+		if strings.HasSuffix(r.URL.Path, "stalled.ts") {
+			<-stall
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+		w.Write(tsBlob(1))
+	}))
+	defer origin.Close()
+	defer close(stall)
+
+	px := &Proxy{hc: &http.Client{}, token: "tok", timeout: 400 * time.Millisecond}
+	srv := httptest.NewServer(http.HandlerFunc(px.handle))
+	defer srv.Close()
+	px.base = srv.URL + "/tok"
+
+	hc := px.Client()
+	resp, err := hc.Get(px.proxied(origin.URL+"/slow.ts", "", segment))
+	if err != nil {
+		t.Fatalf("a slow segment inside the proxy's bound failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(body) != 376 {
+		t.Errorf("slow segment answered %d with %d bytes, want 200 with 376", resp.StatusCode, len(body))
+	}
+
+	resp, err = hc.Get(px.proxied(origin.URL+"/stalled.ts", "", segment))
+	if err != nil {
+		t.Fatalf("a stalled segment ended in %v, want the proxy's 502", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("stalled segment answered %d, want 502", resp.StatusCode)
+	}
+}
+
 // a hostile or broken upstream serving an endless playlist must get a 502
 // rather than buffer until memory runs out
 func TestProxyRefusesOversizedPlaylist(t *testing.T) {

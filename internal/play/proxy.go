@@ -162,6 +162,20 @@ func (t *Tally) Stream(s upstream.Stream) upstream.Stream {
 	return s
 }
 
+// Client reads through the proxy
+// a buffered body is answered only once the proxy holds it whole, so the wait
+// for headers outlasts the proxy's own bound on that fetch and the proxy's
+// answer, a body or a 502 the retry repeats, is what the reader sees
+// the body itself is unbounded, so a slow episode is not truncated mid-body
+// the run's guarded client refuses loopback, which is why this one is apart
+func (p *Proxy) Client() *http.Client {
+	var wait time.Duration
+	if p.timeout > 0 {
+		wait = p.timeout + time.Minute
+	}
+	return &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: wait}}
+}
+
 // StartProxy binds a relay on an ephemeral localhost port
 // it serves until ctx is canceled or Close is called
 // hc fetches every upstream body, and a run hands it upstream.Public so a

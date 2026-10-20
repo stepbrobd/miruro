@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
@@ -47,10 +46,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	}
 	defer px.Close()
 
-	// the proxy listens on loopback, which the run's guarded client refuses to
-	// dial, so the episode is read through a client of its own that bounds only
-	// the header wait, so a slow episode is not truncated mid-body
-	local := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}}
+	local := px.Client()
 
 	labels := make([]string, len(eps))
 	for i, ep := range eps {

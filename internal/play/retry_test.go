@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -57,7 +58,9 @@ func TestTransient(t *testing.T) {
 		{status(http.StatusNotFound), false},
 		{status(http.StatusForbidden), false},
 		{context.Canceled, false},
-		{context.DeadlineExceeded, false},
+		// a timeout is an upstream being slow, and a run that ran out of time is
+		// told apart by retry asking its own context
+		{context.DeadlineExceeded, true},
 		{fmt.Errorf("playlist: %w of 16 bytes", errTooLarge), false},
 		{&fs.PathError{Op: "create", Path: "/x", Err: errors.New("read-only")}, false},
 		{errors.New("unexpected EOF"), true},
@@ -108,6 +111,51 @@ func TestRetryHonorsCancellation(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("a canceled retry ran %d attempts, want 1", calls)
+	}
+}
+
+func TestRetryHonorsADeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	calls := 0
+	err := retry(ctx, func() error {
+		calls++
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if calls != 1 {
+		t.Errorf("a run out of time ran %d attempts, want 1", calls)
+	}
+}
+
+// net/http reports a header timeout as a deadline, which read as a run out of
+// time, so one slow answer failed the episode without a second attempt
+func TestGrabRetriesAHeaderTimeout(t *testing.T) {
+	var hits atomic.Int64
+	release := make(chan struct{})
+	defer close(release)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.Write([]byte("episode bytes"))
+	}))
+	defer srv.Close()
+
+	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 50 * time.Millisecond}}
+	dest := filepath.Join(t.TempDir(), "ep.mp4")
+	if err := grab(context.Background(), hc, srv.URL+"/video.mp4", dest, nil, nil); err != nil {
+		t.Fatalf("a download that answered on its second attempt failed: %v", err)
+	}
+	if n := hits.Load(); n != 2 {
+		t.Errorf("server saw %d requests, want 2", n)
 	}
 }
 

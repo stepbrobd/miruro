@@ -72,12 +72,15 @@ func retry(ctx context.Context, op func() error) error {
 // transient reports whether another attempt could plausibly succeed
 // a retryable status, a dropped connection, and a body that failed its
 // plausibility check are all worth another go
+// a timeout is an upstream being slow, since net/http reports one as a
+// deadline, and retry asks its own context before every attempt whether the
+// run is the one that ran out of time
 // a canceled context, a filesystem error, and a permanent status are not
 func transient(err error) bool {
 	switch {
 	case err == nil:
 		return false
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.Canceled):
 		return false
 	case errors.Is(err, errTooLarge):
 		return false
