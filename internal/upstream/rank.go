@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Rank orders the streams worth trying, best first, and skips embeds since
@@ -172,12 +173,23 @@ var resolution = regexp.MustCompile(`RESOLUTION=\d+x(\d+)`)
 // this, and the read must end somewhere short of memory
 const maxMaster = 16 << 20
 
+// masterTimeout bounds the whole master fetch, headers and body together
+// the client a caller hands Rank bounds only the wait for headers, so a host
+// that sends them and then stalls would hold the walk on this one stream for
+// good
+// a minute leaves the 30s header wait Public allows whole, and the body of a
+// master a few kilobytes long needs nowhere near the rest
+// it is a variable so a test can stall a master without waiting it out
+var masterTimeout = time.Minute
+
 // expandMaster fetches an hls master playlist and returns its variant streams
 // labeled by height
 // it errors on a non-200, on a non-master body, or on a master with no
 // height-labeled variants, so a media playlist or an error page never becomes
 // fabricated variants
 func expandMaster(ctx context.Context, hc *http.Client, s Stream) ([]Stream, error) {
+	ctx, cancel := context.WithTimeout(ctx, masterTimeout)
+	defer cancel()
 	req, err := newGet(ctx, s.URL, s.Referer)
 	if err != nil {
 		return nil, err

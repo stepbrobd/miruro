@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseHeight(t *testing.T) {
@@ -216,6 +217,41 @@ func TestExpandMasterRefusesAnOversizedBody(t *testing.T) {
 	_, err := expandMaster(context.Background(), srv.Client(), Stream{URL: srv.URL + "/master.m3u8", Kind: HLS})
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Errorf("err = %v, want the body refused", err)
+	}
+}
+
+// the client bounds only the wait for headers, so a host that sends them and
+// then stalls mid-master would hold the walk on this one stream for good
+func TestRankBoundsAStalledMaster(t *testing.T) {
+	stall := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-stall:
+		case <-r.Context().Done():
+		}
+	}))
+	// the handler blocks until stall closes, and Close waits on the handler, so
+	// this defer has to run first
+	defer srv.Close()
+	defer close(stall)
+
+	defer func(d time.Duration) { masterTimeout = d }(masterTimeout)
+	masterTimeout = 100 * time.Millisecond
+
+	master := Stream{URL: srv.URL + "/master.m3u8", Kind: HLS}
+	done := make(chan []Stream, 1)
+	go func() { done <- Rank(context.Background(), srv.Client(), &Result{Streams: []Stream{master}}, "720p") }()
+	select {
+	case ranked := <-done:
+		// a master that ran out of time is a failed expansion, which leaves the
+		// master leading unrestricted
+		if len(ranked) != 1 || ranked[0].URL != master.URL || ranked[0].Height != 0 {
+			t.Errorf("ranked = %+v, want the master unrestricted", ranked)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Rank never returned from a master whose body stalled")
 	}
 }
 
