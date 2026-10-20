@@ -30,7 +30,9 @@ func episodeLabel(details map[float64]upstream.Episode) func(float64) string {
 	}
 }
 
-func chooseEpisodes(numbers []float64, start float64, label func(float64) string) ([]float64, error) {
+// chooseEpisodes picks what a run plays or downloads, where watched is the
+// episode history recorded for a resumed run and -1 for any other
+func chooseEpisodes(numbers []float64, watched float64, label func(float64) string) ([]float64, error) {
 	if flagAll {
 		if flagEpisode != "" {
 			log.Warn("flag ignored", "flag", "--episode", "because", "--all selects every episode")
@@ -40,14 +42,37 @@ func chooseEpisodes(numbers []float64, start float64, label func(float64) string
 	if flagEpisode != "" {
 		return parseEpisodes(flagEpisode, numbers)
 	}
-	if start >= 0 && slices.Contains(numbers, start) {
-		return []float64{start}, nil
+	if watched >= 0 {
+		if ep, ok := resumeAt(numbers, watched); ok {
+			return []float64{ep}, nil
+		}
 	}
 	ep, err := ui.Select("Select episode", numbers, label)
 	if err != nil {
 		return nil, err
 	}
 	return []float64{ep}, nil
+}
+
+// resumeAt is the episode a resumed run starts at, the first one the sorted
+// numbers list past the one watched, or the watched one again when nothing is
+// listed past it
+// past is by the listing rather than watched+1, since numbering can skip, and
+// it reports false when the listing neither carries the watched episode nor
+// goes past it, which leaves the choice to the picker
+func resumeAt(numbers []float64, watched float64) (float64, bool) {
+	i, listed := slices.BinarySearch(numbers, watched)
+	if listed {
+		i++
+	}
+	switch {
+	case i < len(numbers):
+		return numbers[i], true
+	case listed:
+		log.Info("replaying the episode in history", "ep", num(watched), "because", "the catalog lists none after it")
+		return watched, true
+	}
+	return 0, false
 }
 
 // ahead re-anchors the batch queue to ep

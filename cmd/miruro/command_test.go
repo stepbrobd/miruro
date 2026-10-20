@@ -260,10 +260,32 @@ func TestChooseEpisodes(t *testing.T) {
 	numbers := []float64{1, 2, 3, 4, 5}
 	label := func(n float64) string { return num(n) }
 
-	t.Run("a resumed episode is what plays", func(t *testing.T) {
+	t.Run("a resumed run plays the episode after the one watched", func(t *testing.T) {
 		got, err := chooseEpisodes(numbers, 3, label)
-		if err != nil || len(got) != 1 || got[0] != 3 {
-			t.Errorf("chose %v, %v, want the resumed episode", got, err)
+		if err != nil || len(got) != 1 || got[0] != 4 {
+			t.Errorf("chose %v, %v, want the episode after the resumed one", got, err)
+		}
+	})
+
+	// history only says where a resumed run starts, so a stated episode or
+	// --all still decides what plays
+	t.Run("an episode flag wins over history", func(t *testing.T) {
+		defer func(v string) { flagEpisode = v }(flagEpisode)
+		for spec, want := range map[string]float64{"2": 2, "3": 3, "latest": 5} {
+			flagEpisode = spec
+			got, err := chooseEpisodes(numbers, 3, label)
+			if err != nil || len(got) != 1 || got[0] != want {
+				t.Errorf("-e %s on a resumed run chose %v, %v, want %v", spec, got, err, want)
+			}
+		}
+	})
+
+	t.Run("all wins over history", func(t *testing.T) {
+		defer func(v bool) { flagAll = v }(flagAll)
+		flagAll = true
+		got, err := chooseEpisodes(numbers, 3, label)
+		if err != nil || len(got) != len(numbers) {
+			t.Errorf("--all on a resumed run chose %v, %v, want every episode", got, err)
 		}
 	})
 
@@ -292,6 +314,41 @@ func TestChooseEpisodes(t *testing.T) {
 			t.Error("an episode outside the catalog was accepted")
 		}
 	})
+}
+
+// a resumed run starts at the next episode the catalog lists past the one
+// history recorded rather than at one more, since numbering can skip, and
+// replays the recorded one, saying so, when nothing is listed past it
+func TestResumeAt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		numbers  []float64
+		watched  float64
+		want     float64
+		ok       bool
+		replayed bool
+	}{
+		{"the next episode", []float64{1, 2, 3, 4, 5}, 3, 4, true, false},
+		{"past a gap in the numbering", []float64{1, 2, 3, 5}, 3, 5, true, false},
+		{"the last listed episode again", []float64{1, 2, 3, 4, 5}, 5, 5, true, true},
+		{"past an episode the category does not list", []float64{1, 2, 3, 5}, 4, 5, true, false},
+		{"nothing when the listing ends before history", []float64{1, 2, 3}, 5, 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			said := captureLog(t)
+			got, ok := resumeAt(tc.numbers, tc.watched)
+			if ok != tc.ok || ok && got != tc.want {
+				t.Errorf("resumeAt(%v, %v) = %v, %v, want %v, %v", tc.numbers, tc.watched, got, ok, tc.want, tc.ok)
+			}
+			want := 0
+			if tc.replayed {
+				want = 1
+			}
+			if n := strings.Count(said.String(), "replaying"); n != want {
+				t.Errorf("said replaying %d times, want %d:\n%s", n, want, said)
+			}
+		})
+	}
 }
 
 // a listing of one thing reports it as one, since "1 interrupted downloads"

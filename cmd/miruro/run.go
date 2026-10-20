@@ -114,7 +114,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	var media upstream.Media
-	startEp := -1.0
+	watched := -1.0
 	resumed := ""
 
 	if flagContinue {
@@ -125,7 +125,7 @@ func run(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		media, startEp = upstream.Media{ID: e.AnilistID, Romaji: e.Title}, e.Episode
+		media, watched = upstream.Media{ID: e.AnilistID, Romaji: e.Title}, e.Episode
 		// an explicit flag overrides what the entry saved, so a sub run can be
 		// corrected with --dub and a saved bonk:soft with --provider bonk:hard
 		if !flagDub {
@@ -164,7 +164,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no %s episodes available", category)
 	}
 
-	eps, err := chooseEpisodes(numbers, startEp, episodeLabel(cat.Details(category)))
+	eps, err := chooseEpisodes(numbers, watched, episodeLabel(cat.Details(category)))
 	if err != nil {
 		return err
 	}
