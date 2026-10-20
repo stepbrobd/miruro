@@ -1,6 +1,7 @@
 package play
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -373,6 +374,21 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		n, _ := w.Write(body)
 		p.count(t, n > 0)
 	default:
+		// a body declared as video that is a playlist would have the player
+		// follow the urls inside it past the proxy, so it is refused the way a
+		// playlist the rewriter cannot scan is
+		if t.Kind == media {
+			body := bufio.NewReaderSize(resp.Body, mediaHead)
+			if isPlaylist(resp.Header.Get("Content-Type"), body) {
+				p.count(t, false)
+				refuse(w, t, http.StatusBadGateway, errors.New("media body is a playlist"))
+				return
+			}
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{body, resp.Body}
+		}
 		// a relayed body runs for as long as the player reads it, which for an
 		// mp4 is the whole episode, so it counts as its first bytes arrive
 		// waiting for the copy to finish would report that nothing had played
@@ -558,6 +574,44 @@ func mirrored(err error) int {
 		return http.StatusForbidden
 	}
 	return http.StatusBadGateway
+}
+
+// mediaHead bounds how much of a media body is read before any of it is
+// relayed, to tell a playlist from a video
+const mediaHead = 4 << 10
+
+var (
+	bom     = []byte("\xef\xbb\xbf")
+	m3uHead = []byte("#EXTM3U")
+)
+
+// isPlaylist reports whether a body declared as video is a playlist, which mpv
+// reads as one by an mpegurl type alone or by an #EXTM3U head
+// mpv skips a byte order mark and strips the blank space around a line, so the
+// head is read past both
+// it reads no further than the answer needs, and a video answers on its first
+// byte, so its relay starts no later than it did unread
+func isPlaylist(contentType string, body *bufio.Reader) bool {
+	if strings.Contains(strings.ToLower(contentType), "mpegurl") {
+		return true
+	}
+	for n := 1; n <= mediaHead; n++ {
+		head, err := body.Peek(n)
+		if err != nil {
+			// a body ending before its head tells is no playlist to follow, and
+			// one failing is reported by the relay
+			return false
+		}
+		rest := bytes.TrimLeft(bytes.TrimPrefix(head, bom), " \t\r\n\v\f")
+		switch {
+		case len(head) < len(bom) && bytes.HasPrefix(bom, head):
+		case len(rest) < len(m3uHead) && bytes.HasPrefix(m3uHead, rest):
+		default:
+			return bytes.HasPrefix(rest, m3uHead)
+		}
+	}
+	// no video opens on a page of blank space, and past it may be a playlist
+	return true
 }
 
 // relay forwards a body untouched, and reports the upstream cutting it short

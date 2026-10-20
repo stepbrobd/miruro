@@ -314,6 +314,66 @@ func TestProxyRelaysRange(t *testing.T) {
 	}
 }
 
+// a stream declared as video whose body is a playlist was relayed byte for
+// byte, and mpv followed the urls inside it past the proxy and the guard on
+// what the proxy may reach
+// mpv reads a body as a playlist by its head and also by an mpegurl type alone,
+// so either refuses it, while a real video still relays and still seeks
+func TestProxyRefusesAMediaBodyThatIsAPlaylist(t *testing.T) {
+	const list = "#EXTM3U\n#EXTINF:1.0,\nhttp://10.0.0.1/router/admin.ts\n#EXT-X-ENDLIST\n"
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/list.mp4":
+			io.WriteString(w, list)
+		case "/padded.mp4":
+			io.WriteString(w, "\xef\xbb\xbf \r\n"+list)
+		case "/typed.mp4":
+			w.Header().Set("Content-Type", "audio/x-mpegurl")
+			io.WriteString(w, "http://10.0.0.1/router/admin.ts\n")
+		default:
+			w.Header().Set("Content-Type", "video/mp4")
+			http.ServeContent(w, r, "ep.mp4", time.Time{}, bytes.NewReader(mp4Bytes))
+		}
+	}))
+	defer cdn.Close()
+
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+	tl := px.Tally()
+
+	for _, name := range []string{"/list.mp4", "/padded.mp4", "/typed.mp4"} {
+		resp, err := http.Get(tl.URL(upstream.Stream{URL: cdn.URL + name, Kind: upstream.MP4}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway || bytes.Contains(body, []byte("10.0.0.1")) {
+			t.Errorf("%s answered %d with %q, want a 502 that hands over no url", name, resp.StatusCode, body)
+		}
+	}
+	if tl.Refused() != 3 || tl.Served() != 0 {
+		t.Errorf("served %d refused %d, want every playlist counted as a refused body", tl.Served(), tl.Refused())
+	}
+
+	if got := httpGetBytes(t, tl.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4})); !bytes.Equal(got, mp4Bytes) {
+		t.Errorf("a real video relayed %q, want it whole", got)
+	}
+	req, _ := http.NewRequest(http.MethodGet, tl.URL(upstream.Stream{URL: cdn.URL + "/ep.mp4", Kind: upstream.MP4}), nil)
+	req.Header.Set("Range", "bytes=8-15")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusPartialContent || !bytes.Equal(got, mp4Bytes[8:16]) {
+		t.Errorf("a seek answered %d with %q, want 206 with %q", resp.StatusCode, got, mp4Bytes[8:16])
+	}
+}
+
 // an upstream that answers and then drops the connection mid-body must not
 // reach the player as a body that ended cleanly, since a download would rename
 // that into place as a finished episode

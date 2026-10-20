@@ -44,14 +44,18 @@ func (p *Proxy) rewrite(body []byte, from target, base *url.URL) ([]byte, error)
 	sc := lines(body)
 	for sc.Scan() {
 		line := sc.Text()
+		var err error
 		switch trimmed := strings.TrimSpace(line); {
 		case trimmed == "":
-			out.WriteString(line)
 		case strings.HasPrefix(trimmed, "#"):
-			out.WriteString(p.tag(line, base, from))
+			line, err = p.tag(line, base, from)
 		default:
-			out.WriteString(p.child(trimmed, base, from, child))
+			line, err = p.child(trimmed, base, from, child)
 		}
+		if err != nil {
+			return nil, err
+		}
+		out.WriteString(line)
 		out.WriteByte('\n')
 	}
 	if err := sc.Err(); err != nil {
@@ -229,10 +233,10 @@ func encrypted(body []byte) bool {
 // tag rewrites a URI attribute
 // EXT-X-MEDIA and EXT-X-I-FRAME-STREAM-INF both name a media playlist whatever
 // the URI looks like, every other tag URI is data the player consumes directly
-func (p *Proxy) tag(line string, base *url.URL, from target) string {
+func (p *Proxy) tag(line string, base *url.URL, from target) (string, error) {
 	loc := uriAttr.FindStringSubmatchIndex(line)
 	if loc == nil {
-		return line
+		return line, nil
 	}
 	k := opaque
 	if strings.HasPrefix(line, "#EXT-X-MEDIA") || strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF") {
@@ -243,20 +247,46 @@ func (p *Proxy) tag(line string, base *url.URL, from target) string {
 	if strings.HasPrefix(line, "#EXT-X-MEDIA") && strings.Contains(line, "TYPE=AUDIO") {
 		from.Audio = true
 	}
-	return line[:loc[2]] + p.child(line[loc[2]:loc[3]], base, from, k) + line[loc[3]:]
+	ref, err := p.child(line[loc[2]:loc[3]], base, from, k)
+	if err != nil {
+		return "", err
+	}
+	return line[:loc[2]] + ref + line[loc[3]:], nil
 }
 
 // child is the payload of one url a playlist names, relayed with the referer
 // and counted against the stream of the playlist that named it
-func (p *Proxy) child(ref string, base *url.URL, from target, k kind) string {
-	abs, err := upstream.Resolve(base.String(), ref)
-	if err != nil {
-		return ref
-	}
+// a url it cannot resolve refuses the playlist, since passed on as it stands
+// an http one would be dialed by the player itself, past the proxy and the
+// guard on what the proxy may reach
+func (p *Proxy) child(ref string, base *url.URL, from target, k kind) (string, error) {
 	// a non-http URI such as a data key is consumed by the player directly
 	// proxying it would only 502 because the upstream client speaks http
-	if !strings.HasPrefix(abs, "http://") && !strings.HasPrefix(abs, "https://") {
-		return ref
+	abs, err := upstream.Resolve(base.String(), ref)
+	switch {
+	case err != nil && foreign(ref):
+		return ref, nil
+	case err != nil:
+		return "", fmt.Errorf("%w: %v", errPlaylist, err)
+	case !strings.HasPrefix(abs, "http://") && !strings.HasPrefix(abs, "https://"):
+		return ref, nil
 	}
-	return p.encode(target{URL: abs, Referer: from.Referer, Kind: k, Tally: from.Tally, Audio: from.Audio})
+	return p.encode(target{URL: abs, Referer: from.Referer, Kind: k, Tally: from.Tally, Audio: from.Audio}), nil
+}
+
+// foreign reports whether ref opens with a scheme other than http and https,
+// read the way a player reads one, for a ref url.Parse refuses
+// a ref naming no scheme resolves against the playlist's own http url
+func foreign(ref string) bool {
+	scheme, _, ok := strings.Cut(strings.TrimSpace(ref), ":")
+	if !ok || scheme == "" {
+		return false
+	}
+	for i, c := range scheme {
+		letter := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+		if !letter && (i == 0 || !('0' <= c && c <= '9' || c == '+' || c == '-' || c == '.')) {
+			return false
+		}
+	}
+	return !strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "https")
 }

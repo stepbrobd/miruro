@@ -73,6 +73,26 @@ func TestRewriteRefusesAnUnscannablePlaylist(t *testing.T) {
 	}
 }
 
+// an http url the parser refuses used to reach the player as it stood, and
+// ffmpeg dialed it without the proxy and past the guard on what it may reach
+// a non-http uri such as a data key is the player's to read either way
+func TestRewriteRefusesAnHTTPURLItCannotParse(t *testing.T) {
+	u, _ := url.Parse("https://cdn.example/x/m.m3u8")
+	for _, body := range []string{
+		"#EXTM3U\n#EXTINF:1,\nhttp://10.0.0.1/a%zz.ts\n#EXT-X-ENDLIST\n",
+		"#EXTM3U\n#EXTINF:1,\na%zz.ts\n#EXT-X-ENDLIST\n",
+		"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://10.0.0.1/k%zz\"\n#EXTINF:1,\nseg0.ts\n#EXT-X-ENDLIST\n",
+	} {
+		if out, err := fakeProxy().rewrite([]byte(body), target{}, u); !errors.Is(err, errPlaylist) {
+			t.Errorf("err = %v, want %v, rewrote:\n%s", err, errPlaylist, out)
+		}
+	}
+	data := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"data:,x#%zz\"\n#EXTINF:1,\nseg0.ts\n"
+	if out := rewritten(fakeProxy(), data, u.String()); !strings.Contains(out, `URI="data:,x#%zz"`) {
+		t.Errorf("a data key the parser refuses did not pass through untouched:\n%s", out)
+	}
+}
+
 func TestRewriteMasterPlaylist(t *testing.T) {
 	master := "#EXTM3U\n" +
 		"#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n" +
