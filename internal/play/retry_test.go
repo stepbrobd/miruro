@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ysun.co/miruro/internal/upstream"
 )
 
 // realPause is the production backoff, captured before TestMain replaces it
@@ -181,6 +185,63 @@ func TestGrabRetriesTransientStatus(t *testing.T) {
 	}
 	if _, err := os.Stat(dest + ".part"); !os.IsNotExist(err) {
 		t.Error("a retried download left its part file behind")
+	}
+}
+
+// the proxy answers a body over its cap with a 502, which otherwise means a
+// transport failure worth another attempt, so through the proxy errTooLarge
+// never fired and a segment past the cap was fetched three times over
+func TestOverCapRefusalThroughTheProxyIsFinal(t *testing.T) {
+	var hits atomic.Int64
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if strings.HasSuffix(r.URL.Path, ".vtt") {
+			w.Header().Set("Content-Length", fmt.Sprint(maxOpaqueBody+1))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		io.CopyN(w, zeros{}, maxPlaylistBody+1)
+	}))
+	defer cdn.Close()
+	px, err := StartProxy(context.Background(), http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer px.Close()
+	// a segment past its cap is a quarter of a GB through a proxy that buffers
+	// it, so the segment reader is handed the refusal the proxy answers it with
+	segments := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		refuse(w, target{URL: r.URL.String(), Kind: segment}, http.StatusBadGateway, fmt.Errorf("upstream %w", errTooLarge))
+	}))
+	defer segments.Close()
+
+	ctx, dir := context.Background(), t.TempDir()
+	for _, tc := range []struct {
+		name  string
+		fetch func() error
+	}{
+		{"playlist", func() error {
+			_, err := fetchText(ctx, px.Client(), px.URL(upstream.Stream{URL: cdn.URL + "/media.m3u8", Kind: upstream.HLS}))
+			return err
+		}},
+		{"sidecar", func() error {
+			return grab(ctx, px.Client(), px.Opaque(cdn.URL+"/en.vtt", ""), filepath.Join(dir, "en.vtt"), maxOpaqueBody, nil, nil)
+		}},
+		{"segment", func() error {
+			_, err := fetchSegment(ctx, http.DefaultClient, segments.URL+"/seg.ts", filepath.Join(dir, segName(0)), true)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hits.Store(0)
+			if err := tc.fetch(); !errors.Is(err, errTooLarge) {
+				t.Errorf("err = %v, want %v", err, errTooLarge)
+			}
+			if n := hits.Load(); n != 1 {
+				t.Errorf("fetched %d times, want once", n)
+			}
+		})
 	}
 }
 

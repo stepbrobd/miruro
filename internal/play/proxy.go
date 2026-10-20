@@ -483,8 +483,17 @@ func (p *Proxy) tally(t target) *Tally {
 // this body said http: no Host in request URL
 func refuse(w http.ResponseWriter, t target, code int, err error) {
 	log.Debug("relay refused", "kind", t.Kind, "status", code, "host", host(t.URL), "err", err)
+	if errors.Is(err, errTooLarge) {
+		w.Header().Set(overCap, "1")
+	}
 	http.Error(w, err.Error(), code)
 }
+
+// overCap marks the proxy's refusal of a body over its cap, which a 502 alone
+// cannot tell from a transport failure worth another attempt
+// only the proxy sets it, since a refusal is an answer of its own and a relay
+// passes on no upstream header but the four it names
+const overCap = "Miruro-Over-Cap"
 
 // host names the upstream a target reaches, empty for one naming none
 func host(rawURL string) string {
@@ -502,7 +511,7 @@ func buffered(resp *http.Response, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(body)) > limit {
-		return nil, errors.New("upstream body too large")
+		return nil, fmt.Errorf("upstream %w", errTooLarge)
 	}
 	return body, nil
 }

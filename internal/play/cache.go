@@ -281,7 +281,7 @@ func readText(ctx context.Context, hc *http.Client, rawURL string) ([]byte, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("playlist refused: %w", status(resp.StatusCode))
+		return nil, fmt.Errorf("playlist refused: %w", refused(resp))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTextBody+1))
 	if err != nil {
@@ -796,7 +796,7 @@ func fetchPart(ctx context.Context, hc *http.Client, src, part string, plain boo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, status(resp.StatusCode)
+		return 0, refused(resp)
 	}
 
 	f, err := os.Create(part)

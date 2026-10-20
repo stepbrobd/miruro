@@ -165,7 +165,7 @@ func fetchFile(ctx context.Context, hc *http.Client, url, part string, limit int
 		// the url is the proxy's own loopback address carrying an encoded target,
 		// which names nothing a reader can act on and, cut to the terminal from
 		// the right, hides the status that does
-		return fmt.Errorf("download refused: %w", status(resp.StatusCode))
+		return fmt.Errorf("download refused: %w", refused(resp))
 	}
 	if limit > 0 && resp.ContentLength > limit {
 		return fmt.Errorf("download %w of %d bytes", errTooLarge, limit)

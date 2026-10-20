@@ -43,6 +43,15 @@ type status int
 
 func (s status) Error() string { return fmt.Sprintf("status %d", int(s)) }
 
+// refused is the error a non-200 answer reads as, where a body the proxy
+// refused over its cap is as final as one this side caught over its own
+func refused(resp *http.Response) error {
+	if resp.Header.Get(overCap) != "" {
+		return fmt.Errorf("upstream %w", errTooLarge)
+	}
+	return status(resp.StatusCode)
+}
+
 // retry runs op until it succeeds, until its failure stops being transient, or
 // until the attempts run out
 // op is repeated whole, so one that writes to disk must truncate on entry
