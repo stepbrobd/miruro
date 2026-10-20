@@ -127,6 +127,77 @@ func TestDownloadFallsBackForFragmentedMP4(t *testing.T) {
 	}
 }
 
+// ffmpeg's hls demuxer skips a segment it cannot open with only a warning and
+// exits zero, so the one-shot path saved the episode without it and every
+// rerun skipped the episode as finished
+func TestDownloadRefusesAnEpisodeMissingASegment(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	src := t.TempDir()
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=4",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+		"-c:v", "libx264", "-preset", "ultrafast",
+		"-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*1)", "-c:a", "aac",
+		"-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+		"-hls_segment_filename", filepath.Join(src, "seg%d.ts"),
+		filepath.Join(src, "media.m3u8"))
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("cannot synthesize an hls stream: %v: %s", err, out)
+	}
+	// the episode keeps sound for as long as it keeps picture, so nothing but
+	// the missing segment can refuse it
+	if err := os.Remove(filepath.Join(src, "seg2.ts")); err != nil {
+		t.Fatal(err)
+	}
+	cdn := httptest.NewServer(http.FileServer(http.Dir(src)))
+	defer cdn.Close()
+
+	dir, name := t.TempDir(), "Show - E1"
+	_, err := Download(context.Background(), http.DefaultClient,
+		upstream.Stream{URL: cdn.URL + "/media.m3u8", Kind: upstream.HLS}, nil, dir, name, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "segment 2") {
+		t.Fatalf("err = %v, want the skipped segment refused", err)
+	}
+	if Saved(dir, name) {
+		t.Error("the episode missing a segment was kept, so a rerun would skip it forever")
+	}
+	if _, err := os.Stat(EpisodePath(dir, name) + ".part"); !os.IsNotExist(err) {
+		t.Error("the refused episode left its .part behind")
+	}
+}
+
+// ffmpeg logs at warning level to say when it skipped a segment, so a failed
+// run must still report its errors as -loglevel error printed them, without
+// the warnings or the level tags, and a tag the message quotes is not its level
+func TestFFLogKeepsWhatLogLevelErrorPrinted(t *testing.T) {
+	var l ffLog
+	// written in pieces that split lines, the way a pipe hands them over
+	for _, chunk := range []string{
+		"[http @ 0x1] [warning] HTTP error 404 Not Found\n[in#0/hls @ 0x2] [warn",
+		"ing] Failed to open segment 2 of playlist 0\n",
+		"[in#0/hls @ 0x2] [warning] Segment 2 of playlist 0 failed too many times, skipping\n",
+		"untagged, a warning continued\n",
+		"[in#0 @ 0x3] [error] Error opening input: a [warning] quoted\n",
+		"untagged, an error continued\n",
+		"[fatal] Error opening input files",
+	} {
+		if n, err := l.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatalf("Write = %d, %v, want the whole chunk taken", n, err)
+		}
+	}
+	l.flush()
+	want := "[in#0 @ 0x3] Error opening input: a [warning] quoted\nuntagged, an error continued\nError opening input files\n"
+	if got := l.errs.String(); got != want {
+		t.Errorf("errs = %q, want %q", got, want)
+	}
+	if l.skipped != "Failed to open segment 2 of playlist 0" {
+		t.Errorf("skipped = %q, want the first segment ffmpeg could not open", l.skipped)
+	}
+}
+
 // ffmpeg keeps going when a demuxed master's audio rendition refuses to serve
 // and exits zero on a silent episode, so the download has to refuse the result
 // itself rather than keep a file nobody can watch

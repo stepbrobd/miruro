@@ -297,14 +297,16 @@ func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string)
 	}
 	// name the muxer explicitly because ffmpeg infers the output format from the
 	// file extension, and the .part suffix hides the real one
+	// the log runs at warning level, tagged, since a segment the hls demuxer
+	// skips is only a warning, see ffLog
 	part := dest + ".part"
 	args := append(append([]string{}, input...),
-		"-c", "copy", "-y", "-loglevel", "error",
+		"-c", "copy", "-y", "-loglevel", "level+warning",
 		"-progress", "pipe:1", "-nostats", "-f", "mp4", part)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
+	var stderr ffLog
+	cmd.Stderr = &stderr
 
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -322,14 +324,108 @@ func runFFmpeg(ctx context.Context, dest string, prog Progress, input ...string)
 		}
 	}
 	// a scan error only costs progress updates, so the exit status decides
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+	stderr.flush()
+	if err != nil {
 		os.Remove(part)
-		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
+		if msg := strings.TrimSpace(stderr.errs.String()); msg != "" {
 			return fmt.Errorf("ffmpeg: %w: %s", err, msg)
 		}
 		return fmt.Errorf("ffmpeg: %w", err)
 	}
+	if stderr.skipped != "" {
+		os.Remove(part)
+		return fmt.Errorf("ffmpeg: %s", stderr.skipped)
+	}
 	return os.Rename(part, dest)
+}
+
+// ffLog reads ffmpeg's log, each line tagged with its level, for what a run is
+// judged by
+// errs holds the errors, as -loglevel error alone would have printed them,
+// which a failed run reports
+// skipped is the first segment the hls demuxer could not open, which it logs as
+// a warning before skipping the segment and exiting zero on an episode missing
+// it, empty when none was
+// exec copies the log in one goroutine and Wait joins it before either field
+// is read, so the fields need no lock
+type ffLog struct {
+	line    []byte
+	level   string
+	errs    bytes.Buffer
+	skipped string
+}
+
+// maxLogLine and maxLogErrs bound what the log keeps, since every packet of a
+// broken stream can earn its own line
+// a line is judged by its tag and the start of its message, so the tail past
+// maxLogLine costs nothing but the end of a long error
+const (
+	maxLogLine = 4 << 10
+	maxLogErrs = 64 << 10
+)
+
+// Write always reports the whole of p, since a short write would end the copy
+// and leave ffmpeg blocked on a full pipe
+func (l *ffLog) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			l.keep(p)
+			break
+		}
+		l.keep(p[:i])
+		l.end()
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+// keep adds b to the line being read, dropping what runs past maxLogLine
+func (l *ffLog) keep(b []byte) {
+	if room := maxLogLine - len(l.line); room < len(b) {
+		b = b[:max(room, 0)]
+	}
+	l.line = append(l.line, b...)
+}
+
+// flush judges a last line the log left unterminated
+func (l *ffLog) flush() {
+	if len(l.line) > 0 {
+		l.end()
+	}
+}
+
+// logLevels are the tags a line logged at warning level or above carries
+var logLevels = []string{"[warning] ", "[error] ", "[fatal] ", "[panic] "}
+
+// end judges the line just read, keeping it as -loglevel error would have
+// printed it, without its tag, unless it is a warning
+// the tag follows the context the line names, so the first one on the line is
+// its level and a later one is the message quoting it
+// a line carrying no tag continues the message before it, whose level it takes
+func (l *ffLog) end() {
+	line := string(l.line)
+	l.line = l.line[:0]
+	at, tag := -1, ""
+	for _, t := range logLevels {
+		if i := strings.Index(line, t); i >= 0 && (at < 0 || i < at) {
+			at, tag = i, t
+		}
+	}
+	if at >= 0 {
+		msg := line[at+len(tag):]
+		l.level, line = tag, line[:at]+msg
+		if l.skipped == "" && strings.HasPrefix(msg, "Failed to open segment") {
+			l.skipped = msg
+		}
+	}
+	if l.level == "[warning] " || l.errs.Len() >= maxLogErrs {
+		return
+	}
+	l.errs.WriteString(line)
+	l.errs.WriteByte('\n')
 }
 
 func subLabel(s upstream.Subtitle) string {
