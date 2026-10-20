@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"slices"
@@ -68,6 +69,9 @@ type Client struct {
 	// pace spaces the requests this client sends and holds them through a 429,
 	// the zero pacer spacing none of them
 	pace upstream.Pacer
+	// backoff is the wait before an outage is first tried again, the zero
+	// backoff trying it again at once
+	backoff time.Duration
 
 	mu sync.Mutex
 	// base indexes the mirror that answered last, so one failure does not cost
@@ -99,6 +103,7 @@ func New() *Client {
 		HTTP:    &http.Client{Transport: tr},
 		Timeout: 2 * time.Minute,
 		pace:    upstream.Pacer{Burst: paceBurst, Every: paceEvery},
+		backoff: retryBackoff,
 	}
 }
 
@@ -163,17 +168,36 @@ const (
 // cloudflare counts each mirror apart, so moving on would only shift the load
 // the 429 asked to shed onto the next one
 // a 429 therefore ends the walk like any other answer from the backend
+// an outage is tried again on the same mirror the way the site's request
+// helper tries it, at most attempts tries in all and never on the play route,
+// and the 429s sat out on the way count apart from them
 func (c *Client) sitOut(ctx context.Context, base, ref string) ([]byte, verdict, error) {
-	for n := 0; ; n++ {
+	held, tried := 0, 1
+	for {
 		body, v, err := c.attempt(ctx, base, ref)
-		var l limited
-		if !errors.As(err, &l) || time.Duration(l) > maxHold {
-			return body, v, err
-		}
-		// the hold stands even when this request gives up, so the requests
-		// behind it do not walk into the same limit
-		c.pace.Hold(time.Duration(l))
-		if n == holds {
+		var (
+			l limited
+			o outage
+		)
+		switch {
+		case errors.As(err, &l) && time.Duration(l) <= maxHold:
+			// the hold stands even when this request gives up, so the requests
+			// behind it do not walk into the same limit
+			c.pace.Hold(time.Duration(l))
+			if held == holds {
+				return body, v, err
+			}
+			held++
+		case errors.As(err, &o) && tried < attempts && retryable(ref):
+			wait, ok := c.retryWait(tried, o.header, time.Now())
+			if !ok {
+				return body, v, err
+			}
+			if err := sleep(ctx, wait); err != nil {
+				return nil, aborted, err
+			}
+			tried++
+		default:
 			return body, v, err
 		}
 	}
@@ -221,7 +245,11 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, reached(connected.Load()), fmt.Errorf("%w: %v", upstream.ErrUnreachable, err)
+		failed := fmt.Errorf("%w: %v", upstream.ErrUnreachable, err)
+		if !connected.Load() {
+			return nil, unreachable, failed
+		}
+		return nil, refused, dropped(failed, err)
 	}
 	defer resp.Body.Close()
 
@@ -233,7 +261,7 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 		if ctx.Err() != nil {
 			return nil, aborted, ctx.Err()
 		}
-		return nil, refused, fmt.Errorf("%w: miruro %s: %w", upstream.ErrUnreachable, req.URL.Path, err)
+		return nil, refused, dropped(fmt.Errorf("%w: miruro %s: %w", upstream.ErrUnreachable, req.URL.Path, err), err)
 	}
 	if len(body) > maxBody {
 		return nil, refused, fmt.Errorf("%w: miruro %s exceeds %d bytes", upstream.ErrUnreachable, req.URL.Path, maxBody)
@@ -246,8 +274,13 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 		return nil, unreachable, upstream.ErrBlocked
 	case resp.StatusCode >= 400:
 		err := fmt.Errorf("%w: miruro %s: %s", upstream.ErrUnreachable, req.URL.Path, refusal(resp.StatusCode, kind, body))
-		if d, ok := retryAfter(resp.Header, time.Now()); ok && resp.StatusCode == http.StatusTooManyRequests {
-			err = fmt.Errorf("%w: %w", err, limited(d))
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			if d, ok := retryAfter(resp.Header, time.Now()); ok {
+				err = fmt.Errorf("%w: %w", err, limited(d))
+			}
+		case http.StatusBadGateway, http.StatusServiceUnavailable:
+			err = outage{error: err, header: resp.Header}
 		}
 		return nil, refused, err
 	case isHTML:
@@ -264,12 +297,16 @@ func (c *Client) attempt(ctx context.Context, base, ref string) ([]byte, verdict
 	return body, served, nil
 }
 
-// reached maps whether a connection was obtained to who owns the failure
-func reached(connected bool) verdict {
-	if connected {
-		return refused
+// dropped is failed, a network error once a connection was handed over, as an
+// outage, unless cause is a timeout
+// a browser's fetch runs out of no time of its own, and trying a timeout again
+// would triple the header timeout or Timeout the GotConn hook keeps to one
+func dropped(failed, cause error) error {
+	var ne net.Error
+	if errors.As(cause, &ne) && ne.Timeout() {
+		return failed
 	}
-	return unreachable
+	return outage{error: failed}
 }
 
 // mediaType is the response's content type without its parameters, empty when

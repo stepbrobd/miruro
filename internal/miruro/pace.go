@@ -1,8 +1,10 @@
 package miruro
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,67 @@ const (
 	// holds is how many 429s one request sits out before failing
 	holds = 2
 )
+
+// the site's request helper, N in the shared fa6-*.js chunk on 2026-10-09,
+// tries a 502, a 503 and a network error again on every route but play, and
+// this client tries an outage the same way
+const (
+	// attempts bounds the tries one request makes through an outage, the first
+	// included
+	attempts = 3
+	// retryBackoff is the wait before the first retry, which doubles to at most
+	// four times it, though three attempts only ever wait the first two
+	retryBackoff = 100 * time.Millisecond
+	// maxRetryAfter is the longest wait an outage can name and still be tried
+	// again
+	maxRetryAfter = 5 * time.Second
+)
+
+// outage is a failure the site's request helper tries again, a 502, a 503 or a
+// network error once a connection was handed over, keeping the headers of the
+// answer when one came
+// it reads as the error it carries, so the error a request gives up with is
+// the one its last attempt returned
+type outage struct {
+	error
+	header http.Header
+}
+
+func (o outage) Unwrap() error { return o.error }
+
+// retryWait is the wait before retry n, counting from one, after an outage
+// whose answer carried h, and whether to retry at all
+// a retry-after of maxRetryAfter or less stands in for the backoff, and one
+// naming a longer wait, or none that parses, ends the retries
+func (c *Client) retryWait(n int, h http.Header, now time.Time) (time.Duration, bool) {
+	if h.Get("Retry-After") == "" {
+		return c.backoff << min(n-1, 2), true
+	}
+	if d, ok := retryAfter(h, now); ok && d <= maxRetryAfter {
+		return d, true
+	}
+	return 0, false
+}
+
+// retryable reports whether the site's request helper tries the route ref
+// names again, which it does for every route but an episode's play
+func retryable(ref string) bool {
+	path, _, _ := strings.Cut(ref, "?")
+	return !strings.HasSuffix(path, "/play")
+}
+
+// sleep waits d or until ctx ends and reports the context's error either way,
+// since a fired timer and a done context are both ready and select picks
+// between them at random, and a canceled run must not start another attempt
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return ctx.Err()
+}
 
 // limited is a 429, carrying the wait its retry-after named
 type limited time.Duration
