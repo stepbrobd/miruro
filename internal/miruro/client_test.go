@@ -270,6 +270,23 @@ func TestRecords(t *testing.T) {
 	}
 }
 
+// the bound is on the tokens a body holds, so a body of exactly maxTokens is
+// read and one token more is refused
+func TestRecordsReadsABodyOfExactlyMaxTokens(t *testing.T) {
+	// an empty object row is two tokens and a number one, and the object, its
+	// key, the array, its close and the object's close are five more
+	objects := (maxTokens - 6) / 2
+	body := func(numbers int) []byte {
+		return []byte(`{"data":[` + strings.Repeat("0,", numbers) + strings.TrimSuffix(strings.Repeat("{},", objects), ",") + `]}`)
+	}
+	if n, err := records(body(1)); n != objects+1 || err != nil {
+		t.Errorf("records = %d, %v, want the %d rows of a body at the bound", n, err, objects+1)
+	}
+	if _, err := records(body(2)); err == nil || !strings.Contains(err.Error(), "more than 2097152 json tokens") {
+		t.Errorf("err = %v, want a body one token past the bound refused", err)
+	}
+}
+
 // a body that dies after its headers came from a host that answered, so it is
 // the backend's failure and keeps the typed surface, with the cause beside it
 func TestBodyThatDiesIsRecoverable(t *testing.T) {
