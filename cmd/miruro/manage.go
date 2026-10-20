@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
 	"ysun.co/miruro/internal/play"
@@ -104,15 +105,18 @@ func stamp(t time.Time) string {
 
 func runHistoryClear(*cobra.Command, []string) error {
 	st := openStore()
-	n, err := clearHistory(st)
-	if err != nil {
+	n, unread, err := clearHistory(st)
+	switch {
+	case err != nil:
 		return err
-	}
-	if n == 0 {
+	case unread != nil:
+		log.Warn("history could not be read, so its entries were not counted", "err", unread)
+		fmt.Println("cleared history")
+	case n == 0:
 		fmt.Println("history already empty")
-		return nil
+	default:
+		fmt.Printf("cleared %s\n", plural(n, "history entry", "history entries"))
 	}
-	fmt.Printf("cleared %s\n", plural(n, "history entry", "history entries"))
 	return nil
 }
 
@@ -156,16 +160,16 @@ func pickEntry(st *store, query string) (entry, error) {
 	})
 }
 
-// clearHistory clears the store and reports how many entries it held
-func clearHistory(st *store) (int, error) {
-	entries, err := st.load()
-	if err != nil {
-		return 0, err
+// clearHistory clears the store and reports how many entries it held, or why
+// it could not count them
+// an unreadable history is the one a clear is most likely run to get rid of,
+// so failing to read it costs the report its count rather than the clear
+func clearHistory(st *store) (n int, unread, err error) {
+	entries, unread := st.load()
+	if err = st.clear(); err != nil {
+		return 0, unread, err
 	}
-	if err := st.clear(); err != nil {
-		return 0, err
-	}
-	return len(entries), nil
+	return len(entries), unread, nil
 }
 
 // cached is one cache directory as both list and clear see it

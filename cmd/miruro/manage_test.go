@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,9 +16,9 @@ import (
 func TestClearHistory(t *testing.T) {
 	st := &store{path: filepath.Join(t.TempDir(), "history.json")}
 
-	n, err := clearHistory(st)
-	if err != nil {
-		t.Fatal(err)
+	n, unread, err := clearHistory(st)
+	if err != nil || unread != nil {
+		t.Fatal(unread, err)
 	}
 	if n != 0 {
 		t.Errorf("empty store cleared %d entries, want 0", n)
@@ -29,9 +30,9 @@ func TestClearHistory(t *testing.T) {
 		}
 	}
 
-	n, err = clearHistory(st)
-	if err != nil {
-		t.Fatal(err)
+	n, unread, err = clearHistory(st)
+	if err != nil || unread != nil {
+		t.Fatal(unread, err)
 	}
 	if n != 3 {
 		t.Errorf("cleared %d entries, want 3", n)
@@ -43,6 +44,40 @@ func TestClearHistory(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("%d entries survived the clear", len(entries))
+	}
+
+	if err := os.WriteFile(st.path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, unread, err := clearHistory(st); err != nil || unread == nil || n != 0 {
+		t.Errorf("an unreadable history cleared %d entries, unread %v, err %v, want it cleared uncounted", n, unread, err)
+	}
+	if _, err := os.Stat(st.path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the unreadable history survived the clear: %v", err)
+	}
+}
+
+// an unreadable history is the one a clear is most likely run to get rid of,
+// and refusing it over the count of what it held left it to be deleted by hand
+func TestHistoryClearRemovesAnUnreadableHistory(t *testing.T) {
+	root := stateRoot(t)
+	path := filepath.Join(root, "miruro", "history.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	said := captureLog(t)
+	if out := printed(t, func() error { return runHistoryClear(nil, nil) }); out != "cleared history\n" {
+		t.Errorf("clearing printed %q, want no count it could not take", out)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the unreadable history is still there: %v", err)
+	}
+	if !strings.Contains(said.String(), "could not be read") {
+		t.Errorf("the missing count was not explained:\n%s", said)
 	}
 }
 
