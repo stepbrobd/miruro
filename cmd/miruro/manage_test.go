@@ -81,6 +81,14 @@ func TestHistoryClearRemovesAnUnreadableHistory(t *testing.T) {
 	}
 }
 
+// a clear of a history that holds nothing says so rather than counting zero
+func TestHistoryClearSaysAnEmptyHistoryIsEmpty(t *testing.T) {
+	stateRoot(t)
+	if out := printed(t, func() error { return runHistoryClear(nil, nil) }); out != "history already empty\n" {
+		t.Errorf("clearing an empty history printed %q, want it said to be empty", out)
+	}
+}
+
 // only the leading anilist id is parsed back, since a provider code or a
 // quality label may carry a '-' of its own
 func TestCutKey(t *testing.T) {
