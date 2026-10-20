@@ -710,27 +710,72 @@ func TestDownloadLeavesEpisodesOnDiskAlone(t *testing.T) {
 	}
 }
 
+// the sub and the dub of one episode are different videos, so one on disk must
+// not pass for the other, nor the other's run settle the sidecars it is owed
+func TestDownloadKeepsSubAndDubApart(t *testing.T) {
+	cdn := deadCDN(t, "/dead")
+	for _, order := range [][]upstream.Category{{upstream.Sub, upstream.Dub}, {upstream.Dub, upstream.Sub}} {
+		t.Run(fmt.Sprintf("%s then %s", order[0], order[1]), func(t *testing.T) {
+			b := &stub{t: t, name: "miruro", sub: map[string][]float64{"bonk": {1}}, dub: map[string][]float64{"bonk": {1}}, replies: map[string]reply{
+				"bonk": func(upstream.Category) (*upstream.Result, error) {
+					return &upstream.Result{
+						Streams: []upstream.Stream{{URL: cdn.URL + "/live.mp4", Kind: upstream.MP4, Server: "HD-1"}},
+						// the sidecar host is down, so each video is owed its track
+						Subtitles: []upstream.Subtitle{{File: cdn.URL + "/dead/en.vtt", Label: "English", Lang: "en"}},
+					}, nil
+				},
+			}}
+			sv, dir := newSaver(t, b)
+			ctx := context.Background()
+			for _, c := range order {
+				sv.category = c
+				out := printed(t, func() error { return sv.download(ctx, []float64{1}, Pin{}) })
+				if want := fmt.Sprintf("saved 1 episode to %s\n", dir); out != want {
+					t.Errorf("the %s run printed %q, want %q", c, out, want)
+				}
+			}
+			videos, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
+			if len(videos) != 2 {
+				t.Fatalf("saved %v, want a sub and a dub video", videos)
+			}
+			for _, v := range videos {
+				if _, ok := owing(v); !ok {
+					t.Errorf("%s is owed nothing after its sidecar failed", filepath.Base(v))
+				}
+			}
+		})
+	}
+}
+
 // a long title in a multi-byte script outgrows the 255 bytes a file name takes
 // on most filesystems, so the title is cut at a character boundary and the
 // episode number kept, and the longest tail a download adds still fits
 func TestEpisodeNameClipsALongTitle(t *testing.T) {
 	long := strings.Repeat("転生したらスライムだった件", 20)
-	name := episodeName(long, 12)
+	name := episodeName(long, 12, upstream.Sub)
 	if !utf8.ValidString(name) || !strings.HasSuffix(name, " - E12") || len(name) > titleBytes+len(" - E12") {
 		t.Errorf("name is %d bytes, valid %v: %q", len(name), utf8.ValidString(name), name)
 	}
 	if kept := strings.TrimSuffix(name, " - E12"); len(kept) < titleBytes-3 || !strings.HasPrefix(long, kept) {
 		t.Errorf("the title kept %q, want as much of its opening as fits", kept)
 	}
-	if exact := strings.Repeat("x", titleBytes); episodeName(exact, 1) != exact+" - E1" {
+	if exact := strings.Repeat("x", titleBytes); episodeName(exact, 1, upstream.Sub) != exact+" - E1" {
 		t.Error("a title exactly at the bound was cut")
 	}
-	longest := filepath.Join(t.TempDir(), name+"."+strings.Repeat("x", 32)+".9.vtt.part")
+	// a dub's mark is the longest an episode's own part of the name gets
+	dub := episodeName(long, 12, upstream.Dub)
+	if dub != name+" dub" {
+		t.Errorf("the dub is named %q, want the sub's name marked", dub)
+	}
+	longest := filepath.Join(t.TempDir(), dub+"."+strings.Repeat("x", 32)+".9.vtt.part")
 	if err := os.WriteFile(longest, nil, 0o644); err != nil {
 		t.Errorf("the longest sidecar name does not fit: %v", err)
 	}
-	if got := episodeName("Frieren", 1); got != "Frieren - E1" {
-		t.Errorf("a short title changed: %q", got)
+	// every sub download already on disk has to keep matching its name
+	for _, c := range []upstream.Category{upstream.Sub, upstream.Ssub} {
+		if got := episodeName("Frieren", 1, c); got != "Frieren - E1" {
+			t.Errorf("a short %s title changed: %q", c, got)
+		}
 	}
 }
 

@@ -24,7 +24,7 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 	owes := map[float64]owed{}
 	onDisk := 0
 	eps = slices.DeleteFunc(slices.Clone(eps), func(ep float64) bool {
-		name := episodeName(s.title, ep)
+		name := episodeName(s.title, ep, s.category)
 		if !play.Saved(s.cfg.DownloadDir, name) {
 			return false
 		}
@@ -155,12 +155,15 @@ func (s *runState) download(ctx context.Context, eps []float64, pin Pin) error {
 }
 
 // titleBytes bounds the title in a file name, leaving room under the 255 bytes a
-// name takes on most filesystems for the episode, a sidecar's tag and a .part,
-// which a long title in a multi-byte script outgrows on its own
+// name takes on most filesystems for the episode, a dub's mark, a sidecar's tag
+// and a .part, which a long title in a multi-byte script outgrows on its own
 const titleBytes = 200
 
 // episodeName is what an episode is saved as, before the extension
-func episodeName(title string, ep float64) string {
+// a dub is another video of the episode, so it is named apart rather than
+// passing for the sub on disk, while both sub renditions keep the one name
+// every sub download has been saved under
+func episodeName(title string, ep float64, category upstream.Category) string {
 	if len(title) > titleBytes {
 		cut := titleBytes
 		for cut > 0 && !utf8.RuneStart(title[cut]) {
@@ -168,7 +171,11 @@ func episodeName(title string, ep float64) string {
 		}
 		title = strings.TrimRight(title[:cut], " .")
 	}
-	return fmt.Sprintf("%s - E%s", title, num(ep))
+	name := fmt.Sprintf("%s - E%s", title, num(ep))
+	if category == upstream.Dub {
+		name += " dub"
+	}
+	return name
 }
 
 // saver holds what every episode of one download run shares
@@ -249,7 +256,7 @@ func (s saver) from(ctx context.Context, res *upstream.Result, src source, strea
 	if !src.Attach {
 		subs = nil
 	}
-	name := episodeName(s.title, ep)
+	name := episodeName(s.title, ep, s.category)
 	cache := cacheDir(s.anilistID, ep, src.Category, src.Code, s.cfg.Quality)
 	missed, err := play.Download(ctx, s.media, s.px.Stream(stream), s.px.Subtitles(subs, stream.Referer), s.cfg.DownloadDir, name, cache, report)
 
@@ -313,7 +320,7 @@ func (s saver) resubtitle(ctx context.Context, ep float64, o owed) (bool, int, e
 		referer = res.Streams[i].Referer
 	}
 	subs := upstream.Order(res.Subtitles, s.cfg.Lang)
-	missed, err := play.Sidecars(ctx, s.media, s.px.Subtitles(subs, referer), s.cfg.DownloadDir, episodeName(s.title, ep))
+	missed, err := play.Sidecars(ctx, s.media, s.px.Subtitles(subs, referer), s.cfg.DownloadDir, episodeName(s.title, ep, s.category))
 	if err == nil && missed == 0 {
 		settle(o.Video)
 	}
