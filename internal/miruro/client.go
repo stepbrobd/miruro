@@ -40,15 +40,12 @@ const maxBody = 64 << 20
 // episode list may answer stay well under it
 const maxTokens = 1 << 21
 
-// mirrors are the domains that front one miruro backend, which answers every
-// one of them with the same bytes, in the order www.miruro.com publishes them
-// www.miruro.com is not itself an api host, and in 2026-09 it marked .ru
-// deprecated in favor of the new .cx, so .ru is left out even while it answers
+// mirrors are the domains www.miruro.com publishes for this backend
+// www.miruro.com is not itself an api host, and since 2026-11 it names
+// www.miruro.cx alone and calls every other domain fake, so .to, .bz and .tv
+// are left out even while they answer the same bytes
 var mirrors = []string{
-	"https://www.miruro.to",
-	"https://www.miruro.bz",
 	"https://www.miruro.cx",
-	"https://www.miruro.tv",
 }
 
 // catalogKey is what the catalog api xors its gzip bodies with, the bytes of a
