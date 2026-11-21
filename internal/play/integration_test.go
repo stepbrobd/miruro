@@ -181,8 +181,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 			if err := fetchSegments(ctx, http.DefaultClient, pl, cache, nil); err != nil {
 				// a CDN that refuses a segment is the same upstream condition the
 				// checks above skip on, and bonk's ad-CDN does it routinely
-				var code status
-				if errors.As(err, &code) {
+				if _, ok := errors.AsType[status](err); ok {
 					t.Skipf("segments not reachable, an upstream condition: %v", err)
 				}
 				t.Fatalf("segments: %v", err)
@@ -206,8 +205,7 @@ func TestIntegrationProviderDownloads(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := fetchSegments(ctx, http.DefaultClient, pl, cache, nil); err != nil {
-				var code status
-				if errors.As(err, &code) {
+				if _, ok := errors.AsType[status](err); ok {
 					t.Skipf("resume not reachable, an upstream condition: %v", err)
 				}
 				t.Fatalf("resume: %v", err)

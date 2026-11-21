@@ -1572,7 +1572,7 @@ func walkHLS(u string) {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.Contains(line, `URI="`):
-			ref := strings.SplitN(strings.SplitN(line, `URI="`, 2)[1], `"`, 2)[0]
+			ref, _, _ := strings.Cut(strings.SplitN(line, `URI="`, 2)[1], `"`)
 			walkHLS(ref)
 		case line != "" && !strings.HasPrefix(line, "#"):
 			walkHLS(line)

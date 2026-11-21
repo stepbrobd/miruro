@@ -361,8 +361,7 @@ func walkStream(ctx context.Context, px *play.Proxy, s upstream.Stream) (string,
 // bare drops the address a failed request names, which is a proxy payload no
 // reader can use, and keeps why it failed
 func bare(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
 		return ue.Err
 	}
 	return err

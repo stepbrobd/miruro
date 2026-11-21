@@ -98,8 +98,7 @@ func transient(err error) bool {
 		// falls back on hearing it
 		return false
 	}
-	var s status
-	if errors.As(err, &s) {
+	if s, ok := errors.AsType[status](err); ok {
 		return retryable(int(s))
 	}
 	// a file that cannot be written will not write on the next attempt either
