@@ -19,7 +19,7 @@ import (
 
 var newCmd = &cobra.Command{
 	Use:   "new",
-	Short: "List titles in history with episodes past the one watched",
+	Short: "List titles in watch history with episodes past the one watched",
 	Args:  cobra.NoArgs,
 	RunE:  runNew,
 }

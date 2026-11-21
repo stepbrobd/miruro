@@ -27,8 +27,8 @@ import (
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor [query]",
-	Short: "Check the setup, and with a query every provider serving the title",
-	Long: `Check the config, the player, ffmpeg and each api origin.
+	Short: "Check setup and, with a query, all providers serving the title",
+	Long: `Check the config file, player, ffmpeg and each API origin.
 
 With a query, also look the title up, list the providers serving its first
 episode, and walk each one through the stream proxy the way a player starts

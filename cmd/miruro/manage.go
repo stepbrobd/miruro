@@ -35,7 +35,7 @@ var historyDeleteCmd = &cobra.Command{
 	Use:   "delete [title]",
 	Short: "Delete one title from watch history",
 	Long: "Delete one title from watch history.\n\n" +
-		"With no title a picker lists the whole history. A title matching one\n" +
+		"With no title a picker lists all watch history. A title matching one\n" +
 		"entry deletes it, and one matching several narrows the picker to them.",
 	Args: cobra.ArbitraryArgs,
 	RunE: runHistoryDelete,
